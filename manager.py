@@ -32,8 +32,7 @@ def print_menu():
     print(" 5. [SYNC]  Sync ENTIRE LIBRARY to iPod")
     print(" 6. [SYNC]  Selective sync (by artist)")
     print(" 7. [Stats] Show sync statistics")
-    print(" 8. [Clean] Remove synced tracks from iPod")
-    print(" 9. Exit")
+    print(" 8. Exit")
     print("=" * 60)
     print("NOTE: Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET")
     print("      as environment variables for Spotify features.")
@@ -334,22 +333,6 @@ def main():
                     show_sync_stats(db, config._config)
 
             elif choice == "8":
-                # ============================================
-                # Clean iPod Music
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Cleaning iPod Music Directory")
-                logger.info("=" * 60)
-
-                print("\n🧹 Clean iPod Music")
-                print("This will remove ALL music from your iPod.")
-                print("Useful when changing formats (FLAC → MP3, etc.)")
-
-                clean_ipod_music(config._config)
-
-                logger.info("Clean Complete")
-
-            elif choice == "9":
                 # ============================================
                 # Exit
                 # ============================================

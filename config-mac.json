@@ -1,0 +1,14 @@
+{
+    "database_file": "/path/to/shared/dap_library.db",
+    "music_library_path": "/tmp/dap_dummy_library",
+    "downloads_path": "/tmp/dap_downloads",
+    "ffmpeg_path": "ffmpeg",
+    "ipod_mount_point": "/Volumes/IPOD",
+    "ipod_music_dir_name": "Music",
+    "ipod_playlist_dir_name": "Playlists",
+    "slsk_cmd_base": [
+        "./sldl.sh"
+    ],
+    "conversion_sample_rate": 44100,
+    "conversion_bit_depth": 16
+}
