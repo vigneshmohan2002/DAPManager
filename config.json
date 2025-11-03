@@ -1,0 +1,14 @@
+{
+  "database_file": "dap_library.db",
+  "picard_cmd_path": "C:\\Program Files\\MusicBrainz Picard\\picard.exe",
+  "music_library_path": "C:\\Users\\Vignesh\\Desktop\\Music Library",
+  "downloads_path": "C:\\Users\\Vignesh\\Desktop\\DAPManger\\downloads",
+  "slsk_cmd_base": ["C:\\Users\\Vignesh\\Desktop\\DAPManger\\sldl.exe"],
+  "ffmpeg_path": "ffmpeg",
+  "ipod_mount_point": "D:\\",
+  "ipod_music_dir_name": "Music",
+  "ipod_playlist_dir_name": "Playlists",
+  "conversion_sample_rate": 44100,
+  "conversion_bit_depth": 16,
+  "conversion_quality": null
+}
