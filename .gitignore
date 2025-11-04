@@ -1,5 +1,4 @@
 /.venv
 /__pycache__
 /downloads
-/dap_library.db
 /dap_manager.log
