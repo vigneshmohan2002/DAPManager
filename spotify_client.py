@@ -5,7 +5,7 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import musicbrainzngs
 from db_manager import DatabaseManager, Track, Playlist, DownloadItem
 from typing import Optional, List, Tuple
-
+import time
 
 class SpotifyClient:
     """
@@ -44,7 +44,7 @@ class SpotifyClient:
             musicbrainzngs.set_useragent(
                 app="DAPManager",
                 version="0.1.0",
-                contact="vigneshmohan2002@example.com",  # Using your repo email as a placeholder
+                contact="plaeseigood2002@gmail.com",  # Using your repo email as a placeholder
             )
         except Exception as e:
             print(f"Error setting MusicBrainz user agent: {e}")
@@ -88,6 +88,7 @@ class SpotifyClient:
                 continue
 
             self._process_track(item["track"], playlist_id, i)
+            time.sleep(5)
 
         print("\nPlaylist processing complete.")
 
