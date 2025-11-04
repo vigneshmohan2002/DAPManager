@@ -1,0 +1,4 @@
+@echo off
+set SPOTIPY_CLIENT_ID=523ee113d2f04f62a53abb375cbb1730
+set SPOTIPY_CLIENT_SECRET=e481eeb8ad2a48f0a351b25663b546ab
+python your_automation_script.py

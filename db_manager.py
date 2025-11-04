@@ -24,11 +24,31 @@ class Track:
     artist: str
     isrc: Optional[str] = None
     local_path: Optional[str] = None
-    normalized_path = local_path.replace("\\", "/") if local_path else None
-    parts = normalized_path.split("/") if normalized_path else None
-    library_root = "/".join(parts[:-3]) if parts else None
     ipod_path: Optional[str] = None
     synced_to_ipod: bool = False
+
+    @property
+    def safe_artist(self):
+        """Get filesystem-safe artist name"""
+        import re
+
+        if not self.artist or self.artist == "Unknown Artist":
+            return "Unknown Artist"
+        return re.sub(r'[\\/*?:"<>|]', "_", self.artist)
+
+    @property
+    def safe_title(self):
+        """Get filesystem-safe title"""
+        import re
+
+        if not self.title or self.title == "Unknown Title":
+            return "Unknown Title"
+        return re.sub(r'[\\/*?:"<>|]', "_", self.title)
+
+    @property
+    def ipod_filename(self):
+        """Generate iPod filename with extension"""
+        return f"{self.safe_title}.flac"
 
 
 @dataclass
