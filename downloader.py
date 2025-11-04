@@ -80,8 +80,10 @@ class Downloader:
                 success_count += 1
 
             except subprocess.CalledProcessError as e:
-                logger.error(f"Download command failed: {e.stderr}")
-                self._process_failure(item, str(e.stderr))
+                # Log both stdout and stderr to capture the real error
+                error_message = f"STDOUT: {e.stdout.strip()} | STDERR: {e.stderr.strip()}"
+                logger.error(f"Download command failed: {error_message}")
+                self._process_failure(item, error_message)
                 fail_count += 1
             except subprocess.TimeoutExpired:
                 logger.error(f"Download timed out: {item.search_query}")
@@ -107,14 +109,13 @@ class Downloader:
         """
         command = self.slsk_cmd_base + [
             "--user",
-            "TheTediousDrunk",
+            "vigmoh20022222",
             "--pass",
             "UPcqvAzKMMl6f6bi4v0VK",
-            "download",
             item.search_query,
             "--format",
             "flac",
-            "--output-dir",
+            "-p",
             self.downloads_dir,
         ]
 
