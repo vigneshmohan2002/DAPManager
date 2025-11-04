@@ -14,6 +14,7 @@ from enum import Enum
 from db_manager import DatabaseManager, Track
 from library_scanner import LibraryScanner
 from downloader import Downloader
+import mutagen
 
 logger = logging.getLogger(__name__)
 
@@ -242,25 +243,39 @@ class EnhancedIpodSyncer:
         logger.info(f"Sync complete. Success: {success_count}, Failed: {fail_count}")
 
     def _convert_and_copy(self, track: Track):
-        """
-        Converts a track using specified conversion options and copies to iPod
-        while preserving the original library directory structure.
-        """
-        # Get original relative path from library root
-        rel_path = os.path.relpath(track.local_path, track.library_root)
+        """Converts and copies track to iPod using clean path structure"""
 
-        # Sanitize each component to be filesystem-safe
-        path_components = [
-            self._sanitize_path_component(p) for p in rel_path.split(os.sep)
-        ]
-        filename = path_components.pop()  # last component is filename
-        filename_base, _ = os.path.splitext(filename)
-        output_filename = f"{filename_base}.{self.conversion_options.get_extension()}"
+        if not track.local_path or not os.path.exists(track.local_path):
+            logger.error(f"Local file not found: {track.local_path}")
+            return
 
-        # Rebuild full output path inside iPod
-        output_path = os.path.join(
-            self.ipod_music_path, *path_components, output_filename
+        # Use the clean iPod path structure
+        safe_artist = (
+            self._sanitize_path_component(track.artist)
+            if track.artist
+            else "Unknown Artist"
         )
+        safe_title = (
+            self._sanitize_path_component(track.title)
+            if track.title
+            else "Unknown Title"
+        )
+
+        # Get album from tags if available
+        try:
+            file_tags = mutagen.File(track.local_path, easy=True)
+            album = file_tags.get("album", ["Unknown Album"])[0]
+        except:
+            album = "Unknown Album"
+
+        safe_album = self._sanitize_path_component(album)
+
+        # Build clean iPod path: D:/Music/Artist/Album/Song.flac
+        output_filename = f"{safe_title}.{self.conversion_options.get_extension()}"
+        output_path = os.path.join(
+            self.ipod_music_path, safe_artist, safe_album, output_filename
+        ).replace("\\", "/")
+
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -281,7 +296,7 @@ class EnhancedIpodSyncer:
         ]
         ffmpeg_args = self.conversion_options.get_ffmpeg_args()
 
-    # Add FLAC compression if output is FLAC
+        # Add FLAC compression if output is FLAC
         if self.conversion_options.get_extension().lower() == "flac":
             ffmpeg_args.extend(["-compression_level", "5"])
 
@@ -289,7 +304,8 @@ class EnhancedIpodSyncer:
         command.extend(["-map_metadata", "0"])
         command.extend(["-y", output_path])
 
-        logger.debug(f"Converting with: {' '.join(command[2:6])}")
+        logger.debug(f"Converting: {safe_artist} - {safe_title}")
+        logger.debug(f"Output: {output_path}")
 
         # Run conversion
         try:
@@ -302,7 +318,7 @@ class EnhancedIpodSyncer:
 
         logger.debug(f"Saved: {output_path}")
 
-        # Update database
+        # Update database with clean iPod path
         self.db.mark_track_synced(track.mbid, output_path)
 
     def _generate_playlists(self):

@@ -10,8 +10,9 @@ import subprocess
 import shutil
 import logging
 from typing import List
-from db_manager import DatabaseManager, DownloadItem
+from db_manager import DatabaseManager, DownloadItem, Track
 from library_scanner import LibraryScanner
+import mutagen
 
 logger = logging.getLogger(__name__)
 
@@ -134,14 +135,42 @@ class Downloader:
         self.db.update_download_status(item.id, "failed")
         logger.info(f"Marked as 'failed' in database")
 
+    def _get_ipod_path_for_track(self, track: Track) -> str:
+        """Generate clean iPod path: D:/Music/Artist/Album/Song.flac"""
+        import re
+
+        # Get album from tags if available, otherwise use playlist name
+        try:
+            file_tags = mutagen.File(track.local_path, easy=True)
+            album = file_tags.get("album", ["Unknown Album"])[0]
+        except:
+            album = "Unknown Album"
+
+        # Sanitize names
+        safe_artist = (
+            re.sub(r'[\\/*?:"<>|]', "_", track.artist)
+            if track.artist
+            else "Unknown Artist"
+        )
+        safe_album = re.sub(r'[\\/*?:"<>|]', "_", album)
+        safe_title = (
+            re.sub(r'[\\/*?:"<>|]', "_", track.title)
+            if track.title
+            else "Unknown Title"
+        )
+
+        # Build iPod path
+        ipod_path = os.path.join(
+            self.music_library_dir,  # This should be D:/Music
+            safe_artist,
+            safe_album,
+            f"{safe_title}.flac",
+        )
+
+        return ipod_path.replace("\\", "/")
+
     def _process_success(self, item: DownloadItem):
-        """
-        Handles a successful download:
-        1. Finds the new .flac file
-        2. Moves it to the main music library
-        3. Calls LibraryScanner to tag and update DB
-        4. Removes from download queue
-        """
+        """Handles a successful download with clean iPod paths"""
         logger.debug("Processing successful download...")
 
         # Find the downloaded .flac file
@@ -161,20 +190,39 @@ class Downloader:
 
         logger.debug(f"Found file: {os.path.basename(found_file_path)}")
 
-        # Move to music library
+        # Create track object for path generation
+        temp_track = Track(
+            mbid=item.mbid_guess,
+            title="Unknown Title",  # Will be updated by scanner
+            artist="Unknown Artist",
+            local_path=found_file_path,
+        )
+
+        # Generate clean iPod destination path
+        dest_path = self._get_ipod_path_for_track(temp_track)
+        dest_dir = os.path.dirname(dest_path)
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Move to music library with clean structure
         try:
-            dest_path = os.path.join(
-                self.music_library_dir, os.path.basename(found_file_path)
-            )
             shutil.move(found_file_path, dest_path)
             logger.debug(f"Moved to: {dest_path}")
         except Exception as e:
             raise Exception(f"Failed to move file: {e}")
 
-        # Process with LibraryScanner
+        # Process with LibraryScanner (this will update tags)
         logger.debug("Handing off to LibraryScanner...")
         try:
             self.scanner._process_file(dest_path)
+
+            # Update the track with the correct iPod path after scanning
+            updated_track = self.db.get_track_by_mbid(item.mbid_guess)
+            if updated_track and updated_track.local_path == dest_path:
+                # Generate final iPod path with correct metadata
+                final_ipod_path = self._get_ipod_path_for_track(updated_track)
+                updated_track.ipod_path = final_ipod_path
+                self.db.add_or_update_track(updated_track)
+
         except Exception as e:
             raise Exception(f"LibraryScanner failed: {e}")
 

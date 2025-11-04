@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def print_menu():
     """Displays the enhanced main menu."""
     print("\n" + "=" * 60)
-    print("  🎵  DAP (Digital Audio Player) Manager  🎵")
+    print("DAP (Digital Audio Player) Manager")
     print("=" * 60)
     print(" 1. [Setup] Scan local music library")
     print(" 2. [Add]   Add new Spotify playlist")
@@ -93,7 +93,7 @@ def show_sync_stats(db: DatabaseManager, config):
         stats = syncer.get_sync_stats()
 
         print("\n" + "=" * 60)
-        print("  📊  Library Statistics  📊")
+        print("   Library Statistics ")
         print("=" * 60)
         print(f" Total tracks in library:  {stats['total_tracks']:,}")
         print(f" Already synced to iPod:   {stats['synced_tracks']:,}")
@@ -103,7 +103,7 @@ def show_sync_stats(db: DatabaseManager, config):
         print("=" * 60)
 
         if stats["pending_tracks"] > 0:
-            print(f"\n💡 {stats['pending_tracks']} tracks ready to sync!")
+            print(f"\n {stats['pending_tracks']} tracks ready to sync!")
 
             # Calculate approximate sizes
             flac_size = stats["pending_tracks"] * 35  # ~35MB per track
@@ -115,11 +115,11 @@ def show_sync_stats(db: DatabaseManager, config):
             print(f"  MP3:   ~{mp3_size:,} MB ({mp3_size/1024:.1f} GB)")
             print(f"  Opus:  ~{opus_size:,} MB ({opus_size/1024:.1f} GB)")
         else:
-            print("\n✅ All tracks are synced!")
+            print("\n All tracks are synced!")
 
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
-        print(f"\n❌ Error getting stats: {e}")
+        print(f"\n Error getting stats: {e}")
 
 
 def clean_ipod_music(config):
@@ -132,31 +132,31 @@ def clean_ipod_music(config):
     ipod_music_path = os.path.join(ipod_mount, ipod_music_dir)
 
     if not os.path.exists(ipod_music_path):
-        print(f"\n❌ iPod music path not found: {ipod_music_path}")
+        print(f"\n iPod music path not found: {ipod_music_path}")
         return
 
     # Count files
     file_count = sum(len(files) for _, _, files in os.walk(ipod_music_path))
 
-    print(f"\n⚠️  WARNING: This will delete {file_count} files from:")
+    print(f"\n WARNING: This will delete {file_count} files from:")
     print(f"    {ipod_music_path}")
     print("\nThis action CANNOT be undone!")
 
     confirm = input("\nType 'DELETE' to confirm: ").strip()
 
     if confirm != "DELETE":
-        print("❌ Operation cancelled.")
+        print(" Operation cancelled.")
         return
 
     try:
         shutil.rmtree(ipod_music_path)
         os.makedirs(ipod_music_path)
         logger.info(f"Cleaned iPod music directory: {ipod_music_path}")
-        print(f"✅ Deleted {file_count} files from iPod")
-        print("💡 Run a sync to repopulate with your desired format")
+        print(f"Deleted {file_count} files from iPod")
+        print("Run a sync to repopulate with your desired format")
     except Exception as e:
         logger.error(f"Failed to clean iPod: {e}")
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
 
 
 def main():
@@ -190,13 +190,13 @@ def main():
                 logger.info("Scanning Local Library")
                 logger.info("=" * 60)
 
-                print("\n🔍 Scanning music library...")
+                print("\n Scanning music library...")
                 print("This may take a while on first run (Picard tagging)...\n")
 
                 with DatabaseManager(db_path) as db:
                     main_scan_library(db, config._config)
 
-                print("\n✅ Scan complete!")
+                print("\n Scan complete!")
                 logger.info("Scan Complete")
 
             elif choice == "2":
@@ -211,7 +211,7 @@ def main():
                 if not EnvironmentManager.validate_environment():
                     continue
 
-                print("\n📝 Enter Spotify playlist URL")
+                print("\n Enter Spotify playlist URL")
                 print(
                     "Example: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
                 )
@@ -219,15 +219,16 @@ def main():
                 playlist_url = input("\nURL: ").strip()
 
                 if not playlist_url.startswith("https://open.spotify.com/playlist/"):
-                    print("❌ Invalid URL. Must be a full Spotify playlist URL.")
+                    print(" Invalid URL. Must be a full Spotify playlist URL.")
                     continue
 
-                print(f"\n🎵 Processing playlist...")
+                print(f"\nProcessing playlist...")
 
                 with DatabaseManager(db_path) as db:
-                    SpotifyClient.process_playlist(db, playlist_url)
+                    spot_client = SpotifyClient(db)
+                    spot_client.process_playlist(playlist_url)
 
-                print("\n✅ Playlist processed!")
+                print("\n Playlist processed!")
                 logger.info("Playlist Processed")
 
             elif choice == "3":
@@ -238,13 +239,13 @@ def main():
                 logger.info("Running Download Queue")
                 logger.info("=" * 60)
 
-                print("\n⬇️  Processing download queue...")
+                print("\nProcessing download queue...")
                 print("This will download any tracks not found locally.\n")
 
                 with DatabaseManager(db_path) as db:
                     main_run_downloader(db, config._config)
 
-                print("\n✅ Download queue finished!")
+                print("\n Download queue finished!")
                 logger.info("Download Queue Finished")
 
             elif choice == "4":
@@ -255,17 +256,17 @@ def main():
                 logger.info("Syncing Playlists to iPod")
                 logger.info("=" * 60)
 
-                print("\n🎧 Syncing playlist tracks to iPod...")
+                print("\n Syncing playlist tracks to iPod...")
 
                 fmt = get_conversion_format()
-                print(f"\n🔄 Converting to {fmt.upper()}...")
+                print(f"\n Converting to {fmt.upper()}...")
 
                 with DatabaseManager(db_path) as db:
                     main_run_sync(
                         db, config._config, sync_mode="playlists", conversion_format=fmt
                     )
 
-                print("\n✅ Playlist sync complete!")
+                print("\n Playlist sync complete!")
                 logger.info("Playlist Sync Complete")
 
             elif choice == "5":
@@ -276,7 +277,7 @@ def main():
                 logger.info("Syncing Full Library to iPod")
                 logger.info("=" * 60)
 
-                print("\n⚠️  FULL LIBRARY SYNC")
+                print("\n  FULL LIBRARY SYNC")
                 print("This will sync ALL tracks in your library to the iPod.")
 
                 # Show what will be synced
@@ -289,19 +290,19 @@ def main():
                 )
 
                 if confirm != "y":
-                    print("❌ Sync cancelled.")
+                    print(" Sync cancelled.")
                     continue
 
                 fmt = get_conversion_format()
-                print(f"\n🔄 Converting to {fmt.upper()}...")
-                print("⏳ This may take a LONG time for large libraries...\n")
+                print(f"\n Converting to {fmt.upper()}...")
+                print(" This may take a LONG time for large libraries...\n")
 
                 with DatabaseManager(db_path) as db:
                     main_run_sync(
                         db, config._config, sync_mode="library", conversion_format=fmt
                     )
 
-                print("\n✅ Full library sync complete!")
+                print("\n Full library sync complete!")
                 logger.info("Full Library Sync Complete")
 
             elif choice == "6":
@@ -312,7 +313,7 @@ def main():
                 logger.info("Selective Sync")
                 logger.info("=" * 60)
 
-                print("\n🎯 Selective Sync")
+                print("\nSelective Sync")
                 print("Enter an artist name to sync only their tracks.")
                 print("Leave blank to see all pending tracks.\n")
 
@@ -323,7 +324,7 @@ def main():
                         db, config._config, sync_mode="selective", conversion_format=fmt
                     )
 
-                print("\n✅ Selective sync complete!")
+                print("\n Selective sync complete!")
                 logger.info("Selective Sync Complete")
 
             elif choice == "7":
@@ -341,7 +342,7 @@ def main():
                 logger.info("Cleaning iPod Music Directory")
                 logger.info("=" * 60)
 
-                print("\n🧹 Clean iPod Music")
+                print("\n Clean iPod Music")
                 print("This will remove ALL music from your iPod.")
                 print("Useful when changing formats (FLAC → MP3, etc.)")
 
@@ -360,10 +361,10 @@ def main():
                 break
 
             else:
-                print(f"\n❌ Invalid choice '{choice}'. Please enter 1-9.")
+                print(f"\n Invalid choice '{choice}'. Please enter 1-9.")
 
         except KeyboardInterrupt:
-            print("\n\n⚠️  Operation cancelled by user (Ctrl+C).")
+            print("\n\nOperation cancelled by user (Ctrl+C).")
             logger.info("Operation cancelled by user")
             print("Returning to menu...\n")
         except Exception as e:
@@ -372,10 +373,10 @@ def main():
             logger.error("=" * 60)
             logger.error(f"Error: {e}", exc_info=True)
             print("\n" + "=" * 60)
-            print("  ❌ AN ERROR OCCURRED")
+            print("  AN ERROR OCCURRED")
             print("=" * 60)
             print(f"Error: {e}")
-            print("\n💡 Troubleshooting:")
+            print("\nTroubleshooting:")
             print("  1. Check 'dap_manager.log' for detailed error info")
             print("  2. Verify all paths in 'config.json' are correct")
             print("  3. Ensure iPod is connected (for sync operations)")
@@ -389,5 +390,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
-        print(f"\n❌ Fatal error: {e}")
+        print(f"\n Fatal error: {e}")
         print("Check 'dap_manager.log' for details.")
