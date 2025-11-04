@@ -9,7 +9,6 @@ import os
 import subprocess
 import logging
 import mutagen
-import mutagen
 from typing import Optional
 from db_manager import DatabaseManager, Track
 from config_manager import get_config
