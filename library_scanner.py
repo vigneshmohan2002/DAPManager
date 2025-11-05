@@ -14,6 +14,7 @@ from db_manager import DatabaseManager, Track
 from config_manager import get_config
 from utils import get_mbid_from_tags
 import time
+
 logger = logging.getLogger(__name__)
 
 # Supported file extensions
@@ -40,11 +41,6 @@ class LibraryScanner:
         else:
             config = get_config()
             self.picard_path = config.picard_path
-
-        # Validate Picard path
-        if not os.path.exists(self.picard_path):
-            logger.error(f"Picard not found at: {self.picard_path}")
-            raise FileNotFoundError(f"Picard not found at: {self.picard_path}")
 
         logger.info(f"LibraryScanner initialized with Picard at: {self.picard_path}")
 
