@@ -12,7 +12,8 @@ import logging
 from typing import List
 from db_manager import DatabaseManager, DownloadItem, Track
 from library_scanner import LibraryScanner
-import mutagen
+
+# import mutagen # No longer needed, Picard lib handles tagging
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,9 @@ class Downloader:
             logger.info(f"Processing: {item.search_query}")
 
             try:
-                self._attempt_download(item)
+                if not self._attempt_download(item):
+                    fail_count += 1
+                    continue
                 self._process_success(item)
                 success_count += 1
 
@@ -123,7 +126,7 @@ class Downloader:
 
         logger.debug(f"Executing: {' '.join(command)}")
 
-        subprocess.run(
+        output = subprocess.run(
             command,
             check=True,
             capture_output=True,
@@ -131,7 +134,11 @@ class Downloader:
             timeout=300,  # 5-minute timeout
             encoding="utf-8",
         )
+        if "not found" in str(output).lower():
+            logger.debug("Did not find track")
+            return False
         logger.debug("Download command successful")
+        return True
 
     def _process_failure(self, item: DownloadItem, error_msg: str):
         """Updates the database for a failed download attempt."""
@@ -184,19 +191,33 @@ class Downloader:
 
         if not found_file_path:
             logger.warning(f"Did not find song")
-            raise Exception()
+            raise Exception("Downloaded .flac file not found in downloads directory")
 
         logger.debug(f"Found file: {os.path.basename(found_file_path)}")
 
-        # Process with LibraryScanner (this will update tags AND database)
-        logger.debug("Handing off to LibraryScanner...")
+        # === NEW TAGGING STEP ===
+        # Write the MBID (from Spotify/DB) to the file *before* moving it.
+        mbid_to_write = item.mbid_guess
+        logger.debug(f"Writing MBID {mbid_to_write} to {found_file_path}...")
+
+        tag_success = self.scanner.write_mbid_to_file(found_file_path, mbid_to_write)
+        if not tag_success:
+            # Don't fail the whole download, but log a critical warning
+            logger.critical(f"CRITICAL: Failed to write tags to {found_file_path}")
+            # Raise exception to stop processing this file
+            raise Exception(f"Failed to write tags to file: {found_file_path}")
+
+        # === END NEW TAGGING STEP ===
+
+        # Process with LibraryScanner (this will READ tags and update database)
+        logger.debug("Handing off to LibraryScanner to read tags and update DB...")
         try:
-            # Scan the file IN-PLACE in the downloads folder to get its metadata
-            # and update the DB record (which was created by SpotifyClient)
+            # Scan the file IN-PLACE in the downloads folder.
+            # This now reads the MBID we just wrote, plus all other tags.
             self.scanner._process_file(found_file_path)
         except Exception as e:
             # If scanner fails, we can't proceed
-            raise Exception(f"LibraryScanner failed: {e}")
+            raise Exception(f"LibraryScanner._process_file failed: {e}")
 
         # Get the full track data from the DB (now populated by scanner)
         updated_track = self.db.get_track_by_mbid(item.mbid_guess)
@@ -232,7 +253,7 @@ def main_run_downloader(db: DatabaseManager, config: dict):
     slsk_cmd_base = config.get("slsk_cmd_base", [])
     downloads_path = config.get("downloads_path")
     music_library_path = config.get("music_library_path")
-    picard_cmd_path = config.get("picard_cmd_path")
+    # picard_cmd_path = config.get("picard_cmd_path") # No longer needed
 
     # Validation
     if not slsk_cmd_base or not downloads_path or not music_library_path:
@@ -240,7 +261,7 @@ def main_run_downloader(db: DatabaseManager, config: dict):
         return
 
     # Initialize components
-    scanner = LibraryScanner(db, picard_cmd_path)
+    scanner = LibraryScanner(db)  # No longer needs picard_path
     downloader = Downloader(
         db=db,
         scanner=scanner,
@@ -262,7 +283,7 @@ if __name__ == "__main__":
 
     try:
         with DatabaseManager(config.db_path) as db:
-            scanner = LibraryScanner(db, config.picard_path)
+            scanner = LibraryScanner(db)  # No longer needs picard_path
 
             downloader = Downloader(
                 db=db,
