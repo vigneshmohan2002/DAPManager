@@ -7,6 +7,8 @@ import os
 import logging
 from functools import wraps
 from typing import Callable, Type, Tuple, Any
+import mutagen
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -109,3 +111,31 @@ class EnvironmentManager:
 
 # MusicBrainz rate limiter (1 request per second per API terms)
 musicbrainz_limiter = RateLimiter(calls_per_second=1.0)
+
+
+def get_mbid_from_tags(file_path: str) -> Optional[str]:
+    """
+    Reads the MusicBrainz Track ID from a file's metadata.
+    Handles both ID3 (MP3) and Vorbis (FLAC/Ogg) tags.
+    """
+    try:
+        file_info = mutagen.File(file_path, easy=False)
+        if not file_info:
+            return None
+
+        if file_info.tags and "musicbrainztrackid" in file_info.tags:
+            return file_info.tags["musicbrainztrackid"][0]
+
+        # Check for ID3 tags (MP3, M4A)
+        if "TXXX:MusicBrainz Track Id" in file_info.tags:
+            return str(file_info.tags["TXXX:MusicBrainz Track Id"])
+
+        # Fallback for 'easy' tags
+        easy_tags = mutagen.File(file_path, easy=True)
+        if easy_tags and "musicbrainz_trackid" in easy_tags:
+            return easy_tags["musicbrainz_trackid"][0]
+
+    except Exception as e:
+        logger.debug(f"Error reading tags from {os.path.basename(file_path)}: {e}")
+
+    return None

@@ -7,6 +7,7 @@ from db_manager import DatabaseManager, Track, Playlist, DownloadItem
 from typing import Optional, List, Tuple
 import time
 
+
 class SpotifyClient:
     """
     Handles fetching Spotify playlist data, matching tracks via
@@ -133,6 +134,7 @@ class SpotifyClient:
         """
         try:
             # Search for the ISRC
+            print("Trying to get mbid from ISRC")
             result = musicbrainzngs.get_recordings_by_isrc(isrc)
 
             # Extract the first recording ID
@@ -141,7 +143,14 @@ class SpotifyClient:
 
         except musicbrainzngs.WebServiceError as e:
             print(f"    W: MusicBrainz API error for ISRC {isrc}: {e}")
-        except (KeyError, IndexError, TypeError):
+            if "WinError 10054" in str(e):
+                print("Sleeping for 5s and trying again")
+                time.sleep(5)
+                self._get_mbid_from_isrc(
+                    isrc
+                )  # Keep trying since this is a random issue
+        except (KeyError, IndexError, TypeError) as e:
+            print(str(e))
             # This just means no match was found, which is common.
             pass
         except Exception as e:
@@ -159,6 +168,7 @@ class SpotifyClient:
             title = spotify_track["name"]
             # Join multiple artists
             artist = ", ".join([a["name"] for a in spotify_track["artists"]])
+            album = spotify_track.get("album", {}).get("name", "Unknown Album")
             print(f"\nI: Processing: {artist} - {title}")
 
             if not isrc:
@@ -177,14 +187,16 @@ class SpotifyClient:
         if not mbid:
             print(f"    W: No MBID found for ISRC {isrc} ('{title}'). Skipping.")
             return
-
+        mbid = mbid.strip().lower()
         print(f"    I: Matched: ISRC {isrc} -> MBID {mbid}")
 
         # 2. Check our database
         existing_track = self.db.get_track_by_mbid(mbid)
 
         # 3. Create/Update the master track data
-        track_data = Track(mbid=mbid, title=title, artist=artist, isrc=isrc)
+        track_data = Track(
+            mbid=mbid, title=title, artist=artist, album=album, isrc=isrc
+        )
 
         # We use add_or_update to ensure metadata (title, artist) is
         # kept fresh from Spotify, even if the track is already known.

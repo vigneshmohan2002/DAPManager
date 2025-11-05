@@ -15,6 +15,7 @@ from db_manager import DatabaseManager, Track
 from library_scanner import LibraryScanner
 from downloader import Downloader
 import mutagen
+from utils import get_mbid_from_tags
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,70 @@ class EnhancedIpodSyncer:
 
         return []
 
+    def _get_ipod_music_path(self) -> str:
+        """Helper to safely get the music path, used by reconciliation and sync."""
+        return self.ipod_music_path
+
+    def reconcile_ipod_to_db(self):
+        """
+        Scans the iPod's music directory, reads MBIDs, and reconciles the
+        dap_library.db by marking matched tracks as synced.
+        """
+        logger.info("--- Starting iPod Reconciliation ---")
+        ipod_music_path = self._get_ipod_music_path()
+
+        # Check for supported extensions (assuming defined in library_scanner.py)
+        try:
+            from library_scanner import SUPPORTED_EXTENSIONS
+        except ImportError:
+            # Fallback if constant isn't available
+            SUPPORTED_EXTENSIONS = (".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav")
+            logger.warning("Could not import SUPPORTED_EXTENSIONS, using fallback.")
+
+        if not os.path.isdir(ipod_music_path):
+            logger.error(f"iPod music path not found: {ipod_music_path}")
+            print(
+                f"ERROR: iPod not mounted or music directory missing: {ipod_music_path}"
+            )
+            return
+
+        # Get a map of MBID -> local_path from the DB for efficient lookups
+        mbid_map = self.db.get_mbid_to_track_path_map()
+        if not mbid_map:
+            logger.warning("Database has no tracks. Scan local library first.")
+            print("WARNING: Database is empty. Scan your local music library first.")
+            return
+
+        match_count = 0
+        for root, _, files in os.walk(ipod_music_path):
+            for file in files:
+                # Only look at supported audio files
+                if not file.lower().endswith(SUPPORTED_EXTENSIONS):
+                    continue
+
+                ipod_file_path = os.path.join(root, file).replace("\\", "/")
+
+                # Check file size to avoid trying to read metadata from tiny/corrupted files
+                if os.path.getsize(ipod_file_path) < 1024:
+                    logger.debug(f"Skipping tiny file: {file}")
+                    continue
+
+                ipod_mbid = get_mbid_from_tags(ipod_file_path)
+
+                if ipod_mbid and ipod_mbid in mbid_map:
+                    # Match found! This means we have the local file and the iPod file
+                    # is tagged correctly with a known MBID.
+                    self.db.mark_track_synced(ipod_mbid, ipod_file_path)
+                    match_count += 1
+                    logger.debug(f"Matched and marked synced: {ipod_file_path}")
+
+        logger.info(
+            f"--- Reconciliation Complete. {match_count} tracks matched on iPod. ---"
+        )
+        print(
+            f"\nSUCCESS: Reconciled {match_count} existing tracks from iPod into the database."
+        )
+
     def _sync_tracks(
         self,
         mode: SyncMode = SyncMode.PLAYLISTS_ONLY,
@@ -260,18 +325,16 @@ class EnhancedIpodSyncer:
             if track.title
             else "Unknown Title"
         )
-
-        # Get album from tags if available
-        try:
-            file_tags = mutagen.File(track.local_path, easy=True)
-            album = file_tags.get("album", ["Unknown Album"])[0]
-        except:
-            album = "Unknown Album"
-
-        safe_album = self._sanitize_path_component(album)
+        safe_album = (
+            self._sanitize_path_component(track.album)
+            if track.album
+            else "Unknown Album"
+        )
 
         # Build clean iPod path: D:/Music/Artist/Album/Song.flac
         output_filename = f"{safe_title}.{self.conversion_options.get_extension()}"
+        output_extension = self.conversion_options.get_extension()
+        output_filename = f"{safe_title}.{output_extension}"
         output_path = os.path.join(
             self.ipod_music_path, safe_artist, safe_album, output_filename
         ).replace("\\", "/")
@@ -279,14 +342,17 @@ class EnhancedIpodSyncer:
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
-        # Skip if already exists and up-to-date
-        if os.path.exists(output_path):
-            source_mtime = os.path.getmtime(track.local_path)
-            dest_mtime = os.path.getmtime(output_path)
-            if dest_mtime >= source_mtime:
-                logger.debug(f"Skipping (already up-to-date): {output_filename}")
+        ipod_mbid = get_mbid_from_tags(output_path)
+        db_mbid = track.mbid
+        if ipod_mbid and db_mbid:
+            if ipod_mbid.strip().lower() == db_mbid.strip().lower():
+                logger.debug(f"Skipping (MBID match): {output_filename}")
                 self.db.mark_track_synced(track.mbid, output_path)
                 return
+            else:
+                logger.debug(f"Overwriting (MBID mismatch): {output_filename}")
+        else:
+            logger.debug(f"Overwriting (untagged): {output_filename}")
 
         # Build ffmpeg command
         command = [

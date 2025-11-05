@@ -11,9 +11,10 @@ from config_manager import get_config
 from db_manager import DatabaseManager
 from library_scanner import main_scan_library
 from spotify_client import SpotifyClient
-from downloader import main_run_downloader
+from downloader import main_run_downloader, Downloader
 from sync_ipod import main_run_sync
 from utils import EnvironmentManager
+from library_scanner import LibraryScanner
 
 # Setup logging first
 setup_logging()
@@ -31,12 +32,11 @@ def print_menu():
     print(" 4. [SYNC]  Sync PLAYLISTS to iPod")
     print(" 5. [SYNC]  Sync ENTIRE LIBRARY to iPod")
     print(" 6. [SYNC]  Selective sync (by artist)")
-    print(" 7. [Stats] Show sync statistics")
-    print(" 8. Exit")
+    print(" 7. [Utils] Clean iPod music directory (resets sync flags)")
+    print(" 8. [Utils] RECONCILE iPod files to DB (Match existing files by MBID)")
+    print(" 9. Exit")  # Exit is now 9
     print("=" * 60)
-    print("NOTE: Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET")
-    print("      as environment variables for Spotify features.")
-    print("=" * 60)
+    print("NOTE: Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET in your environment.")
 
 
 def get_conversion_format() -> str:
@@ -119,6 +119,34 @@ def show_sync_stats(db: DatabaseManager, config):
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
         print(f"\n Error getting stats: {e}")
+
+
+def reconcile_ipod(db: DatabaseManager, config: dict):
+    """Reconcile tracks already on the iPod with the database."""
+    # Ensure EnhancedIpodSyncer is imported or available in the global scope
+    from sync_ipod import EnhancedIpodSyncer
+
+    # We must instantiate the Syncer using configuration
+    # This logic replicates the initialization in main_run_sync for convenience
+    downloader = Downloader(
+        db=db,
+        scanner=LibraryScanner(db, config.get("picard_cmd_path")),
+        slsk_cmd_base=config.get("slsk_cmd_base", []),
+        downloads_dir=config.get("downloads_path"),
+        music_library_dir=config.get("music_library_path"),
+    )
+
+    syncer = EnhancedIpodSyncer(
+        db=db,
+        downloader=downloader,
+        ffmpeg_path=config.get("ffmpeg_path"),
+        ipod_mount=config.get("ipod_mount_point"),
+        ipod_music_dir=config.get("ipod_music_dir_name", "Music"),
+        ipod_playlist_dir=config.get("ipod_playlist_dir_name", "Playlists"),
+        conversion_options=None,  # Conversion options not needed for reconciliation
+    )
+
+    syncer.reconcile_ipod_to_db()
 
 
 def clean_ipod_music(config):
@@ -327,32 +355,19 @@ def main():
                 logger.info("Selective Sync Complete")
 
             elif choice == "7":
-                # ============================================
-                # Show Sync Statistics
-                # ============================================
-                with DatabaseManager(db_path) as db:
-                    show_sync_stats(db, config._config)
+                # 7. Clean iPod Music
+                print("\n> CLEAN: Deleting all files from iPod Music folder...")
+                clean_ipod_music(db, config._config)
+                logger.info("iPod clean process finished.")
 
             elif choice == "8":
-                # ============================================
-                # Clean iPod Music
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Cleaning iPod Music Directory")
-                logger.info("=" * 60)
-
-                print("\n Clean iPod Music")
-                print("This will remove ALL music from your iPod.")
-                print("Useful when changing formats (FLAC → MP3, etc.)")
-
-                clean_ipod_music(config._config)
-
-                logger.info("Clean Complete")
+                # 8. Reconcile existing iPod files (NEW)
+                print("\n> RECONCILE: Matching iPod files to local database...")
+                reconcile_ipod(db, config._config)
+                logger.info("iPod reconciliation process finished.")
 
             elif choice == "9":
-                # ============================================
-                # Exit
-                # ============================================
+                # 9. Exit (Shifted from 8)
                 print("\n" + "=" * 60)
                 print("  Thanks for using DAP Manager!")
                 print("=" * 60)
