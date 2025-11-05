@@ -15,7 +15,8 @@ from downloader import main_run_downloader, Downloader
 from sync_ipod import main_run_sync
 from utils import EnvironmentManager
 from library_scanner import LibraryScanner
-
+import time
+from batch_sync import batch_sync
 # Setup logging first
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -357,13 +358,15 @@ def main():
             elif choice == "7":
                 # 7. Clean iPod Music
                 print("\n> CLEAN: Deleting all files from iPod Music folder...")
-                clean_ipod_music(db, config._config)
+                with DatabaseManager(db_path) as db:
+                    clean_ipod_music(db, config._config)
                 logger.info("iPod clean process finished.")
 
             elif choice == "8":
                 # 8. Reconcile existing iPod files (NEW)
                 print("\n> RECONCILE: Matching iPod files to local database...")
-                reconcile_ipod(db, config._config)
+                with DatabaseManager(db_path) as db:
+                    reconcile_ipod(db, config._config)
                 logger.info("iPod reconciliation process finished.")
 
             elif choice == "9":
@@ -373,6 +376,16 @@ def main():
                 print("=" * 60)
                 logger.info("Exiting DAP Manager")
                 break
+
+            elif choice == "10":
+                # Do a lotta shit
+                print("\n> RECONCILE: Matching iPod files to local database...")
+                print("")
+                time.sleep(int(1.5*60*60))
+                with DatabaseManager(db_path) as db:
+                    reconcile_ipod(db, config._config)
+                logger.info("iPod reconciliation process finished.")
+                batch_sync()
 
             else:
                 print(f"\n Invalid choice '{choice}'. Please enter 1-9.")

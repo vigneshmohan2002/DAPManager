@@ -50,6 +50,9 @@ class Track:
     def ipod_filename(self):
         """Generate iPod filename with extension"""
         return f"{self.safe_title}.flac"
+    
+    def __str__(self):
+        return f"{self.artist} - {self.album} - {self.title}"
 
 
 @dataclass
@@ -162,6 +165,7 @@ class DatabaseManager:
         Used for efficient lookup during iPod reconciliation.
         """
         sql = "SELECT mbid, local_path FROM tracks"
+        cursor = None
         try:
             cursor = self.conn.cursor()
             cursor.execute(sql)
