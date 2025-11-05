@@ -254,7 +254,7 @@ class EnhancedIpodSyncer:
                     # is tagged correctly with a known MBID.
                     self.db.mark_track_synced(ipod_mbid, ipod_file_path)
                     match_count += 1
-                    logger.debug(f"Matched and marked synced: {ipod_file_path}")
+                    logger.info(f"Matched and marked synced: {ipod_file_path}")
 
         logger.info(
             f"--- Reconciliation Complete. {match_count} tracks matched on iPod. ---"
@@ -411,6 +411,7 @@ class EnhancedIpodSyncer:
                     f.write("#EXTM3U\n")
 
                     for track in tracks:
+                        print(track)
                         if track.synced_to_ipod and track.ipod_path:
                             rel_path = os.path.relpath(
                                 track.ipod_path, self.ipod_mount_point

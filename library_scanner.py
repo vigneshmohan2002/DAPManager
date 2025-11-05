@@ -95,8 +95,7 @@ class LibraryScanner:
 
         # Check if file is already in the database
         if self.db.get_track_by_path(file_path):
-            logger.info(f"Skipping (already in DB): {os.path.basename(file_path)}")
-            time.sleep(10)
+            logger.debug(f"Skipping (already in DB): {os.path.basename(file_path)}")
             return "skipped"
 
         # Read existing MBID
@@ -149,6 +148,7 @@ class LibraryScanner:
         Calls the Picard command-line tool to tag a single file.
         :return: True on success, False on failure.
         """
+        return False
         cmd = [self.picard_path, "--save", file_path]
 
         try:

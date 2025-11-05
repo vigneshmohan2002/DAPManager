@@ -183,9 +183,8 @@ class Downloader:
                 break
 
         if not found_file_path:
-            raise Exception(
-                f"Download succeeded but no .flac file found in '{self.downloads_dir}'"
-            )
+            logger.warning(f"Did not find song")
+            raise Exception()
 
         logger.debug(f"Found file: {os.path.basename(found_file_path)}")
 
@@ -247,7 +246,7 @@ def main_run_downloader(db: DatabaseManager, config: dict):
         scanner=scanner,
         slsk_cmd_base=slsk_cmd_base,
         downloads_dir=downloads_path,
-        music_library_dir=music_library_dir,
+        music_library_dir=music_library_path,
     )
 
     # Run the queue
