@@ -22,6 +22,7 @@ class Track:
     mbid: str
     title: str
     artist: str
+    album: Optional[str] = None
     isrc: Optional[str] = None
     local_path: Optional[str] = None
     ipod_path: Optional[str] = None
@@ -103,6 +104,7 @@ class DatabaseManager:
                     mbid TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     artist TEXT NOT NULL,
+                    album TEXT,
                     isrc TEXT,
                     local_path TEXT UNIQUE,
                     ipod_path TEXT,
@@ -154,6 +156,44 @@ class DatabaseManager:
             if cursor:
                 cursor.close()
 
+    def get_mbid_to_track_path_map(self) -> dict:
+        """
+        Returns a dict mapping MBID -> local_path for all tracks.
+        Used for efficient lookup during iPod reconciliation.
+        """
+        sql = "SELECT mbid, local_path FROM tracks"
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql)
+            # Create a dictionary {mbid: local_path}
+            mbid_map = {
+                row[0]: row[1] for row in cursor.fetchall() if row[0] and row[1]
+            }
+            return mbid_map
+        except sqlite3.Error as e:
+            logger.error(f"Error in get_mbid_to_track_path_map: {e}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+
+    def mark_track_synced(self, mbid: str, ipod_path: str):
+        """
+        Marks a track as synced and records its path on the iPod.
+        """
+        sql = "UPDATE tracks SET synced_to_ipod = 1, ipod_path = ? WHERE mbid = ?"
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql, (ipod_path, mbid))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error in mark_track_synced for {mbid}: {e}")
+            self.conn.rollback()
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+
     def close(self):
         """Closes the database connection."""
         if self.conn:
@@ -169,6 +209,7 @@ class DatabaseManager:
             mbid=row["mbid"],
             title=row["title"],
             artist=row["artist"],
+            album=row["album"],
             isrc=row["isrc"],
             local_path=row["local_path"],
             ipod_path=row["ipod_path"],
@@ -205,8 +246,8 @@ class DatabaseManager:
     def add_or_update_track(self, track: Track):
         """Adds a new track or replaces an existing one."""
         sql = """
-        INSERT OR REPLACE INTO tracks (mbid, title, artist, isrc, local_path, ipod_path, synced_to_ipod)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO tracks (mbid, title, artist, album, isrc, local_path, ipod_path, synced_to_ipod)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         try:
             cursor = self.conn.cursor()
@@ -216,6 +257,7 @@ class DatabaseManager:
                     track.mbid,
                     track.title,
                     track.artist,
+                    track.album,
                     track.isrc,
                     track.local_path,
                     track.ipod_path,
@@ -484,6 +526,28 @@ class DatabaseManager:
             logger.error(f"Error in remove_from_queue: {e}")
             self.conn.rollback()
             raise
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_download_queue_count(self) -> int:
+        """
+        Returns the number of tracks currently in the queue with status 'pending' or 'failed'.
+        """
+        sql = (
+            "SELECT COUNT(*) FROM download_queue WHERE status IN ('pending', 'failed')"
+        )
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql)
+            # fetchone() returns a tuple, e.g., (10,)
+            count = cursor.fetchone()[0]
+            logger.debug(f"Remaining download queue items: {count}")
+            return count
+        except sqlite3.Error as e:
+            logger.error(f"Error in get_download_queue_count: {e}")
+            # Returning -1 or raising an exception is a good indicator of an error
+            raise RuntimeError(f"Database error during queue count: {e}") from e
         finally:
             if cursor:
                 cursor.close()

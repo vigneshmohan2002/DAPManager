@@ -1,15 +1,24 @@
 import os
 import sys
 import time
+import logging
 from config_manager import get_config
 from db_manager import DatabaseManager
 from spotify_client import SpotifyClient
 from downloader import main_run_downloader
 from sync_ipod import main_run_sync
 
+# Set logging for the batch script
+logger = logging.getLogger(__name__)
 
-def batch_queue_for_download():
-    """Direct batch sync using manager.py components"""
+# Maximum number of attempts to run the download queue
+MAX_DOWNLOAD_ATTEMPTS = 5
+
+
+def batch_sync():
+    """Full batch sync process with multiple download attempts:
+    1. Queue Spotify -> 2. Download Loop -> 3. Sync iPod (with sorting & playlists)
+    """
 
     # Set Spotify credentials (replace with your actual credentials)
     os.environ["SPOTIPY_CLIENT_ID"] = "523ee113d2f04f62a53abb375cbb1730"
@@ -19,39 +28,107 @@ def batch_queue_for_download():
     # Load configuration
     config = get_config()
     db_path = config.db_path
+    config_dict = config._config
 
     # Playlists to sync
     playlist_urls = [
-        "https://open.spotify.com/playlist/7naaRy7WIwE1kkUUdah5y3",  # Gym
+        "https://open.spotify.com/playlist/7naaRy7WIwE1kkUUdah5y3?si=f6d81f0a7b364e61",  # Gym
+        "https://open.spotify.com/playlist/3EZ7FA7nqNyVZ6A3X7u6Sb?si=55675d6041ce43f5",  # white girl bangers
+        "https://open.spotify.com/playlist/3fiYHjR4MfiF9zSvpPKNhb?si=3722ba7bdd3d41b6",  # Running
+        "https://open.spotify.com/playlist/32wHbeFoVABa4x6kUy4A22?si=b30c98e74ad34cc1",  # Love
+        "https://open.spotify.com/playlist/5UhBIiXlHliYcz7cb2Q8Gc?si=9e1823f63a43477d",  # Coding
     ]
 
-    print("Starting direct batch sync...")
+    print("\n" + "#" * 80)
+    print("Starting DAP Manager Full Batch Sync...")
+    print(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("#" * 80)
 
     try:
-        print(f"\n" + "#" * 80)
-        print(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print("#" * 80)
-
         with DatabaseManager(db_path) as db:
-            # Add playlists
-            print(f"\nADDING {len(playlist_urls)} PLAYLISTS")
+
+            # --- PHASE 1: ADD PLAYLISTS / QUEUE DOWNLOADS ---
+            print(f"\n--- PHASE 1: QUEUING {len(playlist_urls)} PLAYLISTS ---")
             for i, url in enumerate(playlist_urls, 1):
-                print(f"\nPlaylist {i}/{len(playlist_urls)}: {url}")
+                print(f"Playlist {i}/{len(playlist_urls)}: {url}")
                 try:
                     spotify_client = SpotifyClient(db)
                     spotify_client.process_playlist(url)
-                    print(f"OK - Playlist added successfully")
-                    time.sleep(2)
+                    print(f"  > OK: Tracks added to download queue.")
+                    time.sleep(1)
                 except Exception as e:
-                    print(f"ERROR - Failed to add playlist: {e}")
+                    print(f"  > ERROR: Failed to add playlist: {e}")
+
+            # ------------------------------------------------------------------
+            # --- PHASE 2: RUN DOWNLOADER (LOOPED RETRY LOGIC) ---
+            # ------------------------------------------------------------------
+            print("\n--- PHASE 2: STARTING LOOPED DOWNLOAD QUEUE ---")
+
+            for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+                # ❗ REQUIRED DATABASE METHOD:
+                # This call relies on a method in `db_manager.py` that returns the count
+                # of tracks with a status of 'pending' or 'failed'.
+                try:
+                    # Assuming a method like `get_download_queue_count()` exists in DatabaseManager
+                    remaining_count = db.get_download_queue_count()
+                except Exception as e:
+                    print(
+                        f"  [Attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS}] Error checking queue status: {e}. Assuming tracks remain."
+                    )
+                    remaining_count = 1  # Force another attempt if check fails
+
+                if remaining_count == 0:
+                    print(
+                        f"  [Attempt {attempt-1}] Download queue is empty. Proceeding to sync."
+                    )
+                    break
+
+                print(
+                    f"\n  [Attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS}] Processing {remaining_count} remaining items..."
+                )
+
+                # Execute the downloader run
+                main_run_downloader(db, config_dict)
+
+                # Pause briefly to prevent hammering the download source
+                time.sleep(5)
+            else:
+                # This runs if the loop completed all MAX_DOWNLOAD_ATTEMPTS without breaking
+                print(
+                    f"\n--- WARNING: Download queue stopped after {MAX_DOWNLOAD_ATTEMPTS} attempts. Tracks may remain pending. ---"
+                )
+
+            print("--- PHASE 2: DOWNLOADS FINISHED ---\n")
+
+            # --- PHASE 3: SYNC TO IPOD (WITH SORTING & PLAYLISTS) ---
+            print("--- PHASE 3: STARTING IPOD SYNC (SORTING & PLAYLISTS) ---")
+
+            # This will convert, sort (Artist/Album/Song), and generate M3U playlists
+            main_run_sync(
+                db=db,
+                config=config_dict,
+                sync_mode="playlists",
+                conversion_format="flac",
+                skip_downloads=True,  # Skip internal downloader call, as we just ran it
+            )
+            print("--- PHASE 3: IPOD SYNC FINISHED ---")
 
     except KeyboardInterrupt:
         print(f"\n\nSync stopped by user")
-        print(f"Final cycle completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception as e:
         print(f"\n\nUnexpected error: {e}")
-        print(f"Error occurred at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    finally:
+        print(f"\n" + "#" * 80)
+        print(f"Batch Sync Completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("#" * 80)
 
 
 if __name__ == "__main__":
-    batch_queue_for_download()
+    # Configure basic logger for the main script
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    batch_sync()

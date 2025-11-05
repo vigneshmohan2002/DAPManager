@@ -12,7 +12,8 @@ import mutagen
 from typing import Optional
 from db_manager import DatabaseManager, Track
 from config_manager import get_config
-
+from utils import get_mbid_from_tags
+import time
 logger = logging.getLogger(__name__)
 
 # Supported file extensions
@@ -94,11 +95,12 @@ class LibraryScanner:
 
         # Check if file is already in the database
         if self.db.get_track_by_path(file_path):
-            logger.debug(f"Skipping (already in DB): {os.path.basename(file_path)}")
+            logger.info(f"Skipping (already in DB): {os.path.basename(file_path)}")
+            time.sleep(10)
             return "skipped"
 
         # Read existing MBID
-        mbid = self._get_mbid_from_tags(file_path)
+        mbid = get_mbid_from_tags(file_path)
 
         # If no MBID, run Picard tagger
         if not mbid:
@@ -110,7 +112,7 @@ class LibraryScanner:
                 return "skipped"
 
             # Re-read the MBID after tagging
-            mbid = self._get_mbid_from_tags(file_path)
+            mbid = get_mbid_from_tags(file_path)
 
         # If we have an MBID, add to database
         if mbid:
@@ -121,9 +123,10 @@ class LibraryScanner:
 
             title = file_tags.get("title", ["Unknown Title"])[0]
             artist = file_tags.get("artist", ["Unknown Artist"])[0]
+            album = file_tags.get("album", ["Unknown Album"])[0]
 
             track_data = Track(
-                mbid=mbid, title=title, artist=artist, local_path=file_path
+                mbid=mbid, title=title, artist=artist, album=album, local_path=file_path
             )
 
             # Check if this MBID is already known
@@ -140,33 +143,6 @@ class LibraryScanner:
         else:
             logger.warning(f"No MBID found for: {os.path.basename(file_path)}")
             return "skipped"
-
-    def _get_mbid_from_tags(self, file_path: str) -> Optional[str]:
-        """
-        Reads the MusicBrainz Track ID from a file's metadata.
-        Handles both ID3 (MP3) and Vorbis (FLAC/Ogg) tags.
-        """
-        try:
-            file_info = mutagen.File(file_path, easy=False)
-            if not file_info:
-                return None
-
-            if file_info.tags and "musicbrainztrackid" in file_info.tags:
-                return file_info.tags["musicbrainztrackid"][0]
-
-            # Check for ID3 tags (MP3, M4A)
-            if "TXXX:MusicBrainz Track Id" in file_info.tags:
-                return str(file_info.tags["TXXX:MusicBrainz Track Id"])
-
-            # Fallback for 'easy' tags
-            easy_tags = mutagen.File(file_path, easy=True)
-            if easy_tags and "musicbrainz_trackid" in easy_tags:
-                return easy_tags["musicbrainz_trackid"][0]
-
-        except Exception as e:
-            logger.debug(f"Error reading tags from {os.path.basename(file_path)}: {e}")
-
-        return None
 
     def _run_picard_tagger(self, file_path: str) -> bool:
         """
