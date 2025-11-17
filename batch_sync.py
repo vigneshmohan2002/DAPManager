@@ -8,16 +8,23 @@ from spotify_client import SpotifyClient
 from downloader import main_run_downloader
 from sync_ipod import main_run_sync
 
+# --- ADDED IMPORT to scan local library first ---
+from library_scanner import main_scan_library
+
 # Set logging for the batch script
 logger = logging.getLogger(__name__)
 
 # Maximum number of attempts to run the download queue
-MAX_DOWNLOAD_ATTEMPTS = 5
+# Per your request, this is set to 1
+MAX_DOWNLOAD_ATTEMPTS = 1
 
 
 def batch_sync():
-    """Full batch sync process with multiple download attempts:
-    1. Queue Spotify -> 2. Download Loop -> 3. Sync iPod (with sorting & playlists)
+    """Full batch sync process with one download attempt:
+    1. Scan local library
+    2. Queue Spotify playlists
+    3. Download Loop (1 attempt)
+    4. Sync ENTIRE iPod library (with sorting & playlists)
     """
 
     # Set Spotify credentials (replace with your actual credentials)
@@ -32,10 +39,10 @@ def batch_sync():
 
     # Playlists to sync
     playlist_urls = [
-        "https://open.spotify.com/playlist/7naaRy7WIwE1kkUUdah5y3?si=f6d81f0a7b364e61",  # Gym
-        "https://open.spotify.com/playlist/3EZ7FA7nqNyVZ6A3X7u6Sb?si=55675d6041ce43f5",  # white girl bangers
-        "https://open.spotify.com/playlist/3fiYHjR4MfiF9zSvpPKNhb?si=3722ba7bdd3d41b6",  # Running
-        "https://open.spotify.com/playlist/32wHbeFoVABa4x6kUy4A22?si=b30c98e74ad34cc1",  # Love
+        # "https://open.spotify.com/playlist/7naaRy7WIwE1kkUUdah5y3?si=f6d81f0a7b364e61",  # Gym
+        # "https://open.spotify.com/playlist/3EZ7FA7nqNyVZ6A3X7u6Sb?si=55675d6041ce43f5",  # white girl bangers
+        # "https://open.spotify.com/playlist/3fiYHjR4MfiF9zSvpPKNhb?si=3722ba7bdd3d41b6",  # Running
+        # "https://open.spotify.com/playlist/32wHbeFoVABa4x6kUy4A22?si=b30c98e74ad34cc1",  # Love
         "https://open.spotify.com/playlist/5UhBIiXlHliYcz7cb2Q8Gc?si=9e1823f63a43477d",  # Coding
     ]
 
@@ -47,8 +54,18 @@ def batch_sync():
     try:
         with DatabaseManager(db_path) as db:
 
-            # --- PHASE 1: ADD PLAYLISTS / QUEUE DOWNLOADS ---
-            print(f"\n--- PHASE 1: QUEUING {len(playlist_urls)} PLAYLISTS ---")
+            # --- PHASE 1: SCAN LOCAL LIBRARY ---
+            print("\n--- PHASE 1: SCANNING LOCAL LIBRARY ---")
+            print("Scanning for existing local files...")
+            try:
+                main_scan_library(db, config_dict)
+                print("--- PHASE 1: LOCAL SCAN FINISHED ---")
+            except Exception as e:
+                print(f"  > ERROR: Failed to scan library: {e}")
+                # Continuing to playlist queuing...
+
+            # --- PHASE 2: ADD PLAYLISTS / QUEUE DOWNLOADS ---
+            print(f"\n--- PHASE 2: QUEUING {len(playlist_urls)} PLAYLISTS ---")
             for i, url in enumerate(playlist_urls, 1):
                 print(f"Playlist {i}/{len(playlist_urls)}: {url}")
                 try:
@@ -60,14 +77,11 @@ def batch_sync():
                     print(f"  > ERROR: Failed to add playlist: {e}")
 
             # ------------------------------------------------------------------
-            # --- PHASE 2: RUN DOWNLOADER (LOOPED RETRY LOGIC) ---
+            # --- PHASE 3: RUN DOWNLOADER (1 ATTEMPT) ---
             # ------------------------------------------------------------------
-            print("\n--- PHASE 2: STARTING LOOPED DOWNLOAD QUEUE ---")
+            print("\n--- PHASE 3: STARTING DOWNLOAD QUEUE (1 ATTEMPT) ---")
 
             for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
-                # ❗ REQUIRED DATABASE METHOD:
-                # This call relies on a method in `db_manager.py` that returns the count
-                # of tracks with a status of 'pending' or 'failed'.
                 try:
                     # Assuming a method like `get_download_queue_count()` exists in DatabaseManager
                     remaining_count = db.get_download_queue_count()
@@ -79,7 +93,7 @@ def batch_sync():
 
                 if remaining_count == 0:
                     print(
-                        f"  [Attempt {attempt-1}] Download queue is empty. Proceeding to sync."
+                        f"  [Attempt {attempt}] Download queue is empty. Proceeding to sync."
                     )
                     break
 
@@ -95,23 +109,10 @@ def batch_sync():
             else:
                 # This runs if the loop completed all MAX_DOWNLOAD_ATTEMPTS without breaking
                 print(
-                    f"\n--- WARNING: Download queue stopped after {MAX_DOWNLOAD_ATTEMPTS} attempts. Tracks may remain pending. ---"
+                    f"\n--- WARNING: Download queue stopped after {MAX_DOWNLOAD_ATTEMPTS} attempt. Tracks may remain pending. ---"
                 )
 
-            print("--- PHASE 2: DOWNLOADS FINISHED ---\n")
-
-            # --- PHASE 3: SYNC TO IPOD (WITH SORTING & PLAYLISTS) ---
-            print("--- PHASE 3: STARTING IPOD SYNC (SORTING & PLAYLISTS) ---")
-
-            # This will convert, sort (Artist/Album/Song), and generate M3U playlists
-            main_run_sync(
-                db=db,
-                config=config_dict,
-                sync_mode="playlists",
-                conversion_format="flac",
-                skip_downloads=True,  # Skip internal downloader call, as we just ran it
-            )
-            print("--- PHASE 3: IPOD SYNC FINISHED ---")
+            print("--- PHASE 3: DOWNLOADS FINISHED ---\n")
 
     except KeyboardInterrupt:
         print(f"\n\nSync stopped by user")

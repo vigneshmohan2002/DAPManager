@@ -9,6 +9,7 @@ from functools import wraps
 from typing import Callable, Type, Tuple, Any
 import mutagen
 from typing import Optional
+from picard import webservice, acoustid
 
 logger = logging.getLogger(__name__)
 
@@ -124,18 +125,162 @@ def get_mbid_from_tags(file_path: str) -> Optional[str]:
             return None
 
         if file_info.tags and "musicbrainztrackid" in file_info.tags:
-            return file_info.tags["musicbrainztrackid"][0]
+            return file_info.tags["musicbrainztrackid"][0].strip().lower()
 
         # Check for ID3 tags (MP3, M4A)
         if "TXXX:MusicBrainz Track Id" in file_info.tags:
-            return str(file_info.tags["TXXX:MusicBrainz Track Id"])
+            return str(file_info.tags["TXXX:MusicBrainz Track Id"]).strip().lower()
 
         # Fallback for 'easy' tags
         easy_tags = mutagen.File(file_path, easy=True)
         if easy_tags and "musicbrainz_trackid" in easy_tags:
-            return easy_tags["musicbrainz_trackid"][0]
+            return easy_tags["musicbrainz_trackid"][0].strip().lower()
 
     except Exception as e:
         logger.debug(f"Error reading tags from {os.path.basename(file_path)}: {e}")
 
+    return None
+
+
+import os
+import logging
+from typing import Optional, List, Dict
+import os
+import subprocess
+import requests
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+ACOUSTID_API_URL = "https://api.acoustid.org/v2/lookup"
+
+
+def run_fpcalc(file_path: str) -> Optional[tuple[str, float]]:
+    """Run fpcalc to generate a fingerprint and duration for an audio file."""
+    try:
+        result = subprocess.run(
+            ["fpcalc", "-json", file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+        import json
+
+        data = json.loads(result.stdout)
+        fingerprint = data.get("fingerprint")
+        duration = data.get("duration")
+        if not fingerprint or not duration:
+            logger.error("fpcalc output missing fingerprint or duration.")
+            return None
+        return fingerprint, duration
+    except subprocess.CalledProcessError as e:
+        logger.error(f"fpcalc failed: {e.stderr.strip()}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error running fpcalc: {e}")
+        return None
+
+
+def write_mbid_to_file(file_path: str, mbid: str) -> bool:
+    """
+    Writes the MusicBrainz Track ID to a file.
+    :param file_path: Path to the audio file.
+    :param mbid: The MusicBrainz Track ID to write.
+    :return: True on success, False on failure.
+    """
+    if not os.path.exists(file_path):
+        print(f"Error: File not found at {file_path}")
+        return False
+
+    try:
+        # Load the file using mutagen
+        audio = mutagen.File(file_path, easy=True)
+
+        if audio is None:
+            print(f"Error: Could not load file {file_path}. Unsupported format?")
+            return False
+
+        # Set the MusicBrainz Track ID tag
+        # 'musicbrainz_trackid' is a common key in EasyID3/EasyMP4 etc.
+        audio["musicbrainz_trackid"] = mbid
+
+        # Save the changes
+        audio.save()
+        return True
+
+    except mutagen.MutagenError as e:
+        print(f"Error processing file {file_path}: {e}")
+        return False
+    except IOError as e:
+        print(f"Error saving file {file_path}: {e}")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred for {file_path}: {e}")
+        return False
+
+
+def find_mbid_by_fingerprint(
+    file_path: str, acoustid_api_key="t1BbzA89Bw"
+) -> Optional[str]:
+    """Find the MusicBrainz MBID for an audio file using AcoustID lookup."""
+    fp_result = run_fpcalc(file_path)
+    if not fp_result:
+        return None
+
+    fingerprint, duration = fp_result
+
+    if not acoustid_api_key:
+        logger.error("Missing AcoustID API key.")
+        return None
+
+    data = {
+        "client": acoustid_api_key.strip(),  # strip in case of newline/spaces
+        "meta": "recordings",
+        "duration": int(duration),
+        "fingerprint": fingerprint,
+    }
+
+    try:
+        # Use multipart/form-data instead of application/x-www-form-urlencoded
+        resp = requests.get(ACOUSTID_API_URL, params=data, timeout=20)
+        data = resp.json()
+        print(data)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        logger.error(f"AcoustID API request failed for {file_path}: {e}")
+        return None
+    except ValueError:
+        logger.error(
+            f"Failed to parse JSON response for {file_path}: {resp.text[:200]}"
+        )
+        return None
+
+    if data.get("status") != "ok":
+        logger.error(f"AcoustID lookup error for {file_path}: {data}")
+        return None
+
+    results = data.get("results", [])
+    if not results:
+        logger.warning(f"No AcoustID results for {file_path}")
+        return None
+
+    best = max(results, key=lambda r: r.get("score", 0))
+    if best.get("score", 0) < 0.5:
+        logger.warning(f"Low match score ({best.get('score', 0):.2f}) for {file_path}")
+        return None
+
+    recordings = best.get("recordings", [])
+    if not recordings:
+        logger.warning(f"No recordings for {file_path}")
+        return None
+
+    mbid = recordings[0].get("id")
+    if mbid:
+        logger.info(f"Found MBID for {os.path.basename(file_path)}: {mbid}")
+        write_mbid_to_file(file_path=file_path, mbid=mbid.lower().strip())
+        return mbid.lower()
+
+    logger.warning(f"No MBID in AcoustID result for {file_path}")
     return None

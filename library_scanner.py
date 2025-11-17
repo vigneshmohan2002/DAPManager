@@ -9,11 +9,17 @@ import os
 import subprocess
 import logging
 import mutagen
+from mutagen.easyid3 import EasyID3
+from mutagen.flac import FLAC
+from mutagen.mp4 import MP4
+from mutagen.oggvorbis import OggVorbis
+import os
 from typing import Optional
 from db_manager import DatabaseManager, Track
 from config_manager import get_config
-from utils import get_mbid_from_tags
+from utils import get_mbid_from_tags, find_mbid_by_fingerprint, write_mbid_to_file
 import time
+import picard
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +130,28 @@ class LibraryScanner:
                 mbid=mbid, title=title, artist=artist, album=album, local_path=file_path
             )
 
-            # Check if this MBID is already known
+            # Check for duplicates
             existing_track = self.db.get_track_by_mbid(mbid)
             if existing_track and existing_track.local_path:
+                # --- DUPLICATE LOGIC ---
+                # A file with this MBID already exists at a different path.
+                # Log both files to the duplicates table for later review.
                 logger.warning(
-                    f"Duplicate MBID {mbid}: {existing_track.local_path} and {file_path}"
+                    f"Duplicate MBID {mbid} found. Logging conflict:"
+                    f"\n  Existing: {existing_track.local_path}"
+                    f"\n  New:      {file_path}"
                 )
+                
+                # Log both the file we just found AND the one already in the DB
+                self.db.log_duplicate(mbid, existing_track.local_path)
+                self.db.log_duplicate(mbid, file_path)
+                
                 return "skipped"
+                # --- END DUPLICATE LOGIC ---
 
+            # 6. No duplicate, add the new track
             self.db.add_or_update_track(track_data)
-            logger.info(f"Added: {artist} - {title} [{mbid}]")
+            logger.debug(f"Added: {artist} - {title} [{mbid}]")
             return "processed"
         else:
             logger.warning(f"No MBID found for: {os.path.basename(file_path)}")
@@ -144,32 +162,16 @@ class LibraryScanner:
         Calls the Picard command-line tool to tag a single file.
         :return: True on success, False on failure.
         """
-        return False
-        cmd = [self.picard_path, "--save", file_path]
+        return find_mbid_by_fingerprint(file_path=file_path)
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=60,
-                encoding="utf-8",
-            )
-            logger.debug(f"Picard output: {result.stdout.strip()}")
-            return True
-
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"Picard failed for {file_path}: {e.stderr}")
-        except FileNotFoundError:
-            logger.error(f"Picard executable not found at: {self.picard_path}")
-            raise
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Picard timed out for {file_path}")
-        except Exception as e:
-            logger.error(f"Unknown error running Picard: {e}")
-
-        return False
+    def write_mbid_to_file(self, file_path: str, mbid: str) -> bool:
+        """
+        Writes the MusicBrainz Track ID to a file.
+        :param file_path: Path to the audio file.
+        :param mbid: The MusicBrainz Track ID to write.
+        :return: True on success, False on failure.
+        """
+        return write_mbid_to_file(file_path=file_path, mbid=mbid)
 
 
 def main_scan_library(db: DatabaseManager, config: dict):

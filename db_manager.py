@@ -9,7 +9,8 @@ import sqlite3
 import os
 import logging
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Dict
+from collections import defaultdict
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,14 @@ class DatabaseManager:
                     mbid_guess TEXT NOT NULL,
                     FOREIGN KEY (playlist_id) REFERENCES playlists (playlist_id) ON DELETE CASCADE,
                     UNIQUE(mbid_guess, playlist_id)
+                );
+            """,
+            "duplicates": """
+                CREATE TABLE IF NOT EXISTS duplicates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mbid TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    UNIQUE(mbid, file_path)
                 );
             """,
         }
@@ -552,6 +561,73 @@ class DatabaseManager:
             logger.error(f"Error in get_download_queue_count: {e}")
             # Returning -1 or raising an exception is a good indicator of an error
             raise RuntimeError(f"Database error during queue count: {e}") from e
+        finally:
+            if cursor:
+                cursor.close()
+
+    def log_duplicate(self, mbid: str, file_path: str):
+        """
+        Logs a file path as a potential duplicate for a given MBID.
+        Uses INSERT OR IGNORE to avoid errors on unique constraint violations.
+        """
+        sql = "INSERT OR IGNORE INTO duplicates (mbid, file_path) VALUES (?, ?)"
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql, (mbid, file_path))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Failed to log duplicate {mbid} for {file_path}: {e}")
+            self.conn.rollback()
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_all_duplicates(self) -> Dict[str, List[str]]:
+        """
+        Fetches all duplicate entries, grouped by MBID.
+        :return: A dictionary mapping {mbid -> [list_of_conflicting_paths]}
+        """
+        sql = "SELECT mbid, file_path FROM duplicates ORDER BY mbid"
+        duplicates_map = defaultdict(list)
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                duplicates_map[row["mbid"]].append(row["file_path"])
+            return dict(duplicates_map)  # Convert back to standard dict for output
+        except sqlite3.Error as e:
+            logger.error(f"Error in get_all_duplicates: {e}")
+            return {}
+        finally:
+            if cursor:
+                cursor.close()
+
+    def clear_duplicate(self, mbid: str, file_path: Optional[str] = None):
+        """
+        Removes duplicate entries.
+        If file_path is provided, removes that specific entry.
+        If file_path is None, removes all entries for that mbid.
+        """
+        sql = "DELETE FROM duplicates WHERE mbid = ?"
+        params = [mbid]
+
+        if file_path:
+            sql += " AND file_path = ?"
+            params.append(file_path)
+
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql, tuple(params))
+            self.conn.commit()
+            logger.debug(f"Cleared duplicate entries for {mbid}")
+        except sqlite3.Error as e:
+            logger.error(f"Error in clear_duplicate: {e}")
+            self.conn.rollback()
+            raise
         finally:
             if cursor:
                 cursor.close()
