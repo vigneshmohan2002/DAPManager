@@ -6,6 +6,9 @@ import musicbrainzngs
 from db_manager import DatabaseManager, Track, Playlist, DownloadItem
 from typing import Optional, List, Tuple
 import time
+import logging  # Import logging
+
+logger = logging.getLogger(__name__)  # Get logger instance
 
 
 class SpotifyClient:
@@ -89,7 +92,7 @@ class SpotifyClient:
                 continue
 
             self._process_track(item["track"], playlist_id, i)
-            time.sleep(5)
+            time.sleep(5)  # Keep rate limit for MusicBrainz
 
         print("\nPlaylist processing complete.")
 
@@ -139,7 +142,7 @@ class SpotifyClient:
 
             # Extract the first recording ID
             if result.get("isrc") and result["isrc"].get("recording-list"):
-                return result["isrc"]["recording-list"][0]["id"]
+                return result["isrc"]["recording-list"][0]["id"].strip().lower()
 
         except musicbrainzngs.WebServiceError as e:
             print(f"    W: MusicBrainz API error for ISRC {isrc}: {e}")
@@ -187,30 +190,42 @@ class SpotifyClient:
         if not mbid:
             print(f"    W: No MBID found for ISRC {isrc} ('{title}'). Skipping.")
             return
-        mbid = mbid.strip().lower()
         print(f"    I: Matched: ISRC {isrc} -> MBID {mbid}")
 
         # 2. Check our database
         existing_track = self.db.get_track_by_mbid(mbid)
 
         # 3. Create/Update the master track data
-        track_data = Track(
-            mbid=mbid, title=title, artist=artist, album=album, isrc=isrc
-        )
 
-        # We use add_or_update to ensure metadata (title, artist) is
-        # kept fresh from Spotify, even if the track is already known.
+        # === START BUG FIX ===
+        # Check if track exists. If so, update it but PRESERVE
+        # local_path and sync status.
+        if existing_track:
+            logger.debug(f"Track {mbid} exists. Merging metadata.")
+            track_data = existing_track  # Start with existing data
+            track_data.title = title
+            track_data.artist = artist
+            track_data.album = album
+            track_data.isrc = isrc
+            # We intentionally do NOT touch local_path or synced_to_ipod
+        else:
+            # This is a brand new track
+            logger.debug(f"Track {mbid} is new.")
+            track_data = Track(
+                mbid=mbid, title=title, artist=artist, album=album, isrc=isrc
+            )
+
+        # Save the merged or new data
         self.db.add_or_update_track(track_data)
+        # === END BUG FIX ===
 
         # 4. Link this track to the playlist
         self.db.link_track_to_playlist(playlist_id, mbid, track_order)
 
         # 5. Decide if download is needed
-        if existing_track and existing_track.local_path:
+        if track_data.local_path:
             # We have this track in our local library already.
-            print(
-                f"    S: Found locally: {os.path.basename(existing_track.local_path)}"
-            )
+            print(f"    S: Found locally: {os.path.basename(track_data.local_path)}")
         else:
             # We don't have this file locally. Add to download queue.
             print(f"    Q: Queuing for download.")

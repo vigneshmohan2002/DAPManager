@@ -17,6 +17,7 @@ from utils import EnvironmentManager
 from library_scanner import LibraryScanner
 import time
 from batch_sync import batch_sync
+
 # Setup logging first
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -381,7 +382,7 @@ def main():
                 # Do a lotta shit
                 print("\n> RECONCILE: Matching iPod files to local database...")
                 print("")
-                time.sleep(int(1.5*60*60))
+                time.sleep(int(1.5 * 60 * 60))
                 with DatabaseManager(db_path) as db:
                     reconcile_ipod(db, config._config)
                 logger.info("iPod reconciliation process finished.")

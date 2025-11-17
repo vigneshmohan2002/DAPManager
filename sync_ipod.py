@@ -401,7 +401,10 @@ class EnhancedIpodSyncer:
             m3u_path = os.path.join(self.ipod_playlist_path, f"{sane_name}.m3u")
 
             logger.info(f"Generating: {sane_name}.m3u")
-            tracks = self.db.get_tracks_for_playlist(p.playlist_id)
+
+            # Use the more specific 'local_only=True' to fetch tracks
+            # that we *could* have synced.
+            tracks = self.db.get_playlist_tracks(p.playlist_id)
 
             if not tracks:
                 continue
@@ -411,7 +414,7 @@ class EnhancedIpodSyncer:
                     f.write("#EXTM3U\n")
 
                     for track in tracks:
-                        print(track)
+                        # Only write tracks that are *actually* on the iPod
                         if track.synced_to_ipod and track.ipod_path:
                             rel_path = os.path.relpath(
                                 track.ipod_path, self.ipod_mount_point
@@ -441,8 +444,8 @@ class EnhancedIpodSyncer:
         logger.info("Starting iPod Sync")
         logger.info("=" * 50)
 
-        if not self._detect_ipod():
-            return
+        # if not self._detect_ipod():
+        #     return
 
         if not skip_downloads:
             self._run_downloader()
