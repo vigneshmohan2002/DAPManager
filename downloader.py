@@ -12,6 +12,7 @@ import logging
 from typing import List
 from db_manager import DatabaseManager, DownloadItem, Track
 from library_scanner import LibraryScanner
+from utils import write_mbid_to_file
 
 # import mutagen # No longer needed, Picard lib handles tagging
 
@@ -200,7 +201,7 @@ class Downloader:
         mbid_to_write = item.mbid_guess
         logger.debug(f"Writing MBID {mbid_to_write} to {found_file_path}...")
 
-        tag_success = self.scanner.write_mbid_to_file(found_file_path, mbid_to_write)
+        tag_success = write_mbid_to_file(found_file_path, mbid_to_write)
         if not tag_success:
             # Don't fail the whole download, but log a critical warning
             logger.critical(f"CRITICAL: Failed to write tags to {found_file_path}")
