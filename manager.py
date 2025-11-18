@@ -1,21 +1,25 @@
 # ============================================================================
-# FILE: manager.py (COMPLETE ENHANCED VERSION)
+# FILE: manager.py (COMPLETE UPDATED VERSION)
 # ============================================================================
 """
-Main command-line interface for DAP Manager with enhanced sync options.
+Main command-line interface for DAP Manager with enhanced sync options
+and Album Completeness Auditing.
 """
 
 import logging
+import time
+import os
+import sys
+
+# Internal imports
 from logger_setup import setup_logging
 from config_manager import get_config
 from db_manager import DatabaseManager
-from library_scanner import main_scan_library
+from library_scanner import main_scan_library, LibraryScanner
 from spotify_client import SpotifyClient
 from downloader import main_run_downloader, Downloader
 from sync_ipod import main_run_sync
 from utils import EnvironmentManager
-from library_scanner import LibraryScanner
-import time
 from batch_sync import batch_sync
 
 # Setup logging first
@@ -36,7 +40,10 @@ def print_menu():
     print(" 6. [SYNC]  Selective sync (by artist)")
     print(" 7. [Utils] Clean iPod music directory (resets sync flags)")
     print(" 8. [Utils] RECONCILE iPod files to DB (Match existing files by MBID)")
-    print(" 9. Exit")  # Exit is now 9
+    print(" 9. [Utils] CLEAR DUPLICATES (Resolve file conflicts)")
+    print(" 10. [Batch] Run Batch Sync (Scan -> Queue -> Download -> Sync)")
+    print(" 11. [Audit] Find Incomplete Albums")
+    print(" 12. Exit")
     print("=" * 60)
     print("NOTE: Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET in your environment.")
 
@@ -129,7 +136,6 @@ def reconcile_ipod(db: DatabaseManager, config: dict):
     from sync_ipod import EnhancedIpodSyncer
 
     # We must instantiate the Syncer using configuration
-    # This logic replicates the initialization in main_run_sync for convenience
     downloader = Downloader(
         db=db,
         scanner=LibraryScanner(db, config.get("picard_cmd_path")),
@@ -151,9 +157,8 @@ def reconcile_ipod(db: DatabaseManager, config: dict):
     syncer.reconcile_ipod_to_db()
 
 
-def clean_ipod_music(config):
+def clean_ipod_music(db, config):
     """Remove all music from iPod (useful for format changes)."""
-    import os
     import shutil
 
     ipod_mount = config.get("ipod_mount_point")
@@ -188,6 +193,48 @@ def clean_ipod_music(config):
         print(f"Error: {e}")
 
 
+def audit_library(db: DatabaseManager):
+    """Identify albums that are missing tracks based on total_tracks metadata."""
+    print("\n" + "=" * 60)
+    print("   ALBUM COMPLETENESS AUDIT")
+    print("=" * 60)
+
+    try:
+        # This method must exist in db_manager.py (as per design)
+        incomplete_albums = db.get_incomplete_albums()
+    except AttributeError:
+        print("Error: db_manager.py has not been updated with 'get_incomplete_albums'.")
+        return
+    except Exception as e:
+        print(f"Error querying database: {e}")
+        return
+
+    if not incomplete_albums:
+        print("\nAll identified albums in your library appear to be complete!")
+        print(
+            "(Note: This only works for files tagged with MusicBrainz Album/Track IDs)"
+        )
+        return
+
+    print(f"{'ARTIST':<25} | {'ALBUM':<30} | {'STATUS':<15}")
+    print("-" * 75)
+
+    for item in incomplete_albums:
+        # Truncate names for display
+        artist = (
+            (item["artist"][:22] + "..") if len(item["artist"]) > 22 else item["artist"]
+        )
+        album = (
+            (item["album"][:27] + "..") if len(item["album"]) > 27 else item["album"]
+        )
+
+        status = f"{item['have']}/{item['total']} (Miss {item['missing']})"
+        print(f"{artist:<25} | {album:<30} | {status:<15}")
+
+    print("-" * 75)
+    print(f"Found {len(incomplete_albums)} incomplete albums.")
+
+
 def main():
     """Main application loop."""
 
@@ -208,7 +255,7 @@ def main():
 
     while True:
         print_menu()
-        choice = input("\nEnter your choice (1-9): ").strip()
+        choice = input("\nEnter your choice (1-12): ").strip()
 
         try:
             if choice == "1":
@@ -247,7 +294,7 @@ def main():
 
                 playlist_url = input("\nURL: ").strip()
 
-                if not playlist_url.startswith("https://open.spotify.com/playlist/"):
+                if not playlist_url.startswith("http"):
                     print(" Invalid URL. Must be a full Spotify playlist URL.")
                     continue
 
@@ -364,32 +411,50 @@ def main():
                 logger.info("iPod clean process finished.")
 
             elif choice == "8":
-                # 8. Reconcile existing iPod files (NEW)
+                # 8. Reconcile existing iPod files
                 print("\n> RECONCILE: Matching iPod files to local database...")
                 with DatabaseManager(db_path) as db:
                     reconcile_ipod(db, config._config)
                 logger.info("iPod reconciliation process finished.")
 
             elif choice == "9":
-                # 9. Exit (Shifted from 8)
+                # 9. Clear Duplicates
+                # Wraps the standalone clear_dupes functionality
+                from clear_dupes import find_and_resolve_duplicates
+
+                print("\n> DUPES: Analyzing library for duplicate tracks...")
+                with DatabaseManager(db_path) as db:
+                    find_and_resolve_duplicates(db)
+                logger.info("Duplicate resolution finished.")
+
+            elif choice == "10":
+                # 10. Batch Sync (Automation)
+                print("\n> BATCH: Starting full automation cycle...")
+                logger.info("Starting Batch Sync")
+                try:
+                    batch_sync()
+                except Exception as e:
+                    logger.error(f"Batch sync failed: {e}")
+                    print(f"Batch sync failed: {e}")
+                logger.info("Batch Sync finished.")
+
+            elif choice == "11":
+                # 11. Audit Incomplete Albums (NEW)
+                print("\n> AUDIT: Checking album completeness...")
+                with DatabaseManager(db_path) as db:
+                    audit_library(db)
+                logger.info("Album audit finished.")
+
+            elif choice == "12":
+                # 12. Exit
                 print("\n" + "=" * 60)
                 print("  Thanks for using DAP Manager!")
                 print("=" * 60)
                 logger.info("Exiting DAP Manager")
                 break
 
-            elif choice == "10":
-                # Do a lotta shit
-                print("\n> RECONCILE: Matching iPod files to local database...")
-                print("")
-                time.sleep(int(1.5 * 60 * 60))
-                with DatabaseManager(db_path) as db:
-                    reconcile_ipod(db, config._config)
-                logger.info("iPod reconciliation process finished.")
-                batch_sync()
-
             else:
-                print(f"\n Invalid choice '{choice}'. Please enter 1-9.")
+                print(f"\n Invalid choice '{choice}'. Please enter 1-12.")
 
         except KeyboardInterrupt:
             print("\n\nOperation cancelled by user (Ctrl+C).")
