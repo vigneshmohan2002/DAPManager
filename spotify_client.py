@@ -92,7 +92,7 @@ class SpotifyClient:
                 continue
 
             self._process_track(item["track"], playlist_id, i)
-            time.sleep(5)  # Keep rate limit for MusicBrainz
+            time.sleep(1.1)  # Keep rate limit for MusicBrainz
 
         print("\nPlaylist processing complete.")
 
@@ -148,7 +148,7 @@ class SpotifyClient:
             print(f"    W: MusicBrainz API error for ISRC {isrc}: {e}")
             if "WinError 10054" in str(e):
                 print("Sleeping for 5s and trying again")
-                time.sleep(5)
+                time.sleep(1.1)
                 self._get_mbid_from_isrc(
                     isrc
                 )  # Keep trying since this is a random issue

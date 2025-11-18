@@ -7,8 +7,6 @@ from db_manager import DatabaseManager
 from spotify_client import SpotifyClient
 from downloader import main_run_downloader
 from sync_ipod import main_run_sync
-
-# --- ADDED IMPORT to scan local library first ---
 from library_scanner import main_scan_library
 
 # Set logging for the batch script
@@ -39,10 +37,10 @@ def batch_sync():
 
     # Playlists to sync
     playlist_urls = [
-        # "https://open.spotify.com/playlist/7naaRy7WIwE1kkUUdah5y3?si=f6d81f0a7b364e61",  # Gym
-        # "https://open.spotify.com/playlist/3EZ7FA7nqNyVZ6A3X7u6Sb?si=55675d6041ce43f5",  # white girl bangers
-        # "https://open.spotify.com/playlist/3fiYHjR4MfiF9zSvpPKNhb?si=3722ba7bdd3d41b6",  # Running
-        # "https://open.spotify.com/playlist/32wHbeFoVABa4x6kUy4A22?si=b30c98e74ad34cc1",  # Love
+        "https://open.spotify.com/playlist/7naaRy7WIwE1kkUUdah5y3?si=f6d81f0a7b364e61",  # Gym
+        "https://open.spotify.com/playlist/3EZ7FA7nqNyVZ6A3X7u6Sb?si=55675d6041ce43f5",  # white girl bangers
+        "https://open.spotify.com/playlist/3fiYHjR4MfiF9zSvpPKNhb?si=3722ba7bdd3d41b6",  # Running
+        "https://open.spotify.com/playlist/32wHbeFoVABa4x6kUy4A22?si=b30c98e74ad34cc1",  # Love
         "https://open.spotify.com/playlist/5UhBIiXlHliYcz7cb2Q8Gc?si=9e1823f63a43477d",  # Coding
     ]
 
@@ -105,7 +103,7 @@ def batch_sync():
                 main_run_downloader(db, config_dict)
 
                 # Pause briefly to prevent hammering the download source
-                time.sleep(5)
+                time.sleep(1.1)
             else:
                 # This runs if the loop completed all MAX_DOWNLOAD_ATTEMPTS without breaking
                 print(
