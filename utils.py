@@ -7,9 +7,9 @@ import logging
 from functools import wraps
 import acoustid  # Uses pyacoustid
 from mediafile import MediaFile
+from config_manager import get_config
 
 logger = logging.getLogger(__name__)
-ACOUSTID_API_KEY = "t1BbzA89Bw"
 
 
 class RateLimiter:
@@ -64,7 +64,13 @@ def write_mbid_to_file(file_path: str, mbid: str):
 
 def find_mbid_by_fingerprint(file_path: str):
     try:
-        for score, rid, title, artist in acoustid.match(ACOUSTID_API_KEY, file_path):
+        config = get_config()
+        api_key = config.get("acoustid_api_key")
+        if not api_key:
+            logger.warning("AcoustID API key not found in config")
+            return None
+
+        for score, rid, title, artist in acoustid.match(api_key, file_path):
             if score > 0.4:
                 logger.info(f"Match: {title} ({rid})")
                 write_mbid_to_file(file_path, rid)
