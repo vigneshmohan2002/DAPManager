@@ -32,6 +32,8 @@ class Downloader:
         slsk_cmd_base: List[str],
         downloads_dir: str,
         music_library_dir: str,
+        slsk_username: str,
+        slsk_password: str,
     ):
         """
         Initializes the Downloader.
@@ -41,6 +43,8 @@ class Downloader:
         self.slsk_cmd_base = slsk_cmd_base
         self.downloads_dir = downloads_dir
         self.music_library_dir = music_library_dir
+        self.slsk_username = slsk_username
+        self.slsk_password = slsk_password
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)
@@ -115,9 +119,9 @@ class Downloader:
         """
         command = self.slsk_cmd_base + [
             "--user",
-            "vigmoh20022222",
+            self.slsk_username,
             "--pass",
-            "UPcqvAzKMMl6f6bi4v0VK",
+            self.slsk_password,
             item.search_query,
             "--format",
             "flac",
@@ -269,6 +273,8 @@ def main_run_downloader(db: DatabaseManager, config: dict):
         slsk_cmd_base=slsk_cmd_base,
         downloads_dir=downloads_path,
         music_library_dir=music_library_path,
+        slsk_username=config.get("slsk_username"),
+        slsk_password=config.get("slsk_password"),
     )
 
     # Run the queue
@@ -292,6 +298,8 @@ if __name__ == "__main__":
                 slsk_cmd_base=config.slsk_command,
                 downloads_dir=config.downloads_dir,
                 music_library_dir=config.music_library,
+                slsk_username=config.get("slsk_username"),
+                slsk_password=config.get("slsk_password"),
             )
 
             downloader.run_queue()

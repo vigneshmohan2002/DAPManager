@@ -4,6 +4,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import musicbrainzngs
 from db_manager import DatabaseManager, Track, Playlist, DownloadItem
+from config_manager import get_config
 from typing import Optional, List, Tuple
 import time
 import logging  # Import logging
@@ -45,10 +46,12 @@ class SpotifyClient:
         # 2. Setup MusicBrainz (musicbrainzngs)
         # This is required by their API terms of service.
         try:
+            config = get_config()
+            contact_email = config.get("contact_email", "contact@example.com")
             musicbrainzngs.set_useragent(
                 app="DAPManager",
                 version="0.1.0",
-                contact="plaeseigood2002@gmail.com",  # Using your repo email as a placeholder
+                contact=contact_email,
             )
         except Exception as e:
             print(f"Error setting MusicBrainz user agent: {e}")
