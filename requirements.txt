@@ -1,3 +1,6 @@
 spotipy>=2.23.0
 musicbrainzngs>=0.7.1
 mutagen>=1.47.0
+flask>=2.0.0
+mediafile>=0.0.1
+pyacoustid>=1.1.0
