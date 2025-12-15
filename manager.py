@@ -12,15 +12,16 @@ import os
 import sys
 
 # Internal imports
-from logger_setup import setup_logging
-from config_manager import get_config
-from db_manager import DatabaseManager
-from library_scanner import main_scan_library, LibraryScanner
-from spotify_client import SpotifyClient
-from downloader import main_run_downloader, Downloader
-from sync_ipod import main_run_sync
-from utils import EnvironmentManager
-from batch_sync import batch_sync
+from src.logger_setup import setup_logging
+from src.config_manager import get_config
+from src.db_manager import DatabaseManager
+from src.library_scanner import main_scan_library, LibraryScanner
+from src.spotify_client import SpotifyClient
+from src.downloader import main_run_downloader, Downloader
+from src.sync_ipod import main_run_sync
+from src.utils import EnvironmentManager
+from src.batch_sync import batch_sync
+# from src.clear_dupes import find_and_resolve_duplicates # Imported dynamically in main
 
 # Setup logging first
 setup_logging()
@@ -79,7 +80,7 @@ def show_sync_stats(db: DatabaseManager, config):
     """Display detailed sync statistics."""
     try:
         # We need to import here to avoid circular imports
-        from sync_ipod import EnhancedIpodSyncer, ConversionOptions
+        from src.sync_ipod import EnhancedIpodSyncer, ConversionOptions
 
         # Create a minimal syncer just for stats
         conversion_opts = ConversionOptions(
@@ -133,7 +134,7 @@ def show_sync_stats(db: DatabaseManager, config):
 def reconcile_ipod(db: DatabaseManager, config: dict):
     """Reconcile tracks already on the iPod with the database."""
     # Ensure EnhancedIpodSyncer is imported or available in the global scope
-    from sync_ipod import EnhancedIpodSyncer
+    from src.sync_ipod import EnhancedIpodSyncer
 
     # We must instantiate the Syncer using configuration
     downloader = Downloader(
@@ -420,7 +421,7 @@ def main():
             elif choice == "9":
                 # 9. Clear Duplicates
                 # Wraps the standalone clear_dupes functionality
-                from clear_dupes import find_and_resolve_duplicates
+                from src.clear_dupes import find_and_resolve_duplicates
 
                 print("\n> DUPES: Analyzing library for duplicate tracks...")
                 with DatabaseManager(db_path) as db:

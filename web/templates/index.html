@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAP Manager Web</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DAP Manager Dashboard</h1>
+            <div id="status-bar" class="status-idle">Status: Idle</div>
+        </header>
+
+        <main>
+            <section class="card">
+                <h2>Library Management</h2>
+                <div class="actions">
+                    <button onclick="triggerAction('/api/scan', 'Scanning Library...')">Scan Library</button>
+                    <button onclick="triggerAction('/api/audit', 'Auditing Albums...')">Audit Albums</button>
+                    <button onclick="triggerAction('/api/batch', 'Running Batch Sync...')">Run Batch Sync</button>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Download & Sync</h2>
+                <div class="actions">
+                    <button onclick="triggerAction('/api/download', 'Processing Downloads...')">Process Downloads</button>
+                    
+                    <div class="sync-group">
+                        <h3>Sync to iPod</h3>
+                        <label>
+                            Mode:
+                            <select id="sync-mode">
+                                <option value="playlists">Playlists Only</option>
+                                <option value="library">Full Library</option>
+                                <option value="selective">Selective (Artist)</option>
+                            </select>
+                        </label>
+                        <label>
+                            Format:
+                            <select id="sync-format">
+                                <option value="flac">FLAC</option>
+                                <option value="mp3">MP3</option>
+                                <option value="opus">Opus</option>
+                                <option value="aac">AAC</option>
+                            </select>
+                        </label>
+                        <button onclick="triggerSync()">Start Sync</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <h2>Logs / Output</h2>
+                <div id="log-display">
+                    Last Message: <span id="last-message">None</span>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        function updateStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusDiv = document.getElementById('status-bar');
+                    const msgSpan = document.getElementById('last-message');
+                    
+                    statusDiv.textContent = `Status: ${data.message}`;
+                    statusDiv.className = data.running ? 'status-running' : 'status-idle';
+                    msgSpan.textContent = data.message;
+                })
+                .catch(err => console.error("Status poll failed", err));
+        }
+
+        function triggerAction(url, initialMsg) {
+            // Optimistic update
+            document.getElementById('status-bar').textContent = `Status: ${initialMsg}`;
+            document.getElementById('status-bar').className = 'status-running';
+
+            fetch(url, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        alert("Error: " + data.message);
+                    }
+                    updateStatus();
+                });
+        }
+
+        function triggerSync() {
+            const mode = document.getElementById('sync-mode').value;
+            const fmt = document.getElementById('sync-format').value;
+            
+            fetch('/api/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: mode, format: fmt })
+            })
+            .then(res => res.json())
+            .then(data => {
+                 if (!data.success) {
+                        alert("Error: " + data.message);
+                    }
+                    updateStatus();
+            });
+        }
+
+        // Poll status every 2 seconds
+        setInterval(updateStatus, 2000);
+        updateStatus();
+    </script>
+</body>
+</html>
