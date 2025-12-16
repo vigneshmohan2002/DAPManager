@@ -8,3 +8,4 @@
 /*.db
 /config.json
 /*.zip
+src/__pycache__/
