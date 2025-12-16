@@ -185,10 +185,6 @@ def save_config():
 def status():
     if not task_manager:
         return jsonify({'running': False, 'message': 'Not initialized'})
-@app.route('/api/status')
-def status():
-    if not task_manager:
-        return jsonify({'running': False, 'message': 'Not initialized'})
     with task_manager.lock:
         return jsonify({
             'running': task_manager.is_running,
