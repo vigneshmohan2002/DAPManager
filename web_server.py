@@ -208,9 +208,79 @@ def queue_playlists():
 
 @app.route('/api/audit', methods=['POST'])
 def audit():
+    # Legacy audit (runs in background thread, logs to file)
     if not task_manager: return jsonify({'success': False, 'message': 'Not initialized'})
     success, msg = task_manager.start_task(run_audit, (config.db_path,), "Audit Library")
     return jsonify({'success': success, 'message': msg})
+
+@app.route('/api/audit/results', methods=['GET'])
+def audit_results():
+    if not config: return jsonify({'error': 'Not initialized'}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            incomplete = db.get_incomplete_albums()
+            
+        # Add Cover Art URL
+        for item in incomplete:
+            item['cover_art'] = f"https://coverartarchive.org/release/{item['mbid']}/front-250"
+            
+        return jsonify({'success': True, 'results': incomplete})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/audit/details', methods=['GET'])
+def audit_details():
+    if not config: return jsonify({'error': 'Not initialized'}), 503
+    mbid = request.args.get('mbid')
+    if not mbid: return jsonify({'success': False, 'message': 'MBID required'})
+    
+    try:
+        from src.album_completer import get_missing_tracks_for_album
+        with DatabaseManager(config.db_path) as db:
+            result = get_missing_tracks_for_album(db, mbid)
+            
+        return jsonify({'success': True, 'data': result})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/audit/queue', methods=['POST'])
+def audit_queue():
+    if not config: return jsonify({'error': 'Not initialized'}), 503
+    data = request.json
+    items = data.get('items', []) # List of {artist, title}
+    
+    # Or queue full album
+    queue_album = data.get('queue_album', False)
+    album_info = data.get('album_info', {}) # {artist, title}
+    
+    try:
+        count = 0
+        with DatabaseManager(config.db_path) as db:
+            if queue_album:
+                 # Queue full album
+                 query = f"::ALBUM:: {album_info.get('artist')} - {album_info.get('album')}"
+                 db.add_to_queue(
+                    search_query=query,
+                    track_mbid="ALBUM_MODE", 
+                    artist=album_info.get('artist', 'Unknown'),
+                    title=f"[Full Album] {album_info.get('album', 'Unknown')}"
+                )
+                 count = 1
+            else:
+                for item in items:
+                    # Construct search query
+                    query = f"{item['artist']} - {item['title']}"
+                    db.add_to_queue(
+                        search_query=query,
+                        track_mbid="", 
+                        artist=item['artist'],
+                        title=item['title']
+                    )
+                    count += 1
+                    
+        return jsonify({'success': True, 'queued_count': count})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
 
 @app.route('/api/duplicates', methods=['GET'])
 def get_duplicates():

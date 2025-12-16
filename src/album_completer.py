@@ -57,12 +57,19 @@ def fetch_album_tracklist(release_mbid: str) -> Dict[Tuple[int, int], str]:
         return {}
 
 
-def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
+def get_missing_tracks_for_album(db: DatabaseManager, release_mbid: str) -> dict:
     """
-    Compares local DB tracks vs Official MusicBrainz tracklist
-    and adds missing songs to the download queue.
+    Returns details about missing tracks for an album without queueing them.
+    Returns: {
+        'artist': str,
+        'album': str,
+        'mbid': str,
+        'total_tracks': int,
+        'missing_count': int,
+        'missing_tracks': [ {'disc': int, 'track': int, 'title': str} ]
+    }
     """
-    # Get Album Info (for logging/search)
+    # Get Album Info
     cursor = db.conn.cursor()
     cursor.execute(
         "SELECT artist, title FROM tracks WHERE release_mbid = ? LIMIT 1",
@@ -72,11 +79,9 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
     cursor.close()
 
     if not row:
-        print(f"Error: Could not find local artist/album info for MBID {release_mbid}")
-        return
+        return {'error': f"Could not find local info for MBID {release_mbid}"}
 
     artist_name, album_title = row[0], row[1]
-    print(f"\nChecking: {artist_name} - {album_title} ...")
 
     # Get Local Tracks (Disc, Track)
     local_tracks = set()
@@ -93,31 +98,61 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
     official_tracks = fetch_album_tracklist(release_mbid)
 
     if not official_tracks:
-        print("  > Failed to fetch official tracklist (or album has no tracks).")
+        return {'error': "Failed to fetch official tracklist"}
+
+    # Find Missing
+    missing_items = []
+    # Sort by disc, then track
+    sorted_official = sorted(official_tracks.items(), key=lambda x: (x[0][0], x[0][1]))
+
+    for (disc, track), title in sorted_official:
+        if (disc, track) not in local_tracks:
+            missing_items.append({
+                'disc': disc,
+                'track': track,
+                'title': title
+            })
+
+    return {
+        'artist': artist_name,
+        'album': album_title,
+        'mbid': release_mbid,
+        'total_tracks': len(official_tracks),
+        'missing_count': len(missing_items),
+        'missing_tracks': missing_items
+    }
+
+
+def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
+    """
+    Compares local DB tracks vs Official MusicBrainz tracklist
+    and adds missing songs to the download queue.
+    """
+    data = get_missing_tracks_for_album(db, release_mbid)
+    
+    if 'error' in data:
+        print(f"Error: {data['error']}")
         return
 
-    # Find Missing & Queue
-    missing_count = 0
-    missing_items = []
+    artist_name = data['artist']
+    album_title = data['album']
+    missing_items = data['missing_tracks']
+    missing_count = data['missing_count']
+    total_tracks = data['total_tracks']
 
-    for (disc, track), title in official_tracks.items():
-        if (disc, track) not in local_tracks:
-            missing_count += 1
-            missing_items.append((disc, track, title))
-            
+    print(f"\nChecking: {artist_name} - {album_title} ...")
+    
     if missing_count == 0:
         print("  > Album complete!")
     else:
         print(f"  > Missing {missing_count} tracks.")
         
-        # --- NEW LOGIC: Queue Album if many missing ---
+        # --- Queue Logic ---
         # Threshold: If missing more than 60% OR more than 3 tracks
-        total_tracks = len(official_tracks) or 1
         missing_pct = (missing_count / total_tracks) * 100
         
         if missing_count > 3 or missing_pct > 60:
             print(f"  > Missing {missing_count}/{total_tracks} ({missing_pct:.1f}%). Queuing ENTIRE ALBUM.")
-            print(f"  > Missing {missing_count} tracks. Queuing ENTIRE ALBUM download.")
             query = f"::ALBUM:: {artist_name} - {album_title}"
             
             # Check if already queued
@@ -135,28 +170,23 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
                 print("    [+] Added full album to download queue.")
         else:
             # Traditional: Queue individual tracks
-            for disc, track, title in missing_items:
+            for item in missing_items:
+                disc, track, title = item['disc'], item['track'], item['title']
                 print(f"    - Missing: {disc}-{track} {title}")
                 
                 # Construct search query
                 query = f"{artist_name} - {title}"
                 
                 # Check if already in queue
-                # (Simple check to avoid duplicates)
                 q_cursor = db.conn.cursor()
                 q_cursor.execute("SELECT id FROM downloads WHERE search_query = ?", (query,))
                 if q_cursor.fetchone():
                     print("      (Already in queue)")
                     continue
 
-                # Add to DB Queue
-                # We don't have the specific Track MBID easily here unless we query MB again
-                # But we can leave MBID empty or put a placeholder. 
-                # Ideally we fetch it from official_tracks if we stored it.
-                # For now, use placeholder or rely on lookup.
                 db.add_to_queue(
                     search_query=query,
-                    track_mbid="", # Scanner will resolve it
+                    track_mbid="", 
                     artist=artist_name,
                     title=title
                 )
