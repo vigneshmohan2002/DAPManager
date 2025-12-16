@@ -439,9 +439,9 @@
                         div.onclick = () => showAuditDetails(item.mbid);
 
                         div.innerHTML = `
-    <img src="${item.cover_art}" alt="Cover"
-        style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover;"
-        onerror="this.src='https://via.placeholder.com/150?text=No+Cover'">
+    <img src="${item.cover_art || 'img/no-cover.png'}" alt="Cover"
+        style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover; background-color: #333;"
+        onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjNDQ0Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiNhYWEiIGR5PSIuM2VtIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5ObyBDb3ZlcjwvdGV4dD48L3N2Zz4=';">
     <div
         style="margin-top:5px; font-weight:bold; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
         ${item.album}</div>

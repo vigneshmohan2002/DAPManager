@@ -72,14 +72,24 @@ class TaskManager:
                 self.current_task = None
 
 def init_app_logic():
-    global task_manager, config, setup_logging, get_config, DatabaseManager, \
+    global task_manager, config, setup_logging, get_config, DatabaseManager, DownloadItem, \
            main_scan_library, main_run_downloader, main_run_sync, \
            EnvironmentManager, audit_lib_logic
     
     # Import modules here to avoid crash on startup if config is missing/invalid
     from src.logger_setup import setup_logging
     from src.config_manager import get_config
-    from src.db_manager import DatabaseManager
+    from src.db_manager import DatabaseManager, DownloadItem
+    from src.library_scanner import main_scan_library
+    from src.downloader import main_run_downloader
+    from src.sync_ipod import main_run_sync
+
+    from src.album_completer import audit_library as audit_lib_logic
+
+    setup_logging()
+    config = get_config()
+    
+    task_manager = TaskManager()
     from src.library_scanner import main_scan_library
     from src.downloader import main_run_downloader
     from src.sync_ipod import main_run_sync
@@ -275,23 +285,23 @@ def audit_queue():
             if queue_album:
                  # Queue full album
                  query = f"::ALBUM:: {album_info.get('artist')} - {album_info.get('album')}"
-                 db.add_to_queue(
+                 db.queue_download(DownloadItem(
                     search_query=query,
-                    track_mbid="ALBUM_MODE", 
-                    artist=album_info.get('artist', 'Unknown'),
-                    title=f"[Full Album] {album_info.get('album', 'Unknown')}"
-                )
+                    playlist_id="AUDIT",
+                    mbid_guess=album_info.get('release_mbid', ''), # Assuming FE sends this or we infer
+                    status="pending"
+                ))
                  count = 1
             else:
                 for item in items:
                     # Construct search query
                     query = f"{item['artist']} - {item['title']}"
-                    db.add_to_queue(
+                    db.queue_download(DownloadItem(
                         search_query=query,
-                        track_mbid="", 
-                        artist=item['artist'],
-                        title=item['title']
-                    )
+                        playlist_id="AUDIT",
+                        mbid_guess="", 
+                        status="pending"
+                    ))
                     count += 1
                     
         return jsonify({'success': True, 'queued_count': count})
