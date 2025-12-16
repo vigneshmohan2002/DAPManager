@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAP Manager Setup</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .setup-container {
+            max-width: 600px;
+            margin: 40px auto;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: var(--secondary);
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 10px;
+            background: #333;
+            border: 1px solid #555;
+            color: white;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container setup-container">
+        <header>
+            <h1>Welcome to DAP Manager</h1>
+            <p>Please configure your environment to get started.</p>
+        </header>
+
+        <main class="card">
+            <form id="setup-form" onsubmit="saveConfig(event)">
+                <div class="form-group">
+                    <label>Music Library Path</label>
+                    <input type="text" id="music_library_path" placeholder="/Users/username/Music/MyLibrary" required>
+                    <div class="help-text">Absolute path to your local FLAC/MP3 collection.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Downloads Path</label>
+                    <input type="text" id="downloads_path" placeholder="/Users/username/Downloads/Soulseek" required>
+                    <div class="help-text">Where Soulseek downloads files to.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>iPod Mount Point</label>
+                    <input type="text" id="ipod_mount_point" placeholder="/Volumes/IPOD">
+                    <div class="help-text">Path where your iPod is mounted (e.g. /Volumes/IPOD).</div>
+                </div>
+
+                <hr style="border-color: #333; margin: 20px 0;">
+
+                <div class="form-group">
+                    <label>Spotify Client ID</label>
+                    <input type="text" id="spotify_client_id">
+                </div>
+
+                <div class="form-group">
+                    <label>Spotify Client Secret</label>
+                    <input type="password" id="spotify_client_secret">
+                </div>
+
+                <div class="form-group">
+                    <label>Soulseek Command (or path)</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="downloads_path_dummy" style="display:none">
+                        <!-- Hidden dummy to maintain layout if needed -->
+                        <input type="text" id="slsk_command" placeholder="slsk-batchdl" value="slsk-batchdl"
+                            style="flex-grow: 1;">
+                        <button type="button" onclick="installSlsk()" style="width: auto; background: #2196F3;">Install
+                            from 'sldl_releases/'</button>
+                    </div>
+                    <div class="help-text" id="install-status">If you put the zip in 'sldl_releases' folder, click
+                        Install.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Soulseek Username</label>
+                    <input type="text" id="slsk_username">
+                </div>
+
+                <div class="form-group">
+                    <label>Soulseek Password</label>
+                    <input type="password" id="slsk_password">
+                </div>
+
+                <hr style="border-color: #333; margin: 20px 0;">
+                <h3 style="color: var(--secondary); font-size: 16px; margin-bottom: 15px;">Advanced Options
+                    (slsk-batchdl)</h3>
+
+                <div class="checkbox-group" style="margin-bottom: 10px;">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="fast_search"> Fast Search (Start asap)
+                    </label>
+                    <div class="help-text" style="margin-left: 24px;">Download immediately when a match is found (Normal
+                        mode only).</div>
+                </div>
+
+                <div class="checkbox-group" style="margin-bottom: 10px;">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="remove_ft"> Smart Match (Ignore 'feat.')
+                    </label>
+                    <div class="help-text" style="margin-left: 24px;">Remove "feat." from titles to improve search
+                        matches.</div>
+                </div>
+
+                <div class="checkbox-group" style="margin-bottom: 10px;">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="desperate_mode"> Desperate Mode
+                    </label>
+                    <div class="help-text" style="margin-left: 24px;">Search harder by ignoring initial filters
+                        (slower).</div>
+                </div>
+
+                <div class="checkbox-group" style="margin-bottom: 10px;">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="strict_quality"> Strict Quality
+                    </label>
+                    <div class="help-text" style="margin-left: 24px;">Skip files if they don't meet preferred quality
+                        (flac/mp3).</div>
+                </div>
+
+                <button type="submit" style="width: 100%; margin-top: 20px;">Save Configuration</button>
+            </form>
+        </main>
+    </div>
+
+    <script>
+        function saveConfig(e) {
+            e.preventDefault();
+
+            const config = {
+                music_library_path: document.getElementById('music_library_path').value,
+                downloads_path: document.getElementById('downloads_path').value,
+                ipod_mount_point: document.getElementById('ipod_mount_point').value,
+                spotify_client_id: document.getElementById('spotify_client_id').value,
+                spotify_client_secret: document.getElementById('spotify_client_secret').value,
+                slsk_command: document.getElementById('slsk_command').value,
+                slsk_username: document.getElementById('slsk_username').value,
+                slsk_password: document.getElementById('slsk_password').value,
+                fast_search: document.getElementById('fast_search').checked,
+                remove_ft: document.getElementById('remove_ft').checked,
+                desperate_mode: document.getElementById('desperate_mode').checked,
+                strict_quality: document.getElementById('strict_quality').checked
+            };
+
+            fetch('/api/save_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        alert("Configuration saved! Redirecting...");
+                        window.location.href = '/';
+                    } else {
+                        alert("Error saving config: " + data.message);
+                    }
+                })
+                .catch(err => alert("Network error: " + err));
+        }
+    </script>
+</body>
+
+</html>

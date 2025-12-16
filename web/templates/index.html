@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DAP Manager Web</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
+
 <body>
     <div class="container">
         <header>
@@ -19,15 +21,32 @@
                 <div class="actions">
                     <button onclick="triggerAction('/api/scan', 'Scanning Library...')">Scan Library</button>
                     <button onclick="triggerAction('/api/audit', 'Auditing Albums...')">Audit Albums</button>
-                    <button onclick="triggerAction('/api/batch', 'Running Batch Sync...')">Run Batch Sync</button>
+                </div>
+
+                <div style="margin-top: 15px;">
+                    <h3>Queue Spotify Playlists</h3>
+                    <textarea id="playlist-urls" rows="3"
+                        placeholder="Paste Spotify Playlist URLs here (one per line)..."
+                        style="width: 100%; background: #333; color: white; border: 1px solid #555; padding: 5px;"></textarea>
+                    <button onclick="queuePlaylists()" style="margin-top: 5px;">Queue Playlists</button>
+                </div>
+
+                <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 15px;">
+                    <h3>Duplicates</h3>
+                    <button onclick="loadDuplicates()">Check for Duplicates</button>
+                    <div id="duplicates-container" style="margin-top: 10px; display: none;">
+                        <p id="dupe-status">Loading...</p>
+                        <div id="dupe-list"></div>
+                    </div>
                 </div>
             </section>
 
             <section class="card">
                 <h2>Download & Sync</h2>
                 <div class="actions">
-                    <button onclick="triggerAction('/api/download', 'Processing Downloads...')">Process Downloads</button>
-                    
+                    <button onclick="triggerAction('/api/download', 'Processing Downloads...')">Process
+                        Downloads</button>
+
                     <div class="sync-group">
                         <h3>Sync to iPod</h3>
                         <label>
@@ -68,7 +87,7 @@
                 .then(data => {
                     const statusDiv = document.getElementById('status-bar');
                     const msgSpan = document.getElementById('last-message');
-                    
+
                     statusDiv.textContent = `Status: ${data.message}`;
                     statusDiv.className = data.running ? 'status-running' : 'status-idle';
                     msgSpan.textContent = data.message;
@@ -91,22 +110,152 @@
                 });
         }
 
+        function queuePlaylists() {
+            const text = document.getElementById('playlist-urls').value;
+            const urls = text.split('\n').filter(line => line.trim() !== '');
+
+            if (urls.length === 0) {
+                alert("Please enter at least one URL.");
+                return;
+            }
+
+            document.getElementById('status-bar').textContent = `Status: Queueing ${urls.length} playlists...`;
+            document.getElementById('status-bar').className = 'status-running';
+
+            fetch('/api/playlists/queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ urls: urls })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        alert("Error: " + data.message);
+                    }
+                    updateStatus();
+                });
+        }
+
+        function loadDuplicates() {
+            const container = document.getElementById('duplicates-container');
+            const list = document.getElementById('dupe-list');
+            const status = document.getElementById('dupe-status');
+
+            container.style.display = 'block';
+            status.textContent = 'Searching for duplicates...';
+            list.innerHTML = '';
+
+            fetch('/api/duplicates')
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        status.textContent = 'Error: ' + data.message;
+                        return;
+                    }
+
+                    const dupes = data.duplicates;
+                    if (dupes.length === 0) {
+                        status.textContent = 'No duplicates found!';
+                        return;
+                    }
+
+                    status.textContent = `Found ${dupes.length} duplicate groups.`;
+
+                    dupes.forEach(group => {
+                        const div = document.createElement('div');
+                        div.className = 'dupe-group';
+                        div.style.marginBottom = '15px';
+                        div.style.padding = '10px';
+                        div.style.background = '#2a2a2a';
+                        div.style.border = '1px solid #444';
+                        div.style.borderRadius = '5px';
+
+                        let html = `<strong>${group.artist} - ${group.title}</strong><br>`;
+                        html += `<table style="width:100%; margin-top:5px; text-align:left;">`;
+
+                        group.candidates.forEach((cand, idx) => {
+                            const isRec = cand.is_recommended;
+                            const color = isRec ? '#4caf50' : '#ff5252';
+                            html += `
+                                <tr>
+                                    <td>
+                                        <input type="radio" name="keep_${group.mbid}" value="${cand.path}" ${isRec ? 'checked' : ''} id="radio_${group.mbid}_${idx}">
+                                    </td>
+                                    <td><label for="radio_${group.mbid}_${idx}" style="color:${color}">${cand.path}</label></td>
+                                    <td>Score: ${cand.score}</td>
+                                </tr>
+                            `;
+                        });
+                        html += `</table>`;
+                        html += `<button onclick="resolveDuplicate('${group.mbid}')" style="margin-top:5px; padding: 3px 10px; font-size: 12px;">Resolve (Keep Selected)</button>`;
+                        div.innerHTML = html;
+                        list.appendChild(div);
+                    });
+                })
+                .catch(err => status.textContent = 'Network error: ' + err);
+        }
+
+        function resolveDuplicate(mbid) {
+            // Find selected radio
+            const selected = document.querySelector(`input[name="keep_${mbid}"]:checked`);
+            if (!selected) return;
+
+            const keepPath = selected.value;
+
+            // Gather all paths for this group (to find which to delete)
+            // We can re-fetch or look at DOM. DOM is easier here.
+            const allInputs = document.querySelectorAll(`input[name="keep_${mbid}"]`);
+            const deletePaths = [];
+            allInputs.forEach(input => {
+                if (input.value !== keepPath) {
+                    deletePaths.push(input.value);
+                }
+            });
+
+            if (!confirm(`Keep:\n${keepPath}\n\nDelete ${deletePaths.length} others?`)) return;
+
+            fetch('/api/duplicates/resolve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    mbid: mbid,
+                    keep_path: keepPath,
+                    delete_paths: deletePaths
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Resolved!');
+                        // Remove the UI element
+                        const btn = selected.closest('.dupe-group');
+                        if (btn) btn.remove();
+
+                        // Update count
+                        const remaining = document.querySelectorAll('.dupe-group').length;
+                        document.getElementById('dupe-status').textContent = `Found ${remaining} duplicate groups.`;
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                });
+        }
+
         function triggerSync() {
             const mode = document.getElementById('sync-mode').value;
             const fmt = document.getElementById('sync-format').value;
-            
+
             fetch('/api/sync', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ mode: mode, format: fmt })
             })
-            .then(res => res.json())
-            .then(data => {
-                 if (!data.success) {
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
                         alert("Error: " + data.message);
                     }
                     updateStatus();
-            });
+                });
         }
 
         // Poll status every 2 seconds
@@ -114,4 +263,5 @@
         updateStatus();
     </script>
 </body>
+
 </html>

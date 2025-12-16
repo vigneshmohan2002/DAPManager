@@ -1,6 +1,4 @@
-# ============================================================================
-# ENHANCED sync_ipod.py with Library Sync Options
-# ============================================================================
+
 """
 Enhanced iPod synchronization with full library sync support.
 """

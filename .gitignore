@@ -2,3 +2,9 @@
 /__pycache__
 /downloads
 /dap_manager.log
+/bin/slsk-batchdl
+/sldl.exe
+/sldl_releases/
+/*.db
+/config.json
+/*.zip
