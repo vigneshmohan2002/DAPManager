@@ -344,6 +344,31 @@ def get_downloads_list():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+@app.route('/api/library/search', methods=['GET'])
+def library_search():
+    if not config: return jsonify({'error': 'Not initialized'}), 503
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'success': False, 'message': 'Query required'})
+        
+    try:
+        with DatabaseManager(config.db_path) as db:
+            tracks = db.search_tracks(query)
+            
+        data = []
+        for t in tracks:
+            data.append({
+                'artist': t.artist,
+                'album': t.album,
+                'title': t.title,
+                'path': t.local_path,
+                'mbid': t.mbid
+            })
+            
+        return jsonify({'success': True, 'results': data})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
 @app.route('/api/duplicates', methods=['GET'])
 def get_duplicates():
     if not config: return jsonify({'error': 'Not initialized'}), 503

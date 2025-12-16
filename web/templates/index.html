@@ -68,6 +68,30 @@
         <main>
             <section class="card">
                 <h2>Library Management</h2>
+
+                <!-- Search Block -->
+                <div style="margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #444;">
+                    <h3>Library Explorer</h3>
+                    <div style="display:flex; gap:10px;">
+                        <input type="text" id="lib-search-input" placeholder="Search Artist, Album, or Title..."
+                            style="flex:1; padding:8px; background:#333; color:#fff; border:1px solid #555; border-radius:4px;">
+                        <button onclick="searchLibrary()">Search</button>
+                    </div>
+                    <div id="search-results"
+                        style="margin-top:10px; max-height:200px; overflow-y:auto; display:none; background:#222; border:1px solid #444;">
+                        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                            <thead>
+                                <tr style="background:#333; text-align:left;">
+                                    <th style="padding:5px;">Artist</th>
+                                    <th style="padding:5px;">Album</th>
+                                    <th style="padding:5px;">Title</th>
+                                </tr>
+                            </thead>
+                            <tbody id="search-results-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <div class="actions">
                     <button onclick="triggerAction('/api/scan', 'Scanning Library...')">Scan Library</button>
                     <button onclick="triggerAction('/api/audit', 'Auditing Albums...')">Audit Albums</button>
@@ -596,6 +620,49 @@
         // Poll status every 2 seconds
         setInterval(updateStatus, 2000);
         updateStatus();
+
+        // --- Library Search ---
+        function searchLibrary() {
+            const query = document.getElementById('lib-search-input').value;
+            if (!query) return;
+
+            const container = document.getElementById('search-results');
+            const tbody = document.getElementById('search-results-body');
+
+            container.style.display = 'block';
+            tbody.innerHTML = '<tr><td colspan="3">Searching...</td></tr>';
+
+            fetch(`/api/library/search?q=${encodeURIComponent(query)}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        tbody.innerHTML = `<tr><td colspan="3">Error: ${data.message}</td></tr>`;
+                        return;
+                    }
+                    if (data.results.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="3" style="padding:5px; color:#aaa;">No matches found.</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = '';
+                    data.results.forEach(t => {
+                        const tr = document.createElement('tr');
+                        tr.style.borderBottom = '1px solid #333';
+                        tr.innerHTML = `
+                            <td style="padding:5px;">${t.artist}</td>
+                            <td style="padding:5px;">${t.album || '-'}</td>
+                            <td style="padding:5px;">${t.title}</td>
+                        `;
+                        // Optional: Add click to view details or play?
+                        tbody.appendChild(tr);
+                    });
+                });
+        }
+
+        // Allow Enter key
+        document.getElementById('lib-search-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') searchLibrary();
+        });
 
         // Initial Stats Load
         loadStats();
