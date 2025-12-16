@@ -1,8 +1,8 @@
 {
-    "music_library_path": "C:\\Users\\Vignesh\\Desktop\\Music Library",
-    "downloads_path": "C:\\Users\\Vignesh\\Desktop\\NewlyDownloadedMusic",
+    "music_library_path": "C:\\\\Users\\\\Vignesh\\\\Desktop\\\\Music Library",
+    "downloads_path": "C:\\\\Users\\\\Vignesh\\\\Desktop\\\\NewlyDownloadedMusic",
     "slsk_command": [],
-    "picard_cmd_path": "C:\\Program Files\\MusicBrainz Picard\\picard.exe",
+    "picard_cmd_path": "C:\\\\Program Files\\\\MusicBrainz Picard\\\\picard.exe",
     "ffmpeg_path": "ffmpeg",
     "ipod_mount_point": "D:",
     "ipod_music_dir_name": "Music",
