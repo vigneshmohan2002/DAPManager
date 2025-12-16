@@ -20,7 +20,9 @@ def get_file_score(path: str) -> int:
     """
     Calculates a score for a file path. Higher is better.
     """
-    base = path.split("\\")[-1].strip('"')
+    # Normalize path just in case
+    path = path.replace("\\", "/")
+    base = os.path.basename(path).strip('"')
     ext = os.path.splitext(base)[1].lower()
 
     score = 100  # Base score

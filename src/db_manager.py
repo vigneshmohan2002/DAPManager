@@ -163,6 +163,10 @@ class DatabaseManager:
 
     # --- Track Methods ---
     def add_or_update_track(self, track: Track):
+        # Normalize path to ensure consistency (force forward slashes)
+        if track.local_path:
+            track.local_path = os.path.normpath(track.local_path).replace("\\", "/")
+
         sql = """
         INSERT OR REPLACE INTO tracks 
         (mbid, title, artist, album, isrc, local_path, ipod_path, synced_to_ipod, release_mbid, track_number, disc_number)
@@ -406,6 +410,8 @@ class DatabaseManager:
         return res
 
     def log_duplicate(self, mbid: str, file_path: str):
+        if file_path:
+            file_path = os.path.normpath(file_path).replace("\\", "/")
         cursor = self.conn.cursor()
         cursor.execute(
             "INSERT OR IGNORE INTO duplicates (mbid, file_path) VALUES (?, ?)",
@@ -430,6 +436,8 @@ class DatabaseManager:
         cursor.close()
 
     def update_track_local_path(self, mbid: str, path: str):
+        if path:
+            path = os.path.normpath(path).replace("\\", "/")
         cursor = self.conn.cursor()
         cursor.execute("UPDATE tracks SET local_path = ? WHERE mbid = ?", (path, mbid))
         self.conn.commit()
