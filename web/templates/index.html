@@ -6,6 +6,46 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DAP Manager Web</title>
     <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Modal styles */
+        .modal {
+            position: fixed;
+            z-index: 100;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background-color: #222;
+            padding: 20px;
+            border: 1px solid #555;
+            width: 80%;
+            max-width: 600px;
+            border-radius: 8px;
+            position: relative;
+            color: #fff;
+            margin: 100px auto;
+            /* Fallback centering */
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: #fff;
+        }
+    </style>
 </head>
 
 <body>
@@ -29,6 +69,27 @@
                         placeholder="Paste Spotify Playlist URLs here (one per line)..."
                         style="width: 100%; background: #333; color: white; border: 1px solid #555; padding: 5px;"></textarea>
                     <button onclick="queuePlaylists()" style="margin-top: 5px;">Queue Playlists</button>
+                </div>
+
+                <div style="margin-top: 15px; border-top: 1px solid #444; padding-top: 15px;">
+                    <h3>Library Audit</h3>
+                    <button onclick="loadAuditResults()">Scan for Incomplete Albums</button>
+                    <div id="audit-container" style="margin-top: 10px; display: none;">
+                        <p id="audit-status">Loading...</p>
+                        <div id="audit-list" class="grid-container"></div>
+                    </div>
+                </div>
+
+                <div id="audit-modal" class="modal" style="display:none;">
+                    <div class="modal-content">
+                        <span class="close" onclick="closeAuditModal()">&times;</span>
+                        <h2 id="modal-title">Album Details</h2>
+                        <p id="modal-subtitle">Missing Tracks:</p>
+                        <div id="modal-tracks" style="max-height: 300px; overflow-y: auto; text-align: left;"></div>
+                        <div style="margin-top: 15px; text-align: right;">
+                            <button onclick="queueSelectedTracks()">Queue Selected Tracks</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 15px;">
@@ -255,6 +316,167 @@
                         alert("Error: " + data.message);
                     }
                     updateStatus();
+                });
+        }
+
+        // --- Audit Logic ---
+        function loadAuditResults() {
+            const container = document.getElementById('audit-container');
+            const list = document.getElementById('audit-list');
+            const status = document.getElementById('audit-status');
+
+            container.style.display = 'block';
+            status.textContent = 'Searching for incomplete albums...';
+            list.innerHTML = '';
+
+            fetch('/api/audit/results')
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        status.textContent = 'Error: ' + data.message;
+                        return;
+                    }
+
+                    const results = data.results;
+                    if (results.length === 0) {
+                        status.textContent = 'No incomplete albums found!';
+                        return;
+                    }
+
+                    status.textContent = `Found ${results.length} incomplete albums.`;
+
+                    // CSS for Grid
+                    list.style.display = 'grid';
+                    list.style.gridTemplateColumns = 'repeat(auto-fill, minmax(150px, 1fr))';
+                    list.style.gap = '15px';
+
+                    results.forEach((item, idx) => {
+                        const div = document.createElement('div');
+                        div.className = 'album-card';
+                        div.style.background = '#2a2a2a';
+                        div.style.padding = '10px';
+                        div.style.borderRadius = '5px';
+                        div.style.textAlign = 'center';
+                        div.style.cursor = 'pointer';
+
+                        // Fallback image handling
+                        div.onclick = () => showAuditDetails(item.mbid);
+
+                        div.innerHTML = `
+                            <img src="${item.cover_art}" alt="Cover" style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover;" onerror="this.src='https://via.placeholder.com/150?text=No+Cover'">
+                            <div style="margin-top:5px; font-weight:bold; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.album}</div>
+                            <div style="font-size:12px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}</div>
+                            <div style="font-size:12px; color:#f44336; margin-top:2px;">Missing: ${item.missing}</div>
+                        `;
+                        list.appendChild(div);
+                    });
+                })
+                .catch(err => status.textContent = 'Network error: ' + err);
+        }
+
+        // Store current audit details globally for queueing
+        let currentAuditDetails = null;
+
+        function showAuditDetails(mbid) {
+            const modal = document.getElementById('audit-modal');
+            const tracksDiv = document.getElementById('modal-tracks');
+            const title = document.getElementById('modal-title');
+            const subtitle = document.getElementById('modal-subtitle');
+
+            modal.style.display = 'block';
+            title.textContent = "Loading...";
+
+            fetch(`/api/audit/details?mbid=${mbid}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        title.textContent = "Error";
+                        tracksDiv.textContent = data.message;
+                        return;
+                    }
+
+                    const info = data.data;
+                    currentAuditDetails = info;
+
+                    title.textContent = info.album;
+                    subtitle.textContent = `${info.artist} - Missing ${info.missing_count}/${info.total_tracks}`;
+
+                    let html = '<table style="width:100%; border-collapse: collapse;">';
+
+                    info.missing_tracks.forEach((t, idx) => {
+                        // CHECKED by default as requested
+                        html += `
+                        <tr style="border-bottom:1px solid #444;">
+                            <td style="padding:8px; width:30px;">
+                                <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}">
+                            </td>
+                            <td style="padding:8px;">${t.disc}-${t.track}</td>
+                            <td style="padding:8px;">${t.title}</td>
+                        </tr>
+                       `;
+                    });
+                    html += '</table>';
+                    tracksDiv.innerHTML = html;
+                });
+        }
+
+        function closeAuditModal() {
+            document.getElementById('audit-modal').style.display = 'none';
+        }
+
+        function queueSelectedTracks() {
+            if (!currentAuditDetails) return;
+
+            const checks = document.querySelectorAll('#modal-tracks input[type="checkbox"]:checked');
+            if (checks.length === 0) {
+                alert("No tracks selected.");
+                return;
+            }
+
+            const selectedItems = [];
+            checks.forEach(chk => {
+                const idx = chk.getAttribute('data-idx');
+                const track = currentAuditDetails.missing_tracks[idx];
+                selectedItems.push({
+                    artist: currentAuditDetails.artist,
+                    title: track.title
+                });
+            });
+
+            // Check if ALL are selected (heuristic for full album queue, though user flow is explicit)
+            // But user said "I will only want to complete specific albums though". 
+            // If they modify selection, we queue specific tracks. 
+            // If they select all, we can queue individual tracks (safer) OR full album query if we trust it.
+            // For now, simple list.
+
+            const btn = document.querySelector('#audit-modal button');
+            const originalText = btn.textContent;
+            btn.textContent = "Queueing...";
+            btn.disabled = true;
+
+            fetch('/api/audit/queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    items: selectedItems,
+                    album_info: {
+                        artist: currentAuditDetails.artist,
+                        album: currentAuditDetails.album
+                    }
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(`Queued ${data.queued_count} tracks.`);
+                        closeAuditModal();
+                    } else {
+                        alert("Error: " + data.message);
+                    }
+                })
+                .finally(() => {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
                 });
         }
 
