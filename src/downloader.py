@@ -54,11 +54,17 @@ class Downloader:
         logger.info(f"  Downloads dir: {self.downloads_dir}")
         logger.info(f"  Music library: {self.music_library_dir}")
 
-    def run_queue(self):
+    def run_queue(self, progress_callback=None):
         """
         Fetches all 'pending' and 'failed' downloads and attempts to process them.
+        :param progress_callback: func(str) -> None, called with status updates
         """
-        logger.info("Starting download queue run...")
+        def report(msg):
+            logger.info(msg)
+            if progress_callback:
+                progress_callback({"message": msg})
+
+        report("Starting download queue run...")
 
         pending_items = self.db.get_downloads(status="pending")
         failed_items = self.db.get_downloads(status="failed")
@@ -66,10 +72,10 @@ class Downloader:
         queue = pending_items + failed_items
 
         if not queue:
-            logger.info("Download queue is empty")
+            report("Download queue is empty")
             return
 
-        logger.info(
+        report(
             f"Processing {len(queue)} items "
             f"({len(pending_items)} pending, {len(failed_items)} failed)"
         )
@@ -77,21 +83,27 @@ class Downloader:
         success_count = 0
         fail_count = 0
 
-        for item in queue:
-            logger.info(f"Processing: {item.search_query}")
+        for i, item in enumerate(queue, 1):
+            msg = f"[{i}/{len(queue)}] Processing: {item.search_query}"
+            report(msg)
 
             try:
-                if not self._attempt_download(item):
+                # Pass a specialized callback for the item
+                def item_callback(line):
+                    if progress_callback:
+                        progress_callback({
+                            "message": msg,
+                            "detail": line.strip()
+                        })
+
+                if not self._attempt_download(item, item_callback):
                     fail_count += 1
                     continue
                 self._process_success(item)
                 success_count += 1
 
             except subprocess.CalledProcessError as e:
-                # Log both stdout and stderr to capture the real error
-                error_message = (
-                    f"STDOUT: {e.stdout.strip()} | STDERR: {e.stderr.strip()}"
-                )
+                error_message = f"STDOUT: {e.stdout.strip()} | STDERR: {e.stderr.strip()}"
                 logger.error(f"Download command failed: {error_message}")
                 self._process_failure(item, error_message)
                 fail_count += 1
@@ -101,78 +113,84 @@ class Downloader:
                 fail_count += 1
             except FileNotFoundError:
                 logger.error("FATAL: slsk-batchdl command not found")
-                logger.error(f"Check your SLSK_CMD_BASE: {self.slsk_cmd_base}")
+                report("FATAL: slsk-batchdl command not found")
                 break
             except Exception as e:
                 logger.error(f"Unexpected error: {e}", exc_info=True)
                 self._process_failure(item, str(e))
                 fail_count += 1
 
-        logger.info(
-            f"Download queue finished. Success: {success_count}, Failed: {fail_count}"
-        )
+        report(f"Download queue finished. Success: {success_count}, Failed: {fail_count}")
 
-    def _attempt_download(self, item: DownloadItem):
+    def _attempt_download(self, item: DownloadItem, item_callback=None):
         """
         Calls slsk-batchdl to download a single track or album.
+        Streams output to item_callback if provided.
         """
         query = item.search_query
         is_album_mode = False
 
-        # Check for Album Mode prefix
         if query.startswith("::ALBUM::"):
             is_album_mode = True
             query = query.replace("::ALBUM::", "").strip()
             logger.info(f"Detected Album Mode for: {query}")
 
-        # Basic command construction
         command = self.slsk_cmd_base + [
             "--user", self.slsk_username,
             "--pass", self.slsk_password,
-            "--input", query,  # Explicit input flag is safer
+            "--input", query,
             "-p", self.downloads_dir,
         ]
 
-        # --- Add Album Mode Flags ---
         if is_album_mode:
             command.append("--album")
-            # Skip existing files in library to avoid duplicates
             command.extend(["--skip-music-dir", self.music_library_dir])
         else:
-            # Only force format for single tracks (albums might vary)
             command.extend(["--format", "flac"])
 
-        # --- Add Advanced Options from Config ---
         if self.slsk_config.get("fast_search"):
             command.append("--fast-search")
-        
         if self.slsk_config.get("remove_ft"):
             command.append("--remove-ft")
-            
         if self.slsk_config.get("desperate_mode"):
             command.append("--desperate")
-
         if self.slsk_config.get("strict_quality"):
             command.append("--strict-conditions")
-            # If strict, ensure we set preferred format if not already set
             if "--pref-format" not in command: 
                  command.extend(["--pref-format", "flac,wav"])
 
         logger.debug(f"Executing: {' '.join(command)}")
 
-        output = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5-minute timeout
-            encoding="utf-8",
-        )
-        if "not found" in str(output).lower():
-            logger.debug("Did not find track")
-            return False
-        logger.debug("Download command successful")
-        return True
+        # Use Popen to stream output
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                bufsize=1, # Line buffered
+                universal_newlines=True
+            )
+            
+            # Read streaming output
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    logger.debug(f"SLSK: {line}")
+                    if item_callback:
+                        item_callback(line)
+            
+            process.wait(timeout=300)
+            
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, command, output="See logs")
+                
+            return True
+            
+        except subprocess.TimeoutExpired:
+            process.kill()
+            raise
 
     def _process_failure(self, item: DownloadItem, error_msg: str):
         """Updates the database for a failed download attempt."""
@@ -326,7 +344,7 @@ class Downloader:
         logger.info(f"Item {item.id} processing complete.")
 
 
-def main_run_downloader(db: DatabaseManager, config: dict):
+def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=None):
     """
     Main entry point for running the downloader from manager.py
     """
@@ -353,7 +371,7 @@ def main_run_downloader(db: DatabaseManager, config: dict):
     )
 
     # Run the queue
-    downloader.run_queue()
+    downloader.run_queue(progress_callback=progress_callback)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,10 @@
                 <div id="log-display">
                     Last Message: <span id="last-message">None</span>
                 </div>
+                <div id="progress-console"
+                    style="background:#000; color:#0f0; font-family:monospace; padding:10px; height:150px; overflow-y:auto; margin-top:10px; border:1px solid #333; font-size:12px;">
+                    <div style="color:#666">Waiting for updates...</div>
+                </div>
             </section>
         </main>
     </div>
@@ -148,10 +152,26 @@
                 .then(data => {
                     const statusDiv = document.getElementById('status-bar');
                     const msgSpan = document.getElementById('last-message');
+                    const consoleDiv = document.getElementById('progress-console');
 
                     statusDiv.textContent = `Status: ${data.message}`;
                     statusDiv.className = data.running ? 'status-running' : 'status-idle';
                     msgSpan.textContent = data.message;
+
+                    // console update
+                    if (data.running && data.detail) {
+                        // Simple append or replacement strategy?
+                        // Ideally we append new lines. But polling might miss lines or repeat.
+                        // For simplicity: Show the LATEST detail as a new line if it changed.
+                        // Helper: Store last detail locally.
+                        if (window.lastDetail !== data.detail) {
+                            const line = document.createElement('div');
+                            line.textContent = `> ${data.detail}`;
+                            consoleDiv.appendChild(line);
+                            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+                            window.lastDetail = data.detail;
+                        }
+                    }
                 })
                 .catch(err => console.error("Status poll failed", err));
         }
@@ -238,17 +258,20 @@
                             const isRec = cand.is_recommended;
                             const color = isRec ? '#4caf50' : '#ff5252';
                             html += `
-                                <tr>
-                                    <td>
-                                        <input type="radio" name="keep_${group.mbid}" value="${cand.path}" ${isRec ? 'checked' : ''} id="radio_${group.mbid}_${idx}">
-                                    </td>
-                                    <td><label for="radio_${group.mbid}_${idx}" style="color:${color}">${cand.path}</label></td>
-                                    <td>Score: ${cand.score}</td>
-                                </tr>
-                            `;
+        <tr>
+            <td>
+                <input type="radio" name="keep_${group.mbid}" value="${cand.path}" ${isRec ? 'checked' : ''}
+                    id="radio_${group.mbid}_${idx}">
+            </td>
+            <td><label for="radio_${group.mbid}_${idx}" style="color:${color}">${cand.path}</label></td>
+            <td>Score: ${cand.score}</td>
+        </tr>
+        `;
                         });
-                        html += `</table>`;
-                        html += `<button onclick="resolveDuplicate('${group.mbid}')" style="margin-top:5px; padding: 3px 10px; font-size: 12px;">Resolve (Keep Selected)</button>`;
+                        html += `
+    </table>`;
+                        html += `<button onclick="resolveDuplicate('${group.mbid}')"
+        style="margin-top:5px; padding: 3px 10px; font-size: 12px;">Resolve (Keep Selected)</button>`;
                         div.innerHTML = html;
                         list.appendChild(div);
                     });
@@ -363,11 +386,16 @@
                         div.onclick = () => showAuditDetails(item.mbid);
 
                         div.innerHTML = `
-                            <img src="${item.cover_art}" alt="Cover" style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover;" onerror="this.src='https://via.placeholder.com/150?text=No+Cover'">
-                            <div style="margin-top:5px; font-weight:bold; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.album}</div>
-                            <div style="font-size:12px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}</div>
-                            <div style="font-size:12px; color:#f44336; margin-top:2px;">Missing: ${item.missing}</div>
-                        `;
+    <img src="${item.cover_art}" alt="Cover"
+        style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover;"
+        onerror="this.src='https://via.placeholder.com/150?text=No+Cover'">
+    <div
+        style="margin-top:5px; font-weight:bold; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+        ${item.album}</div>
+    <div style="font-size:12px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}
+    </div>
+    <div style="font-size:12px; color:#f44336; margin-top:2px;">Missing: ${item.missing}</div>
+    `;
                         list.appendChild(div);
                     });
                 })
@@ -406,16 +434,17 @@
                     info.missing_tracks.forEach((t, idx) => {
                         // CHECKED by default as requested
                         html += `
-                        <tr style="border-bottom:1px solid #444;">
-                            <td style="padding:8px; width:30px;">
-                                <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}">
-                            </td>
-                            <td style="padding:8px;">${t.disc}-${t.track}</td>
-                            <td style="padding:8px;">${t.title}</td>
-                        </tr>
-                       `;
+        <tr style="border-bottom:1px solid #444;">
+            <td style="padding:8px; width:30px;">
+                <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}">
+            </td>
+            <td style="padding:8px;">${t.disc}-${t.track}</td>
+            <td style="padding:8px;">${t.title}</td>
+        </tr>
+        `;
                     });
-                    html += '</table>';
+                    html += '
+    </table > ';
                     tracksDiv.innerHTML = html;
                 });
         }
@@ -444,8 +473,8 @@
             });
 
             // Check if ALL are selected (heuristic for full album queue, though user flow is explicit)
-            // But user said "I will only want to complete specific albums though". 
-            // If they modify selection, we queue specific tracks. 
+            // But user said "I will only want to complete specific albums though".
+            // If they modify selection, we queue specific tracks.
             // If they select all, we can queue individual tracks (safer) OR full album query if we trust it.
             // For now, simple list.
 
