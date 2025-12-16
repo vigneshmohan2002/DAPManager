@@ -305,6 +305,45 @@ def audit_queue():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    if not config: return jsonify({'error': 'Not initialized'}), 503
+    try:
+        import shutil
+        with DatabaseManager(config.db_path) as db:
+            lib_stats = db.get_library_stats()
+            
+        # Disk Usage
+        total, used, free = shutil.disk_usage(config.music_library)
+        lib_stats['disk_total_gb'] = round(total / (1024**3), 2)
+        lib_stats['disk_free_gb'] = round(free / (1024**3), 2)
+        lib_stats['disk_used_percent'] = round((used / total) * 100, 1)
+        
+        return jsonify({'success': True, 'stats': lib_stats})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/downloads/list', methods=['GET'])
+def get_downloads_list():
+    if not config: return jsonify({'error': 'Not initialized'}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            items = db.get_all_downloads()
+        
+        # Convert to JSON serializable
+        data = []
+        for item in items:
+            data.append({
+                'id': item.id,
+                'query': item.search_query,
+                'status': item.status,
+                'last_attempt': item.last_attempt.isoformat() if item.last_attempt else None
+            })
+            
+        return jsonify({'success': True, 'items': data})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
 @app.route('/api/duplicates', methods=['GET'])
 def get_duplicates():
     if not config: return jsonify({'error': 'Not initialized'}), 503
