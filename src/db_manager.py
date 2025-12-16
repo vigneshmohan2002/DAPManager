@@ -503,6 +503,24 @@ class DatabaseManager:
             cursor.close()
         return stats
 
+    def search_tracks(self, query: str) -> List[Track]:
+        cursor = self.conn.cursor()
+        search_term = f"%{query}%"
+        sql = """
+            SELECT * FROM tracks 
+            WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
+            ORDER BY artist, album, track_number
+            LIMIT 100
+        """
+        try:
+            cursor.execute(sql, (search_term, search_term, search_term))
+            return [self._row_to_track(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"Search failed: {e}")
+            return []
+        finally:
+            cursor.close()
+
     def get_all_downloads(self) -> List[DownloadItem]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM download_queue ORDER BY id DESC")
