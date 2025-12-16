@@ -496,8 +496,7 @@
         </tr>
         `;
                     });
-                    html += '
-    </table > ';
+                    html += '</table>';
                     tracksDiv.innerHTML = html;
                 });
         }
@@ -579,13 +578,22 @@
                         if (s.disk_used_percent > 90) {
                             document.getElementById('stat-disk').style.color = 'red';
                         }
+                    } else {
+                        console.error("Stats Error:", data.message);
+                        document.getElementById('stat-disk').textContent = "Err";
+                        document.getElementById('stat-disk').title = data.message;
                     }
-                });
+                })
+                .catch(err => console.error("Stats Fetch Failed:", err));
         }
 
         function loadDownloadList() {
             const container = document.getElementById('download-list-container');
             const tbody = document.getElementById('download-table-body');
+
+            // Only show if initially hidden or requested?
+            // The button toggles/shows it. If this is auto-refresh, keep it visible.
+            if (container.style.display === 'none') return;
 
             container.style.display = 'block';
             tbody.innerHTML = '<tr><td colspan="3">Loading...</td></tr>';
@@ -595,6 +603,10 @@
                 .then(data => {
                     if (!data.success) {
                         tbody.innerHTML = `<tr><td colspan="3">Error: ${data.message}</td></tr>`;
+                        return;
+                    }
+                    if (data.items.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#666;">No items in queue.</td></tr>';
                         return;
                     }
 
