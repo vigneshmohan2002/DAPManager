@@ -115,6 +115,10 @@ class ConfigManager:
     def slsk_command(self) -> list:
         return self._config.get("slsk_cmd_base", [])
 
+    @property
+    def acoustid_api_key(self) -> str:
+        return self._config.get("acoustid_api_key", "")
+
 
 def get_config() -> ConfigManager:
     """Get the singleton config instance."""

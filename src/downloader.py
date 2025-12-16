@@ -11,6 +11,7 @@ from typing import List
 from .db_manager import DatabaseManager, DownloadItem, Track
 from .library_scanner import LibraryScanner
 from .utils import write_mbid_to_file
+from .auto_tagger import AutoTagger
 
 # import mutagen # No longer needed, Picard lib handles tagging
 
@@ -45,6 +46,9 @@ class Downloader:
         self.slsk_username = slsk_username
         self.slsk_password = slsk_password
         self.slsk_config = slsk_config or {}
+        
+        # Initialize AutoTagger
+        self.auto_tagger = AutoTagger(self.slsk_config.get("acoustid_api_key", ""))
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)
@@ -216,13 +220,21 @@ class Downloader:
             if track.title
             else "Unknown Title"
         )
+        
+        # Add Track Number if available
+        prefix = ""
+        if track.track_number:
+            try:
+                tn = int(track.track_number)
+                prefix = f"{tn:02d} "
+            except: pass
 
         # Build library path
         library_path = os.path.join(
             self.music_library_dir,  # This should be D:/Music
             safe_artist,
             safe_album,
-            f"{safe_title}.flac",
+            f"{prefix}{safe_title}.flac",
         )
 
         return library_path.replace("\\", "/")
@@ -262,9 +274,24 @@ class Downloader:
 
         for file_path in found_files:
             try:
-                # Write MBID (ONLY if single track mode)
+                # --- AUTO-TAGGING START ---
+                tagged_meta = None
+                try:
+                    logger.info(f"Auto-tagging: {os.path.basename(file_path)}")
+                    tagged_meta = self.auto_tagger.identify_and_tag(file_path)
+                    
+                    if tagged_meta:
+                        logger.info(f"Identified: {tagged_meta['artist']} - {tagged_meta['title']}")
+                    else:
+                        logger.warning(f"Could not identify {os.path.basename(file_path)}. Using fallback.")
+
+                except Exception as e:
+                    logger.error(f"Auto-tagging error: {e}")
+                # --- AUTO-TAGGING END ---
+
+                # Fallback: Write MBID if we have it and tagging failed/skipped
                 # In Album Mode, we can't apply one Track MBID to all files.
-                if not is_album_mode and mbid_to_write:
+                if not tagged_meta and not is_album_mode and mbid_to_write:
                     logger.debug(f"Writing MBID {mbid_to_write} to {os.path.basename(file_path)}")
                     write_mbid_to_file(file_path, mbid_to_write)
 
@@ -291,20 +318,26 @@ class Downloader:
                     logger.warning(f"Could not read tags for moving: {file_path}")
                     continue
                 
-                # Extract basic info for path generation directly or query DB
-                # Querying DB is safer if scanner did its job
-                # We can't easily query DB without knowing what ID it got.
-                # Let's use `_get_library_path_for_track` but construct a temporary Track object
-                # from tags.
-                
-                # Hack: create a temporary Track object from tags
-                s_artist = str(audio.get('artist', ['Unknown Artist'])[0])
-                s_album = str(audio.get('album', ['Unknown Album'])[0])
-                s_title = str(audio.get('title', ['Unknown Title'])[0])
-                
+                # Create Track object for path generation
+                # Prefer tagged_meta if available
+                if tagged_meta:
+                    s_artist = tagged_meta['artist']
+                    s_album = tagged_meta['album']
+                    s_title = tagged_meta['title']
+                    s_track = tagged_meta.get('track_number', 0)
+                else:
+                    s_artist = str(audio.get('artist', ['Unknown Artist'])[0])
+                    s_album = str(audio.get('album', ['Unknown Album'])[0])
+                    s_title = str(audio.get('title', ['Unknown Title'])[0])
+                    if 'tracknumber' in audio:
+                        s_track = audio['tracknumber'][0]
+                    else:
+                        s_track = 0
+
                 temp_track = Track(
                     id=0, mbid="", artist=s_artist, album=s_album, title=s_title,
-                    filepath=file_path, duration=0, file_hash="", local_path=""
+                    filepath=file_path, duration=0, file_hash="", local_path="",
+                    track_number=s_track
                 )
                 
                 # Generate Sync Path
@@ -320,11 +353,7 @@ class Downloader:
                 shutil.move(file_path, dest_path)
                 logger.debug(f"Moved to: {dest_path}")
                 
-                # Update DB with final path
-                # We need to update the entry matched by scanner (which used hash/mbid)
-                # This is hard to pinpoint perfectly without reloading scanner logic.
-                # Simplified: Just run scanner on the DESTINATION file again?
-                # Yes, rescanning the single final file is safest and robust.
+                # Final Scan
                 self.scanner._process_file(dest_path)
 
             except Exception as e:
@@ -368,6 +397,7 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
         music_library_dir=music_library_path,
         slsk_username=config.get("slsk_username"),
         slsk_password=config.get("slsk_password"),
+        slsk_config=config,  # Pass entire config dict
     )
 
     # Run the queue
