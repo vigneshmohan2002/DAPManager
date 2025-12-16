@@ -430,6 +430,7 @@ class EnhancedIpodSyncer:
         mode: SyncMode = SyncMode.PLAYLISTS_ONLY,
         artist_filter: Optional[str] = None,
         skip_downloads: bool = False,
+        reconcile: bool = False,
     ):
         """
         Main sync entry point.
@@ -437,6 +438,7 @@ class EnhancedIpodSyncer:
         :param mode: Sync mode (PLAYLISTS_ONLY, FULL_LIBRARY, or SELECTIVE)
         :param artist_filter: For SELECTIVE mode
         :param skip_downloads: Skip the download queue step
+        :param reconcile: Run iPod reconciliation (matching) before sync
         """
         logger.info("=" * 50)
         logger.info("Starting iPod Sync")
@@ -444,6 +446,9 @@ class EnhancedIpodSyncer:
 
         # if not self._detect_ipod():
         #     return
+
+        if reconcile:
+             self.reconcile_ipod_to_db()
 
         if not skip_downloads:
             self._run_downloader()
@@ -484,12 +489,14 @@ def main_run_sync(
     config: dict,
     sync_mode: str = "playlists",
     conversion_format: str = "flac",
+    reconcile: bool = False,
 ):
     """
     Enhanced main entry point with sync options.
 
     :param sync_mode: "playlists", "library", or "selective"
     :param conversion_format: "flac", "mp3", "opus", "aac"
+    :param reconcile: Run reconciliation step
     """
     # Extract configuration
     slsk_cmd_base = config.get("slsk_cmd_base", [])
@@ -563,4 +570,4 @@ def main_run_sync(
         if not artist_filter:
             artist_filter = None
 
-    syncer.run_sync(mode=mode, artist_filter=artist_filter)
+    syncer.run_sync(mode=mode, artist_filter=artist_filter, reconcile=reconcile)
