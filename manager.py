@@ -141,6 +141,8 @@ def reconcile_ipod(db: DatabaseManager, config: dict):
         slsk_cmd_base=config.get("slsk_cmd_base", []),
         downloads_dir=config.get("downloads_path"),
         music_library_dir=config.get("music_library_path"),
+        slsk_username=config.get("slsk_username"),
+        slsk_password=config.get("slsk_password"),
     )
 
     syncer = EnhancedIpodSyncer(
