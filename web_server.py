@@ -20,6 +20,57 @@ def config_exists():
 task_manager = None
 config = None
 
+class TaskManager:
+    def __init__(self):
+        self.current_task = None
+        self.is_running = False
+        self.message = "Idle"
+        self.progress_detail = ""  # New: detailed progress
+        self.lock = threading.Lock()
+
+    def start_task(self, task_func, args=(), task_name="Task"):
+        with self.lock:
+            if self.is_running:
+                return False, f"Task '{self.current_task}' is already running."
+            
+            self.is_running = True
+            self.current_task = task_name
+            self.message = f"Starting {task_name}..."
+            self.progress_detail = ""
+            
+            thread = threading.Thread(target=self._run_wrapper, args=(task_func, args))
+            thread.daemon = True
+            thread.start()
+            return True, "Task started."
+
+    def update_progress(self, data: dict):
+        with self.lock:
+            if "message" in data:
+                self.message = data["message"]
+            if "detail" in data:
+                self.progress_detail = data["detail"]
+
+    def _run_wrapper(self, func, args):
+        try:
+            # If the function accepts a 'progress_callback' kwarg, pass it
+            import inspect
+            sig = inspect.signature(func)
+            if 'progress_callback' in sig.parameters:
+                func(*args, progress_callback=self.update_progress)
+            else:
+                func(*args)
+                
+            with self.lock:
+                self.message = f"{self.current_task} completed successfully."
+        except Exception as e:
+            logger.error(f"Task failed: {e}", exc_info=True)
+            with self.lock:
+                self.message = f"Error in {self.current_task}: {str(e)}"
+        finally:
+            with self.lock:
+                self.is_running = False
+                self.current_task = None
+
 def init_app_logic():
     global task_manager, config, setup_logging, get_config, DatabaseManager, \
            main_scan_library, main_run_downloader, main_run_sync, \
@@ -38,60 +89,6 @@ def init_app_logic():
     setup_logging()
     config = get_config()
     
-    # Re-initialize TaskManager if needed, or just define it here
-    class TaskManager:
-        def __init__(self):
-            self.current_task = None
-            self.is_running = False
-            self.message = "Idle"
-            self.progress_detail = ""  # New: detailed progress
-            self.lock = threading.Lock()
-
-        def start_task(self, task_func, args=(), task_name="Task"):
-            with self.lock:
-                if self.is_running:
-                    return False, f"Task '{self.current_task}' is already running."
-                
-                self.is_running = True
-                self.current_task = task_name
-                self.message = f"Starting {task_name}..."
-                self.progress_detail = ""
-                
-                thread = threading.Thread(target=self._run_wrapper, args=(task_func, args))
-                thread.daemon = True
-                thread.start()
-                return True, "Task started."
-
-        def update_progress(self, data: dict):
-            with self.lock:
-                if "message" in data:
-                    self.message = data["message"]
-                if "detail" in data:
-                    self.progress_detail = data["detail"]
-
-        def _run_wrapper(self, func, args):
-            try:
-                # If the function accepts a 'progress_callback' kwarg, pass it
-                import inspect
-                sig = inspect.signature(func)
-                if 'progress_callback' in sig.parameters:
-                    func(*args, progress_callback=self.update_progress)
-                else:
-                    func(*args)
-                    
-                with self.lock:
-                    self.message = f"{self.current_task} completed successfully."
-            except Exception as e:
-                logger.error(f"Task failed: {e}", exc_info=True)
-                with self.lock:
-                    self.message = f"Error in {self.current_task}: {str(e)}"
-            finally:
-                with self.lock:
-                    self.is_running = False
-                    self.current_task = None
-                    # Keep last message/detail for a bit? Or clear? 
-                    # Keeping it is better for UI "Last Status"
-
     task_manager = TaskManager()
 
 

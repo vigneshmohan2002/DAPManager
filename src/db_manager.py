@@ -528,6 +528,17 @@ class DatabaseManager:
         cursor.close()
         return items
 
+    def _row_to_download_item(self, row):
+        if not row:
+            return None
+        return DownloadItem(
+            id=row["id"],
+            search_query=row["search_query"],
+            playlist_id=row["playlist_id"],
+            mbid_guess=row["mbid_guess"],
+            status=row["status"],
+        )
+
     def close(self):
         if self.conn:
             self.conn.close()
