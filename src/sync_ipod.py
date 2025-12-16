@@ -520,10 +520,12 @@ def main_run_sync(
     scanner = LibraryScanner(db, picard_cmd_path)
     downloader = Downloader(
         db=db,
-        scanner=scanner,
-        slsk_cmd_base=slsk_cmd_base,
-        downloads_dir=downloads_path,
-        music_library_dir=music_library_path,
+        scanner=LibraryScanner(db, config.get("picard_cmd_path")),
+        slsk_cmd_base=config.get("slsk_cmd_base", []),
+        downloads_dir=config.get("downloads_path"),
+        music_library_dir=config.get("music_library_path"),
+        slsk_username=config.get("slsk_username"),
+        slsk_password=config.get("slsk_password"),
     )
 
     syncer = EnhancedIpodSyncer(
