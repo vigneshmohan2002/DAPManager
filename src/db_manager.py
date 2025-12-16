@@ -469,16 +469,46 @@ class DatabaseManager:
             spotify_url=row["spotify_url"],
         )
 
-    def _row_to_download_item(self, row):
-        if not row:
-            return None
-        return DownloadItem(
-            id=row["id"],
-            search_query=row["search_query"],
-            playlist_id=row["playlist_id"],
-            mbid_guess=row["mbid_guess"],
-            status=row["status"],
-        )
+    def get_library_stats(self) -> dict:
+        cursor = self.conn.cursor()
+        stats = {}
+        try:
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            stats['tracks'] = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
+            stats['artists'] = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM albums")
+            stats['albums'] = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM playlists")
+            stats['playlists'] = cursor.fetchone()[0]
+
+            # Incomplete Albums count
+            cursor.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT t.release_mbid
+                    FROM tracks t JOIN albums a ON t.release_mbid = a.release_mbid
+                    WHERE t.local_path IS NOT NULL
+                    GROUP BY t.release_mbid
+                    HAVING COUNT(DISTINCT t.track_number) < a.total_tracks
+                )
+            """)
+            stats['incomplete_albums'] = cursor.fetchone()[0]
+            
+        except sqlite3.Error as e:
+            logger.error(f"Error getting stats: {e}")
+        finally:
+            cursor.close()
+        return stats
+
+    def get_all_downloads(self) -> List[DownloadItem]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM download_queue ORDER BY id DESC")
+        items = [self._row_to_download_item(row) for row in cursor.fetchall()]
+        cursor.close()
+        return items
 
     def close(self):
         if self.conn:

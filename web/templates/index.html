@@ -55,6 +55,16 @@
             <div id="status-bar" class="status-idle">Status: Idle</div>
         </header>
 
+        <!-- Stats Dashboard -->
+        <div id="stats-dashboard"
+            style="display: flex; justify-content: space-between; background: #222; padding: 10px; border-radius: 8px; margin-bottom: 20px; font-size: 14px;">
+            <div>Tracks: <span id="stat-tracks">0</span></div>
+            <div>Albums: <span id="stat-albums">0</span></div>
+            <div>Artists: <span id="stat-artists">0</span></div>
+            <div>Incomplete: <span id="stat-incomplete">0</span></div>
+            <div>Disk Free: <span id="stat-disk">0 GB</span></div>
+        </div>
+
         <main>
             <section class="card">
                 <h2>Library Management</h2>
@@ -130,6 +140,25 @@
                         <button onclick="triggerSync()">Start Sync</button>
                     </div>
                 </div>
+            </section>
+
+            <div style="margin-top:20px;">
+                <h3>All Downloads</h3>
+                <button onclick="loadDownloadList()">Refresh Queue List</button>
+                <div id="download-list-container"
+                    style="margin-top:10px; max-height: 200px; overflow-y: auto; background: #222; border: 1px solid #444; display: none;">
+                    <table style="width:100%; border-collapse: collapse; font-size: 13px;">
+                        <thead>
+                            <tr style="background:#333; text-align:left;">
+                                <th style="padding:5px;">ID</th>
+                                <th style="padding:5px;">Query</th>
+                                <th style="padding:5px;">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="download-table-body"></tbody>
+                    </table>
+                </div>
+            </div>
             </section>
 
             <section class="card">
@@ -509,9 +538,69 @@
                 });
         }
 
+        // --- Stats & Downloads ---
+        function loadStats() {
+            fetch('/api/stats')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        const s = data.stats;
+                        document.getElementById('stat-tracks').textContent = s.tracks;
+                        document.getElementById('stat-albums').textContent = s.albums;
+                        document.getElementById('stat-artists').textContent = s.artists;
+                        document.getElementById('stat-incomplete').textContent = s.incomplete_albums;
+                        document.getElementById('stat-disk').textContent = `${s.disk_free_gb} GB`;
+
+                        // Color code disk usage?
+                        if (s.disk_used_percent > 90) {
+                            document.getElementById('stat-disk').style.color = 'red';
+                        }
+                    }
+                });
+        }
+
+        function loadDownloadList() {
+            const container = document.getElementById('download-list-container');
+            const tbody = document.getElementById('download-table-body');
+
+            container.style.display = 'block';
+            tbody.innerHTML = '<tr><td colspan="3">Loading...</td></tr>';
+
+            fetch('/api/downloads/list')
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        tbody.innerHTML = `<tr><td colspan="3">Error: ${data.message}</td></tr>`;
+                        return;
+                    }
+
+                    tbody.innerHTML = '';
+                    data.items.forEach(item => {
+                        const tr = document.createElement('tr');
+                        tr.style.borderBottom = '1px solid #333';
+
+                        let statusColor = '#fff';
+                        if (item.status === 'success') statusColor = '#4caf50';
+                        if (item.status === 'failed') statusColor = '#f44336';
+
+                        tr.innerHTML = `
+                            <td style="padding:5px;">${item.id}</td>
+                            <td style="padding:5px;">${item.query}</td>
+                            <td style="padding:5px; color:${statusColor}">${item.status}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                });
+        }
+
         // Poll status every 2 seconds
         setInterval(updateStatus, 2000);
         updateStatus();
+
+        // Initial Stats Load
+        loadStats();
+        // Refresh Stats periodically (every 30s)
+        setInterval(loadStats, 30000);
     </script>
 </body>
 
