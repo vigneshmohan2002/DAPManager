@@ -1,0 +1,19 @@
+{
+    "database_file": "dap_library.db",
+    "music_library_path": "C:\\Music\\DAP_Library",
+    "downloads_path": "C:\\Music\\Downloads",
+    "ffmpeg_path": "ffmpeg.exe",
+    "ipod_mount_point": "E:\\",
+    "ipod_music_dir_name": "Music",
+    "ipod_playlist_dir_name": "Playlists",
+    "slsk_cmd_base": [
+        "sldl.exe"
+    ],
+    "conversion_sample_rate": 44100,
+    "conversion_bit_depth": 16,
+    "conversion_quality": null,
+    "slsk_username": "",
+    "slsk_password": "",
+    "acoustid_api_key": "",
+    "contact_email": ""
+}
