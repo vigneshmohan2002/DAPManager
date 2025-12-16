@@ -1,12 +1,10 @@
 {
-    "music_library_path": "/tmp/music",
-    "downloads_path": "/tmp/dl",
-    "slsk_command": [
-        "/Users/vigneshmohanarajan1/Desktop/DAPManger/bin/slsk-batchdl"
-    ],
-    "picard_cmd_path": "picard",
+    "music_library_path": "C:\\Users\\Vignesh\\Desktop\\Music Library",
+    "downloads_path": "C:\\Users\\Vignesh\\Desktop\\NewlyDownloadedMusic",
+    "slsk_command": [],
+    "picard_cmd_path": "C:\\Program Files\\MusicBrainz Picard\\picard.exe",
     "ffmpeg_path": "ffmpeg",
-    "ipod_mount_point": null,
+    "ipod_mount_point": "D:",
     "ipod_music_dir_name": "Music",
     "ipod_playlist_dir_name": "Playlists",
     "database_file": "dap_library.db",
