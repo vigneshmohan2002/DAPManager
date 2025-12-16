@@ -30,7 +30,7 @@ class SpotifyClient:
     def _setup_clients(self):
         """Initializes and authenticates the API clients."""
 
-        # 1. Setup Spotify (Spotipy)
+        # Setup Spotify (Spotipy)
         # Relies on SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET env variables
         try:
             auth_manager = SpotifyClientCredentials()
@@ -43,7 +43,7 @@ class SpotifyClient:
             print(f"Error: {e}")
             raise
 
-        # 2. Setup MusicBrainz (musicbrainzngs)
+        # Setup MusicBrainz (musicbrainzngs)
         # This is required by their API terms of service.
         try:
             config = get_config()
@@ -73,21 +73,21 @@ class SpotifyClient:
 
         print(f"Processing playlist ID: {playlist_id}")
 
-        # 1. Fetch playlist details and all tracks (handles pagination)
+        # Fetch playlist details and all tracks (handles pagination)
         playlist_name, spotify_tracks = self._fetch_playlist_details(playlist_id)
 
         if not playlist_name or not spotify_tracks:
             print("E: Could not fetch playlist details. Exiting.")
             return
 
-        # 2. Add/Update the playlist in our database
+        # Add/Update the playlist in our database
         playlist_data = Playlist(
             playlist_id=playlist_id, name=playlist_name, spotify_url=playlist_url
         )
         self.db.add_or_update_playlist(playlist_data)
         print(f"\nPlaylist '{playlist_name}' saved to database.")
 
-        # 3. Process each track
+        # Process each track
         print(f"Found {len(spotify_tracks)} tracks. Processing each...")
         for i, item in enumerate(spotify_tracks):
             if not item or not item.get("track"):
@@ -187,7 +187,7 @@ class SpotifyClient:
             print(f"    E: Track data is malformed. Skipping.")
             return
 
-        # 1. Get MBID from ISRC
+        # Get MBID from ISRC
         mbid = self._get_mbid_from_isrc(isrc)
 
         if not mbid:
@@ -195,10 +195,10 @@ class SpotifyClient:
             return
         print(f"    I: Matched: ISRC {isrc} -> MBID {mbid}")
 
-        # 2. Check our database
+        # Check our database
         existing_track = self.db.get_track_by_mbid(mbid)
 
-        # 3. Create/Update the master track data
+        # Create/Update the master track data
 
         # === START BUG FIX ===
         # Check if track exists. If so, update it but PRESERVE
@@ -222,10 +222,10 @@ class SpotifyClient:
         self.db.add_or_update_track(track_data)
         # === END BUG FIX ===
 
-        # 4. Link this track to the playlist
+        # Link this track to the playlist
         self.db.link_track_to_playlist(playlist_id, mbid, track_order)
 
-        # 5. Decide if download is needed
+        # Decide if download is needed
         if track_data.local_path:
             # We have this track in our local library already.
             print(f"    S: Found locally: {os.path.basename(track_data.local_path)}")
@@ -243,7 +243,7 @@ class SpotifyClient:
 # --- Main execution block ---
 if __name__ == "__main__":
 
-    # 1. Check for environment variables
+    # Check for environment variables
     if (
         "SPOTIPY_CLIENT_ID" not in os.environ
         or "SPOTIPY_CLIENT_SECRET" not in os.environ
@@ -256,7 +256,7 @@ if __name__ == "__main__":
         print("=" * 80)
         sys.exit(1)
 
-    # 2. Check for command-line argument
+    # Check for command-line argument
     if len(sys.argv) < 2:
         print("=" * 80)
         print("Usage: python spotify_client.py <full_spotify_playlist_url>")

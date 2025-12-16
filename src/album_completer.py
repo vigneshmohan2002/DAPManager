@@ -1,6 +1,3 @@
-# ============================================================================
-# FILE: album_completer.py
-# ============================================================================
 """
 Logic to identify missing tracks in albums and queue them for download.
 """
@@ -65,7 +62,7 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
     Compares local DB tracks vs Official MusicBrainz tracklist
     and adds missing songs to the download queue.
     """
-    # 1. Get Album Info (for logging/search)
+    # Get Album Info (for logging/search)
     cursor = db.conn.cursor()
     cursor.execute(
         "SELECT artist, title FROM tracks WHERE release_mbid = ? LIMIT 1",
@@ -81,7 +78,7 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
     artist_name, album_title = row[0], row[1]
     print(f"\nChecking: {artist_name} - {album_title} ...")
 
-    # 2. Get Local Tracks (Disc, Track)
+    # Get Local Tracks (Disc, Track)
     local_tracks = set()
     cursor = db.conn.cursor()
     cursor.execute(
@@ -92,39 +89,78 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
         local_tracks.add((r[0], r[1]))
     cursor.close()
 
-    # 3. Get Official List
+    # Get Official List
     official_tracks = fetch_album_tracklist(release_mbid)
 
     if not official_tracks:
         print("  > Failed to fetch official tracklist (or album has no tracks).")
         return
 
-    # 4. Find Missing & Queue
+    # Find Missing & Queue
     missing_count = 0
+    missing_items = []
 
     for (disc, track), title in official_tracks.items():
         if (disc, track) not in local_tracks:
-            # Construct Search Query: "Artist - Title"
-            search_query = f"{artist_name} - {title}"
-
-            print(f"  > Missing: Disc {disc} Track {track}: {title}")
-
-            # Create Download Item
-            item = DownloadItem(
-                search_query=search_query,
-                playlist_id=f"COMPLETER_{release_mbid}",
-                mbid_guess=release_mbid,
-                status="pending",
-            )
-
-            # Add to DB
-            db.queue_download(item)
             missing_count += 1
-
-    if missing_count > 0:
-        print(f"  > [OK] Queued {missing_count} missing tracks.")
+            missing_items.append((disc, track, title))
+            
+    if missing_count == 0:
+        print("  > Album complete!")
     else:
-        print("  > [OK] Album is already complete.")
+        print(f"  > Missing {missing_count} tracks.")
+        
+        # --- NEW LOGIC: Queue Album if many missing ---
+        # Threshold: If missing more than 60% OR more than 3 tracks
+        total_tracks = len(official_tracks) or 1
+        missing_pct = (missing_count / total_tracks) * 100
+        
+        if missing_count > 3 or missing_pct > 60:
+            print(f"  > Missing {missing_count}/{total_tracks} ({missing_pct:.1f}%). Queuing ENTIRE ALBUM.")
+            print(f"  > Missing {missing_count} tracks. Queuing ENTIRE ALBUM download.")
+            query = f"::ALBUM:: {artist_name} - {album_title}"
+            
+            # Check if already queued
+            q_cursor = db.conn.cursor()
+            q_cursor.execute("SELECT id FROM downloads WHERE search_query = ?", (query,))
+            if q_cursor.fetchone():
+                print("    (Album already in queue)")
+            else:
+                db.add_to_queue(
+                    search_query=query,
+                    track_mbid="ALBUM_MODE", # Special marker
+                    artist=artist_name,
+                    title=f"[Full Album] {album_title}"
+                )
+                print("    [+] Added full album to download queue.")
+        else:
+            # Traditional: Queue individual tracks
+            for disc, track, title in missing_items:
+                print(f"    - Missing: {disc}-{track} {title}")
+                
+                # Construct search query
+                query = f"{artist_name} - {title}"
+                
+                # Check if already in queue
+                # (Simple check to avoid duplicates)
+                q_cursor = db.conn.cursor()
+                q_cursor.execute("SELECT id FROM downloads WHERE search_query = ?", (query,))
+                if q_cursor.fetchone():
+                    print("      (Already in queue)")
+                    continue
+
+                # Add to DB Queue
+                # We don't have the specific Track MBID easily here unless we query MB again
+                # But we can leave MBID empty or put a placeholder. 
+                # Ideally we fetch it from official_tracks if we stored it.
+                # For now, use placeholder or rely on lookup.
+                db.add_to_queue(
+                    search_query=query,
+                    track_mbid="", # Scanner will resolve it
+                    artist=artist_name,
+                    title=title
+                )
+                print("      [+] Added to download queue.")
 
 
 def batch_complete_all(db: DatabaseManager):
@@ -147,3 +183,23 @@ def batch_complete_all(db: DatabaseManager):
         queue_missing_tracks_for_album(db, album["mbid"])
 
     print("\nBatch queueing complete!")
+
+def audit_library(db: DatabaseManager):
+    """Identify albums that are missing tracks based on total_tracks metadata."""
+    try:
+        incomplete_albums = db.get_incomplete_albums()
+    except AttributeError:
+        logger.error("Error: db_manager.py has not been updated with 'get_incomplete_albums'.")
+        return
+    except Exception as e:
+        logger.error(f"Error querying database: {e}")
+        return
+
+    if not incomplete_albums:
+        logger.info("All identified albums in your library appear to be complete!")
+        return
+
+    logger.info(f"ALBUM COMPLETENESS AUDIT: Found {len(incomplete_albums)} incomplete albums.")
+    for item in incomplete_albums:
+        status = f"{item['have']}/{item['total']} (Miss {item['missing']})"
+        logger.info(f"MISSING: {item['artist']} - {item['album']} [{status}]")

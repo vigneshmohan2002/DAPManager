@@ -1,6 +1,4 @@
-# ============================================================================
-# FILE: manager.py (COMPLETE UPDATED VERSION)
-# ============================================================================
+
 """
 Main command-line interface for DAP Manager with enhanced sync options
 and Album Completeness Auditing.
@@ -20,7 +18,7 @@ from src.spotify_client import SpotifyClient
 from src.downloader import main_run_downloader, Downloader
 from src.sync_ipod import main_run_sync
 from src.utils import EnvironmentManager
-from src.batch_sync import batch_sync
+from src.album_completer import audit_library
 # from src.clear_dupes import find_and_resolve_duplicates # Imported dynamically in main
 
 # Setup logging first
@@ -194,46 +192,7 @@ def clean_ipod_music(db, config):
         print(f"Error: {e}")
 
 
-def audit_library(db: DatabaseManager):
-    """Identify albums that are missing tracks based on total_tracks metadata."""
-    print("\n" + "=" * 60)
-    print("   ALBUM COMPLETENESS AUDIT")
-    print("=" * 60)
 
-    try:
-        # This method must exist in db_manager.py (as per design)
-        incomplete_albums = db.get_incomplete_albums()
-    except AttributeError:
-        print("Error: db_manager.py has not been updated with 'get_incomplete_albums'.")
-        return
-    except Exception as e:
-        print(f"Error querying database: {e}")
-        return
-
-    if not incomplete_albums:
-        print("\nAll identified albums in your library appear to be complete!")
-        print(
-            "(Note: This only works for files tagged with MusicBrainz Album/Track IDs)"
-        )
-        return
-
-    print(f"{'ARTIST':<25} | {'ALBUM':<30} | {'STATUS':<15}")
-    print("-" * 75)
-
-    for item in incomplete_albums:
-        # Truncate names for display
-        artist = (
-            (item["artist"][:22] + "..") if len(item["artist"]) > 22 else item["artist"]
-        )
-        album = (
-            (item["album"][:27] + "..") if len(item["album"]) > 27 else item["album"]
-        )
-
-        status = f"{item['have']}/{item['total']} (Miss {item['missing']})"
-        print(f"{artist:<25} | {album:<30} | {status:<15}")
-
-    print("-" * 75)
-    print(f"Found {len(incomplete_albums)} incomplete albums.")
 
 
 def main():
@@ -441,13 +400,7 @@ def main():
 
             elif choice == "11":
                 # 11. Audit Incomplete Albums (NEW)
-                print("\n> AUDIT: Checking album completeness...")
-                with DatabaseManager(db_path) as db:
-                    audit_library(db)
-                logger.info("Album audit finished.")
-
-            elif choice == "12":
-                # 12. Exit
+                # 11. Exit
                 print("\n" + "=" * 60)
                 print("  Thanks for using DAP Manager!")
                 print("=" * 60)
@@ -455,7 +408,7 @@ def main():
                 break
 
             else:
-                print(f"\n Invalid choice '{choice}'. Please enter 1-12.")
+                print(f"\n Invalid choice '{choice}'. Please enter 1-11.")
 
         except KeyboardInterrupt:
             print("\n\nOperation cancelled by user (Ctrl+C).")
