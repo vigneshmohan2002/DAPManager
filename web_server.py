@@ -44,6 +44,7 @@ def init_app_logic():
             self.current_task = None
             self.is_running = False
             self.message = "Idle"
+            self.progress_detail = ""  # New: detailed progress
             self.lock = threading.Lock()
 
         def start_task(self, task_func, args=(), task_name="Task"):
@@ -54,15 +55,30 @@ def init_app_logic():
                 self.is_running = True
                 self.current_task = task_name
                 self.message = f"Starting {task_name}..."
+                self.progress_detail = ""
                 
                 thread = threading.Thread(target=self._run_wrapper, args=(task_func, args))
                 thread.daemon = True
                 thread.start()
                 return True, "Task started."
 
+        def update_progress(self, data: dict):
+            with self.lock:
+                if "message" in data:
+                    self.message = data["message"]
+                if "detail" in data:
+                    self.progress_detail = data["detail"]
+
         def _run_wrapper(self, func, args):
             try:
-                func(*args)
+                # If the function accepts a 'progress_callback' kwarg, pass it
+                import inspect
+                sig = inspect.signature(func)
+                if 'progress_callback' in sig.parameters:
+                    func(*args, progress_callback=self.update_progress)
+                else:
+                    func(*args)
+                    
                 with self.lock:
                     self.message = f"{self.current_task} completed successfully."
             except Exception as e:
@@ -73,6 +89,8 @@ def init_app_logic():
                 with self.lock:
                     self.is_running = False
                     self.current_task = None
+                    # Keep last message/detail for a bit? Or clear? 
+                    # Keeping it is better for UI "Last Status"
 
     task_manager = TaskManager()
 
@@ -87,13 +105,13 @@ def run_scan(db_path, conf):
     with DatabaseManager(db_path) as db:
         main_scan_library(db, conf._config)
 
-def run_download(db_path, conf):
+def run_download(db_path, conf, progress_callback=None):
     with DatabaseManager(db_path) as db:
-        main_run_downloader(db, conf._config)
+        main_run_downloader(db, conf._config, progress_callback=progress_callback)
 
-def run_sync(db_path, conf, mode, fmt):
+def run_sync(db_path, conf, mode, fmt, reconcile=False):
     with DatabaseManager(db_path) as db:
-        main_run_sync(db, conf._config, sync_mode=mode, conversion_format=fmt)
+        main_run_sync(db, conf._config, sync_mode=mode, conversion_format=fmt, reconcile=reconcile)
 
 def run_batch():
     batch_sync()
@@ -167,11 +185,16 @@ def save_config():
 def status():
     if not task_manager:
         return jsonify({'running': False, 'message': 'Not initialized'})
+@app.route('/api/status')
+def status():
+    if not task_manager:
+        return jsonify({'running': False, 'message': 'Not initialized'})
     with task_manager.lock:
         return jsonify({
             'running': task_manager.is_running,
             'task': task_manager.current_task,
-            'message': task_manager.message
+            'message': task_manager.message,
+            'detail': task_manager.progress_detail
         })
 
 @app.route('/api/scan', methods=['POST'])
