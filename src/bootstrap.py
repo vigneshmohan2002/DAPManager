@@ -82,7 +82,7 @@ def run_bootstrap_sequence(config_data: dict, run_download: bool = False):
         logger.info("Step 3/4: Syncing iPod (Playlists Mode)...")
         try:
             with DatabaseManager(db_path) as db:
-                main_run_sync(db, config._config, sync_mode="playlists", conversion_format="flac")
+                main_run_sync(db, config._config, sync_mode="playlists", conversion_format="flac", reconcile=True)
         except Exception as e:
             logger.error(f"Sync failed (continuing): {e}")
     else:
