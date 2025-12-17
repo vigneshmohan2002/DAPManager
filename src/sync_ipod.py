@@ -12,6 +12,7 @@ from enum import Enum
 from .db_manager import DatabaseManager, Track
 from .library_scanner import LibraryScanner
 from .downloader import Downloader
+import shutil
 import mutagen
 from .utils import get_mbid_from_tags
 
@@ -425,6 +426,106 @@ class EnhancedIpodSyncer:
 
         logger.info("Playlist generation complete")
 
+    def _import_missing_tracks_from_ipod(self):
+        """
+        Scans iPod for tracks that are NOT in the local database and copies them back.
+        Does NOT delete anything.
+        """
+        logger.info("--- Step 3b: Importing Missing Tracks from iPod ---")
+        ipod_music_path = self._get_ipod_music_path()
+
+        if not os.path.exists(ipod_music_path):
+            logger.warning("iPod music path not found, skipping import.")
+            return
+
+        # 1. Get all known MBIDs from DB
+        mbid_map = self.db.get_mbid_to_track_path_map()
+        
+        # 2. Prepare restore destination
+        # We need the root music library path. We can infer it from the DB tracks or pass it in.
+        # But `EnhancedIpodSyncer` doesn't strictly know the library root in __init__.
+        # We can try to use the downloader's config if available, or just a default relative to CWD?
+        # A safer bet is looking at where the DB is. Let's assume a 'Restored_From_iPod' folder 
+        # in the parent dir of the DB or just explicit config.
+        # For now, let's use the folder where `dap_library.db` resides as the base.
+        restore_base = os.path.join(os.path.dirname(os.path.abspath(self.db.db_path)), "Restored_From_iPod")
+        os.makedirs(restore_base, exist_ok=True)
+
+        imported_count = 0
+        from .library_scanner import SUPPORTED_EXTENSIONS # re-import to be safe/lazy
+
+        for root, _, files in os.walk(ipod_music_path):
+            for file in files:
+                if not file.lower().endswith(SUPPORTED_EXTENSIONS):
+                    continue
+                
+                ipod_file_path = os.path.join(root, file)
+                
+                # Check if this file is known
+                # We mainly rely on MBID if possible
+                file_mbid = get_mbid_from_tags(ipod_file_path)
+                
+                should_import = False
+                
+                if file_mbid and file_mbid in mbid_map:
+                    # We have this MBID. 
+                    # Optional: We could check if the local file ACTUALLY exists.
+                    local_path = mbid_map[file_mbid]
+                    if not os.path.exists(local_path):
+                        logger.info(f"Local file missing for {file_mbid}, restoring from iPod...")
+                        should_import = True
+                    else:
+                        pass # We have it.
+                else:
+                    # MBID not in DB (or no MBID).
+                    # This is a "new" file from the iPod's perspective.
+                    should_import = True
+                
+                if should_import:
+                    # Construct destination path
+                    rel_path = os.path.relpath(ipod_file_path, ipod_music_path)
+                    dest_path = os.path.join(restore_base, rel_path)
+                    
+                    if os.path.exists(dest_path):
+                         # Already restored check? Or simple skip to avoid overwrite loops
+                         continue
+                         
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    try:
+                        shutil.copy2(ipod_file_path, dest_path)
+                        logger.info(f"Imported: {ipod_file_path} -> {dest_path}")
+                        imported_count += 1
+                        print(f"Restored: {file}")
+                    except Exception as e:
+                        logger.error(f"Failed to import {file}: {e}")
+
+        if imported_count > 0:
+            logger.info(f"Imported {imported_count} tracks from iPod.")
+            print(f"\nSUCCESS: Restored {imported_count} missing tracks from iPod to '{restore_base}'")
+            print("Please scan your library (Option 1) to add them to the database.")
+        else:
+            logger.info("No missing tracks found on iPod.")
+
+
+    def _backup_database(self):
+        """Copies the local database to the iPod root."""
+        logger.info("--- Step 4: Backing up Database ---")
+        try:
+            db_source = self.db.db_path
+            # If db_path is just a filename, convert to absolute path if needed, 
+            # though usually it's best to rely on what was passed to DB manager.
+            # Assuming db_source is valid as it's open.
+            
+            # Construct destination: [ipod_mount]/dap_library.db
+            db_dest = os.path.join(self.ipod_mount_point, os.path.basename(db_source))
+
+            logger.info(f"Backing up DB: {db_source} -> {db_dest}")
+            shutil.copy2(db_source, db_dest)
+            logger.info("Database backup successful")
+        except Exception as e:
+            logger.error(f"Database backup failed: {e}")
+            print(f"WARNING: Database backup failed: {e}")
+
     def run_sync(
         self,
         mode: SyncMode = SyncMode.PLAYLISTS_ONLY,
@@ -454,7 +555,14 @@ class EnhancedIpodSyncer:
             self._run_downloader()
 
         self._sync_tracks(mode, artist_filter)
+        
+        # New Step: Import from iPod (2-Way)
+        self._import_missing_tracks_from_ipod()
+
         self._generate_playlists()
+        
+        # New Step: Backup Database
+        self._backup_database()
 
         logger.info("=" * 50)
         logger.info("Sync Complete!")
