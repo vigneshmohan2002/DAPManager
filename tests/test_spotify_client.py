@@ -23,10 +23,11 @@ def mock_env_vars(monkeypatch):
     monkeypatch.delenv("SPOTIPY_CLIENT_SECRET")
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_spotify_client_initialization(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_spotify_client_initialization(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test Spotify client initialization."""
     # Setup mocks
     mock_auth_manager = MagicMock()
@@ -42,32 +43,33 @@ def test_spotify_client_initialization(mock_musicbrainz, mock_spotify, mock_cred
     assert client.sp is not None
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_process_playlist_invalid_url(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_process_playlist_invalid_url(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test processing playlist with invalid URL."""
-    # Setup mocks
     mock_auth_manager = MagicMock()
     mock_credentials.return_value = mock_auth_manager
     mock_sp_instance = MagicMock()
     mock_spotify.return_value = mock_sp_instance
 
+    # Make the API call raise SpotifyException for an invalid playlist
+    import spotipy.exceptions
+    mock_sp_instance.playlist.side_effect = spotipy.exceptions.SpotifyException(
+        404, -1, "Not found"
+    )
+
     client = SpotifyClient(db)
-
-    # Mock the _setup_clients to avoid actual authentication
-    client._setup_clients = MagicMock()
-
     client.process_playlist("invalid_url")
-
-    # Should handle invalid URL gracefully
-    # The actual behavior depends on implementation but shouldn't crash
+    # Should handle invalid URL gracefully without crashing
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_get_mbid_from_isrc_success(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_get_mbid_from_isrc_success(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test successful MBID retrieval from ISRC."""
     # Setup mocks
     mock_auth_manager = MagicMock()
@@ -91,33 +93,36 @@ def test_get_mbid_from_isrc_success(mock_musicbrainz, mock_spotify, mock_credent
     assert mbid == "test_mbid"
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_get_mbid_from_isrc_failure(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_get_mbid_from_isrc_failure(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test failed MBID retrieval from ISRC."""
-    # Setup mocks
     mock_auth_manager = MagicMock()
     mock_credentials.return_value = mock_auth_manager
     mock_sp_instance = MagicMock()
     mock_spotify.return_value = mock_sp_instance
 
-    # Setup mock to raise exception
-    mock_musicbrainz.get_recordings_by_isrc.side_effect = Exception("API Error")
+    # Use real WebServiceError so the except clause can catch it
+    import musicbrainzngs as real_mb
+    mock_musicbrainz.WebServiceError = real_mb.WebServiceError
+    mock_musicbrainz.get_recordings_by_isrc.side_effect = real_mb.WebServiceError(
+        "API Error"
+    )
 
     client = SpotifyClient(db)
-    # Mock the _setup_clients to avoid actual authentication
-    client._setup_clients = MagicMock()
 
     mbid = client._get_mbid_from_isrc("USXX123456789")
 
     assert mbid is None
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_process_track_no_isrc(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_process_track_no_isrc(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test processing track without ISRC."""
     # Setup mocks
     mock_auth_manager = MagicMock()
@@ -142,29 +147,31 @@ def test_process_track_no_isrc(mock_musicbrainz, mock_spotify, mock_credentials,
     # If we get here without exception, the test passes
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_process_track_success(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_process_track_success(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test successful track processing."""
-    # Setup mocks
     mock_auth_manager = MagicMock()
     mock_credentials.return_value = mock_auth_manager
     mock_sp_instance = MagicMock()
     mock_spotify.return_value = mock_sp_instance
 
-    # Setup mock MusicBrainz response
     mock_musicbrainz.get_recordings_by_isrc.return_value = {
         'isrc': {
             'recording-list': [{'id': 'test_mbid'}]
         }
     }
 
-    client = SpotifyClient(db)
-    # Mock the _setup_clients to avoid actual authentication
-    client._setup_clients = MagicMock()
+    # The playlist must exist for the foreign-key link to succeed
+    db.add_or_update_playlist(Playlist(
+        playlist_id="test_playlist", name="Test Playlist",
+        spotify_url="https://open.spotify.com/playlist/test_playlist",
+    ))
 
-    # Track with ISRC
+    client = SpotifyClient(db)
+
     spotify_track = {
         'name': 'Test Song',
         'artists': [{'name': 'Test Artist'}],
@@ -172,25 +179,24 @@ def test_process_track_success(mock_musicbrainz, mock_spotify, mock_credentials,
         'external_ids': {'isrc': 'USXX123456789'}
     }
 
-    # Should process without raising exception
     client._process_track(spotify_track, "test_playlist", 1)
 
-    # Verify track was added to database
-    # This would normally work but depends on how the mock is set up
+    track = db.get_track_by_mbid("test_mbid")
+    assert track is not None
+    assert track.title == "Test Song"
 
 
+@patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
 @patch('src.spotify_client.musicbrainzngs')
-def test_process_track_existing_track(mock_musicbrainz, mock_spotify, mock_credentials, db):
+def test_process_track_existing_track(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test processing track that already exists in database."""
-    # Setup mocks
     mock_auth_manager = MagicMock()
     mock_credentials.return_value = mock_auth_manager
     mock_sp_instance = MagicMock()
     mock_spotify.return_value = mock_sp_instance
 
-    # Setup existing track in database
     existing_track = Track(
         mbid="test_mbid",
         title="Old Song",
@@ -200,7 +206,12 @@ def test_process_track_existing_track(mock_musicbrainz, mock_spotify, mock_crede
     )
     db.add_or_update_track(existing_track)
 
-    # Setup mock MusicBrainz response
+    # The playlist must exist for the foreign-key link to succeed
+    db.add_or_update_playlist(Playlist(
+        playlist_id="test_playlist", name="Test Playlist",
+        spotify_url="https://open.spotify.com/playlist/test_playlist",
+    ))
+
     mock_musicbrainz.get_recordings_by_isrc.return_value = {
         'isrc': {
             'recording-list': [{'id': 'test_mbid'}]
@@ -208,10 +219,7 @@ def test_process_track_existing_track(mock_musicbrainz, mock_spotify, mock_crede
     }
 
     client = SpotifyClient(db)
-    # Mock the _setup_clients to avoid actual authentication
-    client._setup_clients = MagicMock()
 
-    # Track with same MBID but different metadata
     spotify_track = {
         'name': 'New Song Name',
         'artists': [{'name': 'New Artist Name'}],
@@ -219,9 +227,9 @@ def test_process_track_existing_track(mock_musicbrainz, mock_spotify, mock_crede
         'external_ids': {'isrc': 'USXX123456789'}
     }
 
-    # Should process without raising exception
     client._process_track(spotify_track, "test_playlist", 1)
 
-    # Verify track was updated but local path preserved
     updated_track = db.get_track_by_mbid("test_mbid")
     assert updated_track is not None
+    assert updated_track.local_path == "/test/path.flac"
+    assert updated_track.title == "New Song Name"

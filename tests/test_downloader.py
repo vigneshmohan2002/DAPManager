@@ -209,7 +209,8 @@ def test_main_run_downloader(db, temp_dirs):
         "slsk_password": "test_pass"
     }
 
-    with patch('src.downloader.Downloader') as mock_downloader_class:
+    with patch('src.downloader.Downloader') as mock_downloader_class, \
+         patch('src.downloader.LibraryScanner') as mock_scanner_class:
         mock_downloader = MagicMock()
         mock_downloader_class.return_value = mock_downloader
 
