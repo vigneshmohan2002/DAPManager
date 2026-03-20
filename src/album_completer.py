@@ -7,7 +7,6 @@ import time
 import musicbrainzngs
 from typing import Dict, Tuple
 from .db_manager import DatabaseManager, DownloadItem
-from .downloader import main_run_downloader
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,7 @@ def fetch_album_tracklist(release_mbid: str) -> Dict[Tuple[int, int], str]:
         # Set User Agent (Required by MusicBrainz)
         try:
             musicbrainzngs.set_useragent("DAPManager", "0.1.0", "contact@example.com")
-        except:
+        except Exception:
             pass
 
         # Respect rate limit (1 req/sec)
@@ -155,41 +154,40 @@ def queue_missing_tracks_for_album(db: DatabaseManager, release_mbid: str):
             print(f"  > Missing {missing_count}/{total_tracks} ({missing_pct:.1f}%). Queuing ENTIRE ALBUM.")
             query = f"::ALBUM:: {artist_name} - {album_title}"
             
-            # Check if already queued
             q_cursor = db.conn.cursor()
-            q_cursor.execute("SELECT id FROM downloads WHERE search_query = ?", (query,))
+            q_cursor.execute("SELECT id FROM download_queue WHERE search_query = ?", (query,))
             if q_cursor.fetchone():
                 print("    (Album already in queue)")
             else:
-                db.add_to_queue(
+                db.queue_download(DownloadItem(
                     search_query=query,
-                    track_mbid="ALBUM_MODE", # Special marker
-                    artist=artist_name,
-                    title=f"[Full Album] {album_title}"
-                )
+                    playlist_id="AUDIT",
+                    mbid_guess="ALBUM_MODE",
+                    status="pending",
+                ))
                 print("    [+] Added full album to download queue.")
+            q_cursor.close()
         else:
-            # Traditional: Queue individual tracks
             for item in missing_items:
                 disc, track, title = item['disc'], item['track'], item['title']
                 print(f"    - Missing: {disc}-{track} {title}")
                 
-                # Construct search query
                 query = f"{artist_name} - {title}"
                 
-                # Check if already in queue
                 q_cursor = db.conn.cursor()
-                q_cursor.execute("SELECT id FROM downloads WHERE search_query = ?", (query,))
+                q_cursor.execute("SELECT id FROM download_queue WHERE search_query = ?", (query,))
                 if q_cursor.fetchone():
                     print("      (Already in queue)")
+                    q_cursor.close()
                     continue
+                q_cursor.close()
 
-                db.add_to_queue(
+                db.queue_download(DownloadItem(
                     search_query=query,
-                    track_mbid="", 
-                    artist=artist_name,
-                    title=title
-                )
+                    playlist_id="AUDIT",
+                    mbid_guess="",
+                    status="pending",
+                ))
                 print("      [+] Added to download queue.")
 
 

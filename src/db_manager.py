@@ -531,12 +531,19 @@ class DatabaseManager:
     def _row_to_download_item(self, row):
         if not row:
             return None
+        last_attempt = None
+        if row["last_attempt"]:
+            try:
+                last_attempt = datetime.fromisoformat(str(row["last_attempt"]))
+            except (ValueError, TypeError):
+                pass
         return DownloadItem(
             id=row["id"],
             search_query=row["search_query"],
             playlist_id=row["playlist_id"],
             mbid_guess=row["mbid_guess"],
             status=row["status"],
+            last_attempt=last_attempt,
         )
 
     def close(self):

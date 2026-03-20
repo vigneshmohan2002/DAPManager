@@ -151,10 +151,8 @@ class SpotifyClient:
             print(f"    W: MusicBrainz API error for ISRC {isrc}: {e}")
             if "WinError 10054" in str(e):
                 print("Sleeping for 5s and trying again")
-                time.sleep(1.1)
-                self._get_mbid_from_isrc(
-                    isrc
-                )  # Keep trying since this is a random issue
+                time.sleep(5)
+                return self._get_mbid_from_isrc(isrc)
         except (KeyError, IndexError, TypeError) as e:
             print(str(e))
             # This just means no match was found, which is common.

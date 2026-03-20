@@ -27,8 +27,11 @@ class LibraryScanner:
     def __init__(self, db: DatabaseManager, picard_path: Optional[str] = None):
         self.db = db
         self.resolved_albums = set()
-        config = get_config()
-        self.picard_path = config.picard_path
+        if picard_path:
+            self.picard_path = picard_path
+        else:
+            config = get_config()
+            self.picard_path = config.picard_path
 
     def scan_library(self, library_path: str):
         logger.info(f"Starting scan: {library_path}")
@@ -48,7 +51,7 @@ class LibraryScanner:
                 musicbrainzngs.set_useragent(
                     "DAPManager", "0.1.0", "contact@example.com"
                 )
-            except:
+            except Exception:
                 pass
             time.sleep(1.1)
 
@@ -83,7 +86,7 @@ class LibraryScanner:
                 for m in details["release"]["medium-list"]:
                     total += int(m.get("track-count", 0))
             return target["id"], total
-        except:
+        except Exception:
             return None, 0
 
     def _process_file(self, file_path: str):
@@ -92,7 +95,7 @@ class LibraryScanner:
 
         try:
             f = MediaFile(file_path)
-        except:
+        except Exception:
             return "skipped"
 
         mbid = f.mb_trackid
@@ -101,7 +104,7 @@ class LibraryScanner:
                 try:
                     f = MediaFile(file_path)
                     mbid = f.mb_trackid
-                except:
+                except Exception:
                     return "skipped"
 
         if mbid:
@@ -122,7 +125,7 @@ class LibraryScanner:
                 if mod:
                     try:
                         f.save()
-                    except:
+                    except Exception:
                         pass
 
             # Update DB Cache

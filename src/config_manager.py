@@ -19,7 +19,6 @@ class ConfigManager:
     """
 
     _instance: Optional["ConfigManager"] = None
-    _config: Dict[str, Any] = {}
 
     CONFIG_FILE = "config.json"
     REQUIRED_KEYS = [
@@ -37,6 +36,7 @@ class ConfigManager:
         """Singleton pattern to ensure only one config instance."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            cls._instance._config = {}
             cls._instance._load_config()
         return cls._instance
 
@@ -45,7 +45,7 @@ class ConfigManager:
         if not os.path.exists(self.CONFIG_FILE):
             print(f"ERROR: Configuration file '{self.CONFIG_FILE}' not found.")
             print(
-                "Please copy 'config.json.template' to 'config.json' and configure it."
+                "Please copy 'config-win.json' or 'config-mac.json' to 'config.json' and configure it."
             )
             sys.exit(1)
 
@@ -70,7 +70,9 @@ class ConfigManager:
     def _validate_paths(self):
         """Validate that critical paths exist."""
         # Check Picard
-        if not os.path.exists(self._config["picard_cmd_path"]):
+        if not os.path.exists(self._config["picard_cmd_path"]) and not which(
+            self._config["picard_cmd_path"]
+        ):
             logger.warning(f"Picard not found at: {self._config['picard_cmd_path']}")
 
         # Check ffmpeg
@@ -113,7 +115,7 @@ class ConfigManager:
 
     @property
     def slsk_command(self) -> list:
-        return self._config.get("slsk_cmd_base", [])
+        return self._config.get("slsk_cmd_base") or self._config.get("slsk_command", [])
 
     @property
     def acoustid_api_key(self) -> str:

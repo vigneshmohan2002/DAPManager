@@ -211,12 +211,7 @@ class EnhancedIpodSyncer:
         ipod_music_path = self._get_ipod_music_path()
 
         # Check for supported extensions (assuming defined in library_scanner.py)
-        try:
-            from library_scanner import SUPPORTED_EXTENSIONS
-        except ImportError:
-            # Fallback if constant isn't available
-            SUPPORTED_EXTENSIONS = (".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav")
-            logger.warning("Could not import SUPPORTED_EXTENSIONS, using fallback.")
+        from .library_scanner import SUPPORTED_EXTENSIONS
 
         if not os.path.isdir(ipod_music_path):
             logger.error(f"iPod music path not found: {ipod_music_path}")
@@ -330,10 +325,7 @@ class EnhancedIpodSyncer:
             else "Unknown Album"
         )
 
-        # Build clean iPod path: D:/Music/Artist/Album/Song.flac
         output_filename = f"{safe_title}.{self.conversion_options.get_extension()}"
-        output_extension = self.conversion_options.get_extension()
-        output_filename = f"{safe_title}.{output_extension}"
         output_path = os.path.join(
             self.ipod_music_path, safe_artist, safe_album, output_filename
         ).replace("\\", "/")
