@@ -1,4 +1,3 @@
-
 """
 Main command-line interface for DAP Manager with enhanced sync options
 and Album Completeness Auditing.
@@ -19,6 +18,7 @@ from src.downloader import main_run_downloader, Downloader
 from src.sync_ipod import main_run_sync
 from src.utils import EnvironmentManager
 from src.album_completer import audit_library
+
 # from src.clear_dupes import find_and_resolve_duplicates # Imported dynamically in main
 
 # Setup logging first
@@ -158,6 +158,73 @@ def reconcile_ipod(db: DatabaseManager, config: dict):
     syncer.reconcile_ipod_to_db()
 
 
+def batch_sync():
+    """
+    Runs a full automation cycle:
+    1. Scan local library
+    2. Run downloader
+    3. Sync to iPod
+    """
+    try:
+        config = get_config()
+    except SystemExit:
+        return
+
+    db_path = config.db_path
+
+    try:
+        # Step 1: Scan Library
+        logger.info("Batch Sync Step 1/3: Scanning local library...")
+        print("\n[Step 1/3] Scanning local library...")
+        with DatabaseManager(db_path) as db:
+            main_scan_library(db, config._config)
+
+        # Step 2: Run Downloader
+        logger.info("Batch Sync Step 2/3: Running downloader...")
+        print("\n[Step 2/3] Running downloader...")
+        with DatabaseManager(db_path) as db:
+            main_run_downloader(db, config._config)
+
+        # Step 3: Sync to iPod
+        logger.info("Batch Sync Step 3/3: Syncing to iPod...")
+        print("\n[Step 3/3] Syncing to iPod...")
+        with DatabaseManager(db_path) as db:
+            main_run_sync(db, config._config, sync_mode="playlists", conversion_format="flac")
+
+        print("\nBatch sync completed successfully!")
+        logger.info("Batch Sync completed successfully")
+
+    except Exception as e:
+        logger.error(f"Batch sync failed: {e}", exc_info=True)
+        print(f"Batch sync error: {e}")
+        raise
+
+
+def run_queue_playlists(db_path, config, playlist_urls):
+    """
+    Queue multiple Spotify playlists for download.
+    
+    :param db_path: Path to the database
+    :param config: ConfigManager instance
+    :param playlist_urls: List of Spotify playlist URLs
+    """
+    try:
+        with DatabaseManager(db_path) as db:
+            spot_client = SpotifyClient(db)
+            for url in playlist_urls:
+                if url.strip():
+                    logger.info(f"Processing playlist: {url}")
+                    spot_client.process_playlist(url)
+
+        logger.info(f"Queued {len(playlist_urls)} playlists successfully")
+        print(f"Successfully queued {len(playlist_urls)} playlists")
+
+    except Exception as e:
+        logger.error(f"Failed to queue playlists: {e}", exc_info=True)
+        print(f"Error queueing playlists: {e}")
+        raise
+
+
 def clean_ipod_music(db, config):
     """Remove all music from iPod (useful for format changes)."""
     import shutil
@@ -192,9 +259,6 @@ def clean_ipod_music(db, config):
     except Exception as e:
         logger.error(f"Failed to clean iPod: {e}")
         print(f"Error: {e}")
-
-
-
 
 
 def main():
@@ -401,8 +465,15 @@ def main():
                 logger.info("Batch Sync finished.")
 
             elif choice == "11":
-                # 11. Audit Incomplete Albums (NEW)
-                # 11. Exit
+                # 11. Audit Incomplete Albums
+                print("\n> AUDIT: Finding incomplete albums...")
+                logger.info("Starting Album Completeness Audit")
+                with DatabaseManager(db_path) as db:
+                    audit_library(db)
+                logger.info("Audit finished.")
+
+            elif choice == "12":
+                # 12. Exit
                 print("\n" + "=" * 60)
                 print("  Thanks for using DAP Manager!")
                 print("=" * 60)
@@ -410,7 +481,7 @@ def main():
                 break
 
             else:
-                print(f"\n Invalid choice '{choice}'. Please enter 1-11.")
+                print(f"\n Invalid choice '{choice}'. Please enter 1-12.")
 
         except KeyboardInterrupt:
             print("\n\nOperation cancelled by user (Ctrl+C).")
