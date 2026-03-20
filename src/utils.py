@@ -45,7 +45,7 @@ def get_mbid_from_tags(file_path: str):
     try:
         f = MediaFile(file_path)
         return f.mb_trackid
-    except:
+    except Exception:
         return None
 
 

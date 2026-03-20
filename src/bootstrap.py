@@ -32,7 +32,7 @@ def run_bootstrap_sequence(config_data: dict, run_download: bool = False):
     final_config = {
         "music_library_path": config_data.get('music_library_path'),
         "downloads_path": config_data.get('downloads_path'),
-        "slsk_command": config_data.get('slsk_command', ["slsk-batchdl"]),
+        "slsk_cmd_base": config_data.get('slsk_cmd_base') or config_data.get('slsk_command', ["slsk-batchdl"]),
         "picard_cmd_path": config_data.get('picard_cmd_path', "picard"),
         "ffmpeg_path": config_data.get('ffmpeg_path', "ffmpeg"),
         "ipod_mount_point": config_data.get('ipod_mount_point'),

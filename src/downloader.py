@@ -227,7 +227,8 @@ class Downloader:
             try:
                 tn = int(track.track_number)
                 prefix = f"{tn:02d} "
-            except: pass
+            except (ValueError, TypeError):
+                pass
 
         # Build library path
         library_path = os.path.join(
@@ -335,9 +336,12 @@ class Downloader:
                         s_track = 0
 
                 temp_track = Track(
-                    id=0, mbid="", artist=s_artist, album=s_album, title=s_title,
-                    filepath=file_path, duration=0, file_hash="", local_path="",
-                    track_number=s_track
+                    mbid="",
+                    title=s_title,
+                    artist=s_artist,
+                    album=s_album,
+                    local_path=file_path,
+                    track_number=int(s_track) if s_track else 0,
                 )
                 
                 # Generate Sync Path
@@ -365,8 +369,10 @@ class Downloader:
                 for name in dirs:
                     try:
                         os.rmdir(os.path.join(root, name))
-                    except: pass
-        except: pass
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
         # Done
         self.db.remove_from_queue(item.id)

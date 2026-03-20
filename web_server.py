@@ -1,7 +1,10 @@
 import os
 import json
+import logging
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 import threading
+
+logger = logging.getLogger(__name__)
 
 # ... (Previous imports are fine, but imports that depend on config might fail if config is missing)
 # We need to wrap imports or loading of config-dependent modules
@@ -173,7 +176,7 @@ def save_config():
         new_config = {
             "music_library_path": data.get("music_library_path"),
             "downloads_path": data.get("downloads_path"),
-            "slsk_command": ["slsk-batchdl"],  # Default
+            "slsk_cmd_base": ["slsk-batchdl"],  # Default
             "picard_cmd_path": "picard",  # Default
             "ffmpeg_path": "ffmpeg",  # Default
             "ipod_mount_point": data.get("ipod_mount_point"),
@@ -495,7 +498,7 @@ def install_slsk():
             with open(CONFIG_FILE, "r") as f:
                 c = json.load(f)
 
-            c["slsk_command"] = [final_path]
+            c["slsk_cmd_base"] = [final_path]
 
             with open(CONFIG_FILE, "w") as f:
                 json.dump(c, f, indent=4)
