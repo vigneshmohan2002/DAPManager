@@ -79,7 +79,7 @@ class TaskManager:
 
 
 def init_app_logic():
-    global task_manager, config, setup_logging, get_config, DatabaseManager, DownloadItem, main_scan_library, main_run_downloader, main_run_sync, EnvironmentManager, audit_lib_logic
+    global task_manager, config, setup_logging, get_config, DatabaseManager, DownloadItem, main_scan_library, main_run_downloader, main_run_sync, EnvironmentManager, audit_lib_logic, complete_albums_logic
 
     # Import modules here to avoid crash on startup if config is missing/invalid
     from src.logger_setup import setup_logging
@@ -89,6 +89,7 @@ def init_app_logic():
     from src.downloader import main_run_downloader
     from src.sync_ipod import main_run_sync
     from src.album_completer import audit_library as audit_lib_logic
+    from src.album_completer import complete_albums as complete_albums_logic
 
     setup_logging()
     config = get_config()
@@ -137,6 +138,23 @@ def run_queue_playlists(db_path, conf, urls):
 def run_audit(db_path):
     with DatabaseManager(db_path) as db:
         audit_lib_logic(db)
+
+
+def run_complete_albums(db_path, conf, run_downloads=False, progress_callback=None):
+    """Run the full album completion pipeline, optionally followed by downloads."""
+    with DatabaseManager(db_path) as db:
+        summary = complete_albums_logic(db, progress_callback=progress_callback)
+
+    if run_downloads and summary.get("tracks_queued", 0) > 0:
+        if progress_callback:
+            progress_callback({"message": "Downloading queued tracks..."})
+        with DatabaseManager(db_path) as db:
+            main_run_downloader(db, conf._config, progress_callback=progress_callback)
+
+        if progress_callback:
+            progress_callback({"message": "Re-scanning library..."})
+        with DatabaseManager(db_path) as db:
+            main_scan_library(db, conf._config)
 
 
 @app.before_request
@@ -367,6 +385,27 @@ def audit_queue():
         return jsonify({"success": True, "queued_count": count})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
+
+@app.route("/api/albums/complete", methods=["POST"])
+def complete_albums():
+    """
+    Full album completion pipeline: discover albums, find gaps, queue missing tracks.
+    Optional: run the downloader afterward.
+    POST body: { "run_downloads": bool }
+    """
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+
+    data = request.json or {}
+    run_downloads = data.get("run_downloads", False)
+
+    success, msg = task_manager.start_task(
+        run_complete_albums,
+        (config.db_path, config, run_downloads),
+        "Album Completion",
+    )
+    return jsonify({"success": success, "message": msg})
 
 
 @app.route("/api/stats", methods=["GET"])

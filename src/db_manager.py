@@ -280,6 +280,75 @@ class DatabaseManager:
             if cursor:
                 cursor.close()
 
+    def get_tracks_missing_album_info(self) -> List[Track]:
+        """Find tracks that have a recording MBID but no release_mbid or no album entry."""
+        sql = """
+            SELECT t.* FROM tracks t
+            LEFT JOIN albums a ON t.release_mbid = a.release_mbid
+            WHERE t.local_path IS NOT NULL
+              AND (t.release_mbid IS NULL OR a.release_mbid IS NULL)
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql)
+            return [self._row_to_track(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"Error getting orphan tracks: {e}")
+            return []
+        finally:
+            if cursor:
+                cursor.close()
+
+    def get_album_track_counts(self) -> List[dict]:
+        """Get all albums with their local track count vs expected total."""
+        sql = """
+            SELECT
+                a.release_mbid,
+                a.album_title,
+                a.total_tracks,
+                MIN(t.artist) as artist,
+                COUNT(DISTINCT t.track_number) as local_count
+            FROM albums a
+            JOIN tracks t ON t.release_mbid = a.release_mbid
+            WHERE t.local_path IS NOT NULL
+            GROUP BY a.release_mbid
+            ORDER BY t.artist, a.album_title
+        """
+        results = []
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                results.append({
+                    "release_mbid": row["release_mbid"],
+                    "album": row["album_title"],
+                    "artist": row["artist"],
+                    "total": row["total_tracks"],
+                    "have": row["local_count"],
+                    "missing": row["total_tracks"] - row["local_count"],
+                })
+            return results
+        except sqlite3.Error as e:
+            logger.error(f"Error getting album track counts: {e}")
+            return []
+        finally:
+            if cursor:
+                cursor.close()
+
+    def is_download_queued(self, search_query: str) -> bool:
+        """Check if a search query is already in the download queue."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id FROM download_queue WHERE search_query = ? AND status IN ('pending', 'failed')",
+                (search_query,),
+            )
+            result = cursor.fetchone() is not None
+            cursor.close()
+            return result
+        except sqlite3.Error:
+            return False
+
     def merge_albums(self, source_mbid: str, target_mbid: str):
         if not source_mbid or not target_mbid:
             return False

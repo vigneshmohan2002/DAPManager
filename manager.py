@@ -17,7 +17,7 @@ from src.spotify_client import SpotifyClient
 from src.downloader import main_run_downloader, Downloader
 from src.sync_ipod import main_run_sync
 from src.utils import EnvironmentManager
-from src.album_completer import audit_library
+from src.album_completer import audit_library, complete_albums
 
 # from src.clear_dupes import find_and_resolve_duplicates # Imported dynamically in main
 
@@ -42,7 +42,8 @@ def print_menu():
     print(" 9. [Utils] CLEAR DUPLICATES (Resolve file conflicts)")
     print(" 10. [Batch] Run Batch Sync (Scan -> Queue -> Download -> Sync)")
     print(" 11. [Audit] Find Incomplete Albums")
-    print(" 12. Exit")
+    print(" 12. [Auto]  COMPLETE ALBUMS (find gaps -> queue -> download)")
+    print(" 13. Exit")
     print("=" * 60)
     print("NOTE: Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET in your environment.")
 
@@ -281,7 +282,7 @@ def main():
 
     while True:
         print_menu()
-        choice = input("\nEnter your choice (1-12): ").strip()
+        choice = input("\nEnter your choice (1-13): ").strip()
 
         try:
             if choice == "1":
@@ -466,14 +467,79 @@ def main():
 
             elif choice == "11":
                 # 11. Audit Incomplete Albums
-                print("\n> AUDIT: Finding incomplete albums...")
                 logger.info("Starting Album Completeness Audit")
+                print("\n> AUDIT: Finding incomplete albums...")
                 with DatabaseManager(db_path) as db:
-                    audit_library(db)
+                    incomplete = audit_library(db)
+
+                if incomplete:
+                    print(f"\n{len(incomplete)} incomplete albums found.")
+                    proceed = input("\nWould you like to queue missing tracks for download? (y/n): ").strip().lower()
+                    if proceed == "y":
+                        print("\nQueueing missing tracks (this may take a while)...\n")
+                        with DatabaseManager(db_path) as db:
+                            summary = complete_albums(db)
+                        print(f"\nDone! Queued {summary['tracks_queued']} downloads.")
+                        print(f"  Albums discovered: {summary['albums_discovered']}")
+                        print(f"  Errors: {summary['errors']}")
+                        queue_count = summary['tracks_queued']
+                        if queue_count > 0:
+                            run_dl = input("\nRun the downloader now? (y/n): ").strip().lower()
+                            if run_dl == "y":
+                                with DatabaseManager(db_path) as db:
+                                    main_run_downloader(db, config._config)
+                                print("\nDownload queue finished!")
+
                 logger.info("Audit finished.")
 
             elif choice == "12":
-                # 12. Exit
+                # 12. Complete Albums (fully automated)
+                logger.info("Starting Album Completion")
+                print("\n" + "=" * 60)
+                print("  ALBUM COMPLETION")
+                print("=" * 60)
+                print("This will:")
+                print("  1. Discover album info for tracks missing it")
+                print("  2. Identify all incomplete albums")
+                print("  3. Queue missing tracks for download")
+                print("  4. Run the downloader")
+                print("=" * 60)
+
+                confirm = input("\nProceed? (y/n): ").strip().lower()
+                if confirm != "y":
+                    print("Cancelled.")
+                    continue
+
+                print("\n[Step 1-3] Analysing library and queueing missing tracks...\n")
+                with DatabaseManager(db_path) as db:
+                    summary = complete_albums(db)
+
+                print(f"\n{'=' * 60}")
+                print(f"  Albums discovered:    {summary['albums_discovered']}")
+                print(f"  Incomplete albums:    {summary['incomplete_albums']}")
+                print(f"  Tracks queued:        {summary['tracks_queued']}")
+                print(f"  Already queued:       {summary['albums_skipped_existing']}")
+                print(f"  Errors:               {summary['errors']}")
+                print(f"{'=' * 60}")
+
+                if summary['tracks_queued'] > 0:
+                    print("\n[Step 4] Running downloader...\n")
+                    with DatabaseManager(db_path) as db:
+                        main_run_downloader(db, config._config)
+                    print("\nDownload queue finished!")
+
+                    rescan = input("\nRe-scan library to pick up new files? (y/n): ").strip().lower()
+                    if rescan == "y":
+                        with DatabaseManager(db_path) as db:
+                            main_scan_library(db, config._config)
+                        print("\nRe-scan complete!")
+                else:
+                    print("\nNo new tracks to download. Library looks good!")
+
+                logger.info("Album Completion finished.")
+
+            elif choice == "13":
+                # 13. Exit
                 print("\n" + "=" * 60)
                 print("  Thanks for using DAP Manager!")
                 print("=" * 60)
@@ -481,7 +547,7 @@ def main():
                 break
 
             else:
-                print(f"\n Invalid choice '{choice}'. Please enter 1-12.")
+                print(f"\n Invalid choice '{choice}'. Please enter 1-13.")
 
         except KeyboardInterrupt:
             print("\n\nOperation cancelled by user (Ctrl+C).")
