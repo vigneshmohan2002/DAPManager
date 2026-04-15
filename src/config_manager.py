@@ -45,7 +45,7 @@ class ConfigManager:
         if not os.path.exists(self.CONFIG_FILE):
             print(f"ERROR: Configuration file '{self.CONFIG_FILE}' not found.")
             print(
-                "Please copy 'config-win.json' or 'config-mac.json' to 'config.json' and configure it."
+                "Please copy 'config.example.win.json' or 'config.example.mac.json' to 'config.json' and configure it."
             )
             sys.exit(1)
 
@@ -120,6 +120,10 @@ class ConfigManager:
     @property
     def acoustid_api_key(self) -> str:
         return self._config.get("acoustid_api_key", "")
+
+    @property
+    def contact_email(self) -> str:
+        return self._config.get("contact_email", "")
 
 
 def get_config() -> ConfigManager:

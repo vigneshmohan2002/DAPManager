@@ -13,11 +13,10 @@ app = Flask(__name__, template_folder="web/templates", static_folder="web/static
 
 # Check if config exists
 CONFIG_FILE = "config.json"
-MAC_CONFIG_FILE = "config-mac.json"
 
 
 def config_exists():
-    return os.path.exists(CONFIG_FILE) or os.path.exists(MAC_CONFIG_FILE)
+    return os.path.exists(CONFIG_FILE)
 
 
 # Defer loading of modules that require config until we are sure it exists

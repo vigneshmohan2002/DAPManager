@@ -12,12 +12,12 @@ if %errorlevel% neq 0 (
 
 if not exist config.json (
     echo [INFO] config.json not found. Creating from Windows template...
-    if exist config-win.json (
-        copy config-win.json config.json
+    if exist config.example.win.json (
+        copy config.example.win.json config.json
         echo [OK] Created config.json
     ) else (
-        echo [ERROR] config-win.json not found!
-        echo Please ensure you have config-win.json in this directory.
+        echo [ERROR] config.example.win.json not found!
+        echo Please ensure you have config.example.win.json in this directory.
         pause
         exit /b 1
     )
