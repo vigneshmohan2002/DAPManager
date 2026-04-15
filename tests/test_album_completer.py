@@ -35,7 +35,7 @@ def _add_track(db, mbid="t1", title="Song", artist="Artist", album="Album",
 # ---------------------------------------------------------------------------
 
 def test_fetch_album_tracklist_success():
-    with patch("src.album_completer.musicbrainzngs") as mock_mb:
+    with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb:
         mock_mb.get_release_by_id.return_value = {
             "release": {
                 "medium-list": [
@@ -57,7 +57,7 @@ def test_fetch_album_tracklist_success():
 
 
 def test_fetch_album_tracklist_multi_disc():
-    with patch("src.album_completer.musicbrainzngs") as mock_mb:
+    with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb:
         mock_mb.get_release_by_id.return_value = {
             "release": {
                 "medium-list": [
@@ -77,7 +77,7 @@ def test_fetch_album_tracklist_multi_disc():
 
 
 def test_fetch_album_tracklist_api_error():
-    with patch("src.album_completer.musicbrainzngs") as mock_mb:
+    with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb:
         mock_mb.get_release_by_id.side_effect = Exception("API Error")
         assert fetch_album_tracklist("bad_mbid") == {}
 
@@ -196,7 +196,7 @@ def test_queue_skips_already_queued(db):
 # ---------------------------------------------------------------------------
 
 def test_discover_album_success(db):
-    with patch("src.album_completer.musicbrainzngs") as mock_mb:
+    with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb:
         mock_mb.get_recording_by_id.return_value = {
             "recording": {
                 "release-list": [
@@ -215,7 +215,7 @@ def test_discover_album_success(db):
 
 
 def test_discover_album_no_releases(db):
-    with patch("src.album_completer.musicbrainzngs") as mock_mb:
+    with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb:
         mock_mb.get_recording_by_id.return_value = {
             "recording": {"release-list": []}
         }

@@ -48,7 +48,10 @@ class Downloader:
         self.slsk_config = slsk_config or {}
         
         # Initialize AutoTagger
-        self.auto_tagger = AutoTagger(self.slsk_config.get("acoustid_api_key", ""))
+        self.auto_tagger = AutoTagger(
+            self.slsk_config.get("acoustid_api_key", ""),
+            contact=self.slsk_config.get("contact_email", ""),
+        )
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)

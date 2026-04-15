@@ -335,17 +335,31 @@ class DatabaseManager:
             if cursor:
                 cursor.close()
 
+    @staticmethod
+    def _normalize_query(s: str) -> str:
+        """Lowercase + collapse whitespace so callers using slightly different
+        formatting ('Artist - Title' vs 'artist  -  title') don't double-queue."""
+        if not s:
+            return ""
+        return " ".join(s.lower().split())
+
     def is_download_queued(self, search_query: str) -> bool:
-        """Check if a search query is already in the download queue."""
+        """Return True if a normalized form of ``search_query`` is already
+        pending or failed in the queue."""
+        target = self._normalize_query(search_query)
+        if not target:
+            return False
         try:
             cursor = self.conn.cursor()
             cursor.execute(
-                "SELECT id FROM download_queue WHERE search_query = ? AND status IN ('pending', 'failed')",
-                (search_query,),
+                "SELECT search_query FROM download_queue WHERE status IN ('pending', 'failed')"
             )
-            result = cursor.fetchone() is not None
+            for row in cursor.fetchall():
+                if self._normalize_query(row["search_query"]) == target:
+                    cursor.close()
+                    return True
             cursor.close()
-            return result
+            return False
         except sqlite3.Error:
             return False
 

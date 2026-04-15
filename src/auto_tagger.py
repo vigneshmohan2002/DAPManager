@@ -8,13 +8,15 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TRCK, TPOS
 from mutagen.easyid3 import EasyID3
 
+from . import musicbrainz_client as mb
+
 logger = logging.getLogger(__name__)
 
 class AutoTagger:
-    def __init__(self, acoustid_api_key: str):
+    def __init__(self, acoustid_api_key: str, contact: str = ""):
         self.api_key = acoustid_api_key
-        musicbrainzngs.set_useragent("DAPManager", "0.1", "http://github.com/dapmanager")
-        
+        mb.configure(contact)
+
         if not self.api_key:
             logger.warning("No AcoustID API Key provided. Auto-tagging will fail.")
 
@@ -57,7 +59,7 @@ class AutoTagger:
             # 3. Fetch Full Metadata from MusicBrainz
             # We use identifying info from AcoustID but fetch details from MB for strictness
             try:
-                mb_data = musicbrainzngs.get_release_by_id(release_id, includes=['artists', 'recordings', 'release-groups'])
+                mb_data = mb.get_release_by_id(release_id, includes=['artists', 'recordings', 'release-groups'])
                 release_info = mb_data['release']
                 
                 # Find our track in this release to get track number

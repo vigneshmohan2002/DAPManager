@@ -271,6 +271,9 @@ def main():
     except SystemExit:
         return
 
+    from src import musicbrainz_client
+    musicbrainz_client.configure(config.contact_email)
+
     db_path = config.db_path
 
     print("\n" + "=" * 60)

@@ -4,24 +4,12 @@ incomplete albums, and queues missing songs for download.
 """
 
 import logging
-import time
-import musicbrainzngs
 from typing import Dict, List, Optional, Tuple
+
+from . import musicbrainz_client as mb
 from .db_manager import DatabaseManager, DownloadItem
 
 logger = logging.getLogger(__name__)
-
-_MB_USERAGENT_SET = False
-
-
-def _ensure_musicbrainz_useragent():
-    global _MB_USERAGENT_SET
-    if not _MB_USERAGENT_SET:
-        try:
-            musicbrainzngs.set_useragent("DAPManager", "0.1.0", "contact@example.com")
-            _MB_USERAGENT_SET = True
-        except Exception:
-            pass
 
 
 def fetch_album_tracklist(release_mbid: str) -> Dict[Tuple[int, int], str]:
@@ -29,10 +17,8 @@ def fetch_album_tracklist(release_mbid: str) -> Dict[Tuple[int, int], str]:
     Queries MusicBrainz for the full tracklist of a release.
     Returns: {(disc_num, track_num): "Track Title"}
     """
-    _ensure_musicbrainz_useragent()
     try:
-        time.sleep(1.1)
-        result = musicbrainzngs.get_release_by_id(
+        result = mb.get_release_by_id(
             release_mbid, includes=["media", "recordings"]
         )
 
@@ -66,10 +52,8 @@ def discover_album_for_track(
     Look up a recording's album on MusicBrainz and populate the albums table.
     Returns the release_mbid if found, else None.
     """
-    _ensure_musicbrainz_useragent()
     try:
-        time.sleep(1.1)
-        result = musicbrainzngs.get_recording_by_id(
+        result = mb.get_recording_by_id(
             recording_mbid, includes=["releases"]
         )
 
@@ -101,9 +85,7 @@ def discover_album_for_track(
 
         release_mbid = target["id"]
 
-        # Fetch full release to get total track count
-        time.sleep(1.1)
-        details = musicbrainzngs.get_release_by_id(release_mbid, includes=["media"])
+        details = mb.get_release_by_id(release_mbid, includes=["media"])
         total = 0
         if "release" in details and "medium-list" in details["release"]:
             for m in details["release"]["medium-list"]:

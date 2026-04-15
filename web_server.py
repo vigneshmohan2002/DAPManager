@@ -93,12 +93,10 @@ def init_app_logic():
     setup_logging()
     config = get_config()
 
+    from src import musicbrainz_client
+    musicbrainz_client.configure(config.contact_email)
+
     task_manager = TaskManager()
-
-
-# Initialize if config exists
-if config_exists():
-    init_app_logic()
 
 
 # Helper wrappers (need to be defined or redefined after init)
@@ -624,5 +622,7 @@ def bootstrap():
 
 
 if __name__ == "__main__":
+    if config_exists():
+        init_app_logic()
     print("Starting Web Server on port 5001...")
     app.run(host="0.0.0.0", port=5001, debug=True)
