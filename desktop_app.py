@@ -17,6 +17,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QHeaderView,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -136,7 +137,7 @@ class MainWindow(QMainWindow):
         for label, handler in (
             ("Scan Library", self._scan_library),
             ("Add Spotify Playlist", self._placeholder),
-            ("Sync to DAP", self._placeholder),
+            ("Sync to DAP", self._sync_dap),
             ("Pull from Jellyfin", self._pull_jellyfin),
         ):
             action = QAction(label, self, triggered=handler)
@@ -272,6 +273,35 @@ class MainWindow(QMainWindow):
                 main_scan_library(db, cfg)
 
         self._run_worker("Scan Library", task)
+
+    def _sync_dap(self):
+        if not self.config.get("dap_mount_point"):
+            QMessageBox.warning(
+                self, "DAP not configured", "Set dap_mount_point in config.json first."
+            )
+            return
+
+        mode, ok = QInputDialog.getItem(
+            self, "Sync to DAP", "Sync mode:", ["playlists", "library"], 0, False
+        )
+        if not ok:
+            return
+        fmt, ok = QInputDialog.getItem(
+            self, "Sync to DAP", "Audio format:", ["flac", "mp3", "opus", "aac"], 0, False
+        )
+        if not ok:
+            return
+
+        from src.sync_dap import main_run_sync
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task():
+            with DatabaseManager(db_path) as db:
+                main_run_sync(db, cfg, sync_mode=mode, conversion_format=fmt)
+
+        self._run_worker(f"Sync to DAP ({mode}, {fmt})", task)
 
     def _pull_jellyfin(self):
         if not self.config.jellyfin_enabled:
