@@ -1,6 +1,7 @@
 
 import time
 import os
+import re
 import logging
 from functools import wraps
 import acoustid
@@ -39,6 +40,13 @@ class EnvironmentManager:
         return os.environ.get("SPOTIPY_CLIENT_ID") and os.environ.get(
             "SPOTIPY_CLIENT_SECRET"
         )
+
+
+def sanitize_path_component(name: str) -> str:
+    """Strip characters that are illegal in Windows/macOS filenames."""
+    if not name:
+        return "Unknown"
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 
 def get_mbid_from_tags(file_path: str):

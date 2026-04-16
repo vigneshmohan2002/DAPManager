@@ -12,7 +12,7 @@ def test_run_bootstrap_sequence():
     config_data = {
         'music_library_path': '/test/music',
         'downloads_path': '/test/downloads',
-        'ipod_mount_point': '/test/ipod',
+        'dap_mount_point': '/test/dap',
         'slsk_username': 'test_user',
         'slsk_password': 'test_pass'
     }
@@ -28,7 +28,7 @@ def test_run_bootstrap_sequence():
         # Setup mocks
         mock_config = MagicMock()
         mock_config.db_path = ":memory:"
-        mock_config.get.return_value = "/test/ipod"
+        mock_config.get.return_value = "/test/dap"
         mock_get_config.return_value = mock_config
 
         mock_db_instance = MagicMock()
@@ -49,7 +49,7 @@ def test_run_bootstrap_sequence_with_download():
     config_data = {
         'music_library_path': '/test/music',
         'downloads_path': '/test/downloads',
-        'ipod_mount_point': '/test/ipod',
+        'dap_mount_point': '/test/dap',
         'slsk_username': 'test_user',
         'slsk_password': 'test_pass'
     }
@@ -65,7 +65,7 @@ def test_run_bootstrap_sequence_with_download():
         # Setup mocks
         mock_config = MagicMock()
         mock_config.db_path = ":memory:"
-        mock_config.get.return_value = "/test/ipod"
+        mock_config.get.return_value = "/test/dap"
         mock_get_config.return_value = mock_config
 
         mock_db_instance = MagicMock()
@@ -78,15 +78,15 @@ def test_run_bootstrap_sequence_with_download():
         assert mock_download.called
 
 
-def test_run_bootstrap_sequence_no_ipod():
-    """Test bootstrap sequence without iPod mount point."""
-    # Mock config data without ipod mount
+def test_run_bootstrap_sequence_no_dap():
+    """Test bootstrap sequence without DAP mount point."""
+    # Mock config data without dap mount
     config_data = {
         'music_library_path': '/test/music',
         'downloads_path': '/test/downloads',
         'slsk_username': 'test_user',
         'slsk_password': 'test_pass'
-        # No ipod_mount_point
+        # No dap_mount_point
     }
 
     with patch('src.bootstrap.get_config') as mock_get_config, \
@@ -100,7 +100,7 @@ def test_run_bootstrap_sequence_no_ipod():
         # Setup mocks
         mock_config = MagicMock()
         mock_config.db_path = ":memory:"
-        mock_config.get.return_value = None  # No iPod mount point
+        mock_config.get.return_value = None  # No DAP mount point
         mock_get_config.return_value = mock_config
 
         mock_db_instance = MagicMock()

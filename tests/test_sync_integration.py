@@ -5,23 +5,23 @@ import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
 from src.db_manager import DatabaseManager, Track, Playlist
-from src.sync_ipod import EnhancedIpodSyncer, SyncMode
+from src.sync_dap import EnhancedDapSyncer, SyncMode
 
 # Mock SUPPORTED_EXTENSIONS if needed by patching the module that uses it
 # OR just ensure we use standard extensions.
 
 @pytest.fixture
 def temp_dirs():
-    """Creates a temporary workspace with PC and iPod folders."""
+    """Creates a temporary workspace with PC and DAP folders."""
     with tempfile.TemporaryDirectory() as temp_dir:
         pc_lib = os.path.join(temp_dir, "MusicLibrary")
-        ipod_mount = os.path.join(temp_dir, "IPOD")
-        ipod_music = os.path.join(ipod_mount, "Music")
-        ipod_playlists = os.path.join(ipod_mount, "Playlists")
+        dap_mount = os.path.join(temp_dir, "DAP")
+        dap_music = os.path.join(dap_mount, "Music")
+        dap_playlists = os.path.join(dap_mount, "Playlists")
         
         os.makedirs(pc_lib)
-        os.makedirs(ipod_music)
-        os.makedirs(ipod_playlists)
+        os.makedirs(dap_music)
+        os.makedirs(dap_playlists)
         
         # Create a dummy ffmpeg executable
         ffmpeg_path = os.path.join(temp_dir, "ffmpeg")
@@ -32,8 +32,8 @@ def temp_dirs():
         yield {
             "root": temp_dir,
             "pc": pc_lib,
-            "ipod": ipod_mount,
-            "ipod_music": ipod_music,
+            "dap": dap_mount,
+            "dap_music": dap_music,
             "ffmpeg": ffmpeg_path
         }
 
@@ -47,18 +47,18 @@ def db(temp_dirs):
 
 @pytest.fixture
 def syncer(db, temp_dirs):
-    """Returns an EnhancedIpodSyncer instance."""
+    """Returns an EnhancedDapSyncer instance."""
     # We need to mock subprocess.run so we don't actually try to transcode
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
         
-        syncer_instance = EnhancedIpodSyncer(
+        syncer_instance = EnhancedDapSyncer(
             db=db,
             downloader=MagicMock(),
             ffmpeg_path=temp_dirs["ffmpeg"],
-            ipod_mount=temp_dirs["ipod"],
-            ipod_music_dir="Music",
-            ipod_playlist_dir="Playlists"
+            dap_mount=temp_dirs["dap"],
+            dap_music_dir="Music",
+            dap_playlist_dir="Playlists"
         )
         # Monkey patch _convert_and_copy to just copy the file if we want to verify content,
         # OR just mock it to touch the output file.
@@ -70,7 +70,7 @@ def syncer(db, temp_dirs):
             # Simulate conversion by just creating the destination file
             # Logic borrowed from original but simplified
             output_path = os.path.join(
-                syncer_instance.ipod_music_path, 
+                syncer_instance.dap_music_path, 
                 "Unknown Artist", "Unknown Album", f"{track.title}.flac"
             )
             # Replicate the path logic roughly or just use what the method would do?
@@ -85,7 +85,7 @@ def syncer(db, temp_dirs):
             
             safe_title = track.title or "Unknown"
             # Just put it in the root of music for simplicity of test, or match structure
-            dest = os.path.join(syncer_instance.ipod_music_path, f"{safe_title}.flac")
+            dest = os.path.join(syncer_instance.dap_music_path, f"{safe_title}.flac")
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w") as f:
                 f.write("TRANSCODED_CONTENT")
@@ -96,12 +96,12 @@ def syncer(db, temp_dirs):
         
         yield syncer_instance
 
-def test_downstream_sync_pc_to_ipod(db, syncer, temp_dirs):
-    """Test standard sync from PC to iPod."""
+def test_downstream_sync_pc_to_dap(db, syncer, temp_dirs):
+    """Test standard sync from PC to DAP."""
     # 1. Add track to DB
     track = Track(
         mbid="123", title="Test Song", artist="Test Actor", album="Test Album",
-        local_path=os.path.join(temp_dirs["pc"], "song.flac"), synced_to_ipod=False
+        local_path=os.path.join(temp_dirs["pc"], "song.flac"), synced_to_dap=False
     )
     # Create the source file
     with open(track.local_path, "w") as f:
@@ -115,23 +115,23 @@ def test_downstream_sync_pc_to_ipod(db, syncer, temp_dirs):
     # 3. Verify
     # Check DB was updated
     updated_track = db.get_track_by_mbid("123")
-    assert updated_track.synced_to_ipod is True
-    assert updated_track.ipod_path is not None
-    assert os.path.exists(updated_track.ipod_path)
+    assert updated_track.synced_to_dap is True
+    assert updated_track.dap_path is not None
+    assert os.path.exists(updated_track.dap_path)
 
 def test_db_backup(db, syncer, temp_dirs):
-    """Test that the database is backed up to iPod root."""
+    """Test that the database is backed up to DAP root."""
     # 1. Run Sync (can be empty)
     syncer.run_sync(mode=SyncMode.FULL_LIBRARY, skip_downloads=True)
     
-    # 2. Verify DB file at iPod root
-    expected_path = os.path.join(temp_dirs["ipod"], "dap_library.db")
+    # 2. Verify DB file at DAP root
+    expected_path = os.path.join(temp_dirs["dap"], "dap_library.db")
     assert os.path.exists(expected_path)
     
-def test_upstream_sync_ipod_to_pc(db, syncer, temp_dirs):
-    """Test that missing tracks on iPod are restored to PC."""
-    # 1. Create a "ghost" track on iPod (simulating lost local file or new file)
-    ghost_file = os.path.join(temp_dirs["ipod_music"], "GhostTrack.flac")
+def test_upstream_sync_dap_to_pc(db, syncer, temp_dirs):
+    """Test that missing tracks on DAP are restored to PC."""
+    # 1. Create a "ghost" track on DAP (simulating lost local file or new file)
+    ghost_file = os.path.join(temp_dirs["dap_music"], "GhostTrack.flac")
     with open(ghost_file, "w") as f:
         f.write("GHOST_CONTENT")
         
@@ -142,12 +142,12 @@ def test_upstream_sync_ipod_to_pc(db, syncer, temp_dirs):
     # 2. Run Sync
     syncer.run_sync(mode=SyncMode.FULL_LIBRARY, skip_downloads=True)
     
-    # 3. Verify it was copied to Restored_From_iPod
+    # 3. Verify it was copied to Restored_From_DAP
     # The restore path is relative to the DB path
-    restore_dir = os.path.join(temp_dirs["root"], "Restored_From_iPod")
+    restore_dir = os.path.join(temp_dirs["root"], "Restored_From_DAP")
     
     # We need to find the file recursively or check specific path
-    # The logic keeps the relative path from iPod root
+    # The logic keeps the relative path from DAP root
     expected_restored_file = os.path.join(restore_dir, "GhostTrack.flac")
     
     assert os.path.exists(expected_restored_file)
@@ -155,20 +155,20 @@ def test_upstream_sync_ipod_to_pc(db, syncer, temp_dirs):
         assert f.read() == "GHOST_CONTENT"
 
 def test_no_deletion_safety(db, syncer, temp_dirs):
-    """Verify that neither PC nor iPod files are deleted."""
+    """Verify that neither PC nor DAP files are deleted."""
     # 1. Setup PC file
     pc_file = os.path.join(temp_dirs["pc"], "StayOnPC.flac")
     with open(pc_file, "w") as f:
         f.write("PC_CONTENT")
         
-    # 2. Setup iPod file
-    ipod_file = os.path.join(temp_dirs["ipod_music"], "StayOnIpod.flac")
-    with open(ipod_file, "w") as f:
-        f.write("IPOD_CONTENT")
+    # 2. Setup DAP file
+    dap_file = os.path.join(temp_dirs["dap_music"], "StayOnDap.flac")
+    with open(dap_file, "w") as f:
+        f.write("DAP_CONTENT")
         
     # 3. Run Sync
     syncer.run_sync(mode=SyncMode.FULL_LIBRARY, skip_downloads=True)
     
     # 4. Verify presence
     assert os.path.exists(pc_file)
-    assert os.path.exists(ipod_file)
+    assert os.path.exists(dap_file)

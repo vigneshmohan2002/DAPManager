@@ -192,7 +192,7 @@ class SpotifyClient:
             track_data.artist = artist
             track_data.album = album
             track_data.isrc = isrc
-            # We intentionally do NOT touch local_path or synced_to_ipod
+            # We intentionally do NOT touch local_path or synced_to_dap
         else:
             # This is a brand new track
             logger.debug(f"Track {mbid} is new.")

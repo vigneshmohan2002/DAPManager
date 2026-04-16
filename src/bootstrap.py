@@ -5,7 +5,7 @@ import os
 from .config_manager import get_config
 from .db_manager import DatabaseManager
 from .library_scanner import main_scan_library
-from .sync_ipod import main_run_sync
+from .sync_dap import main_run_sync
 from .downloader import main_run_downloader
 from .logger_setup import setup_logging
 
@@ -35,9 +35,9 @@ def run_bootstrap_sequence(config_data: dict, run_download: bool = False):
         "slsk_cmd_base": config_data.get('slsk_cmd_base') or config_data.get('slsk_command', ["slsk-batchdl"]),
         "picard_cmd_path": config_data.get('picard_cmd_path', "picard"),
         "ffmpeg_path": config_data.get('ffmpeg_path', "ffmpeg"),
-        "ipod_mount_point": config_data.get('ipod_mount_point'),
-        "ipod_music_dir_name": config_data.get('ipod_music_dir_name', "Music"),
-        "ipod_playlist_dir_name": config_data.get('ipod_playlist_dir_name', "Playlists"),
+        "dap_mount_point": config_data.get('dap_mount_point'),
+        "dap_music_dir_name": config_data.get('dap_music_dir_name', "Music"),
+        "dap_playlist_dir_name": config_data.get('dap_playlist_dir_name', "Playlists"),
         "database_file": config_data.get('database_file', "dap_library.db"),
         "slsk_username": config_data.get('slsk_username'),
         "slsk_password": config_data.get('slsk_password'),
@@ -77,9 +77,9 @@ def run_bootstrap_sequence(config_data: dict, run_download: bool = False):
     with DatabaseManager(db_path) as db:
         main_scan_library(db, config._config)
         
-    # 4. Sync iPod (if mount point exists)
-    if config.get("ipod_mount_point"):
-        logger.info("Step 3/4: Syncing iPod (Playlists Mode)...")
+    # 4. Sync DAP (if mount point exists)
+    if config.get("dap_mount_point"):
+        logger.info("Step 3/4: Syncing DAP (Playlists Mode)...")
         try:
             with DatabaseManager(db_path) as db:
                 main_run_sync(db, config._config, sync_mode="playlists", conversion_format="flac", reconcile=True)

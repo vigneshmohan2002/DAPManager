@@ -1,5 +1,9 @@
+import os
+import sqlite3
+import tempfile
+
 import pytest
-from src.db_manager import Track, DownloadItem
+from src.db_manager import Track, DownloadItem, DatabaseManager
 
 def test_add_and_get_track(db):
     t = Track(
@@ -68,3 +72,54 @@ def test_download_queue(db):
     db.update_download_status(queue[0].id, "success")
     queue = db.get_all_downloads()
     assert queue[0].status == "success"
+
+
+def test_schema_migration_renames_ipod_columns():
+    """Opening an old-schema DB should rename ipod_path/synced_to_ipod → dap_*."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "legacy.db")
+
+        # Hand-build the pre-rename tracks table.
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE tracks (
+                mbid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                album TEXT,
+                isrc TEXT,
+                local_path TEXT UNIQUE,
+                ipod_path TEXT,
+                synced_to_ipod INTEGER DEFAULT 0,
+                release_mbid TEXT,
+                track_number INTEGER,
+                disc_number INTEGER
+            )
+        """)
+        conn.execute(
+            "INSERT INTO tracks (mbid, title, artist, ipod_path, synced_to_ipod) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("mb1", "Song", "Artist", "/old/ipod/song.flac", 1),
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening via DatabaseManager should migrate.
+        mgr = DatabaseManager(db_path)
+        try:
+            cols = {
+                row[1]
+                for row in mgr.conn.execute("PRAGMA table_info(tracks)").fetchall()
+            }
+            assert "ipod_path" not in cols
+            assert "synced_to_ipod" not in cols
+            assert "dap_path" in cols
+            assert "synced_to_dap" in cols
+
+            # Existing row data survives the rename.
+            track = mgr.get_track_by_mbid("mb1")
+            assert track is not None
+            assert track.dap_path == "/old/ipod/song.flac"
+            assert track.synced_to_dap is True
+        finally:
+            mgr.close()

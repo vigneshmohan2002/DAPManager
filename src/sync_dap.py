@@ -1,11 +1,10 @@
 
 """
-Enhanced iPod synchronization with full library sync support.
+Enhanced DAP synchronization with full library sync support.
 """
 
 import os
 import subprocess
-import re
 import logging
 from typing import List, Optional, Set
 from enum import Enum
@@ -14,7 +13,7 @@ from .library_scanner import LibraryScanner
 from .downloader import Downloader
 import shutil
 import mutagen
-from .utils import get_mbid_from_tags
+from .utils import get_mbid_from_tags, sanitize_path_component
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ class SyncMode(Enum):
 
 
 class ConversionOptions:
-    """Audio conversion options for iPod sync."""
+    """Audio conversion options for DAP sync."""
 
     def __init__(
         self,
@@ -88,9 +87,9 @@ class ConversionOptions:
         return self.format
 
 
-class EnhancedIpodSyncer:
+class EnhancedDapSyncer:
     """
-    Enhanced iPod syncer with full library sync and conversion options.
+    Enhanced DAP syncer with full library sync and conversion options.
     """
 
     def __init__(
@@ -98,21 +97,21 @@ class EnhancedIpodSyncer:
         db: DatabaseManager,
         downloader: Downloader,
         ffmpeg_path: str,
-        ipod_mount: str,
-        ipod_music_dir: str,
-        ipod_playlist_dir: str,
+        dap_mount: str,
+        dap_music_dir: str,
+        dap_playlist_dir: str,
         conversion_options: Optional[ConversionOptions] = None,
     ):
 
         self.db = db
         self.downloader = downloader
         self.ffmpeg_path = ffmpeg_path
-        self.ipod_mount_point = ipod_mount
+        self.dap_mount_point = dap_mount
         self.conversion_options = conversion_options or ConversionOptions()
 
         # Absolute paths
-        self.ipod_music_path = os.path.join(self.ipod_mount_point, ipod_music_dir)
-        self.ipod_playlist_path = os.path.join(self.ipod_mount_point, ipod_playlist_dir)
+        self.dap_music_path = os.path.join(self.dap_mount_point, dap_music_dir)
+        self.dap_playlist_path = os.path.join(self.dap_mount_point, dap_playlist_dir)
 
         # Validation
         from shutil import which
@@ -120,31 +119,25 @@ class EnhancedIpodSyncer:
         if not os.path.exists(self.ffmpeg_path) and not which(self.ffmpeg_path):
             raise FileNotFoundError(f"ffmpeg not found at '{self.ffmpeg_path}'")
 
-        logger.info("EnhancedIpodSyncer initialized")
+        logger.info("EnhancedDapSyncer initialized")
         logger.info(
             f"  Conversion: {self.conversion_options.format} "
             f"@ {self.conversion_options.sample_rate}Hz/{self.conversion_options.bit_depth}bit"
         )
 
-    def _detect_ipod(self) -> bool:
-        """Checks if the iPod mount point is accessible."""
-        if not os.path.isdir(self.ipod_mount_point):
+    def _detect_dap(self) -> bool:
+        """Checks if the DAP mount point is accessible."""
+        if not os.path.isdir(self.dap_mount_point):
             logger.error(
-                f"iPod not detected at {self.ipod_mount_point}. "
-                "Connect your iPod (Rockbox USB mode) and retry."
+                f"DAP not detected at {self.dap_mount_point}. "
+                "Connect your DAP (Rockbox USB mode) and retry."
             )
             return False
 
-        logger.info(f"iPod detected at: {self.ipod_mount_point}")
-        os.makedirs(self.ipod_music_path, exist_ok=True)
-        os.makedirs(self.ipod_playlist_path, exist_ok=True)
+        logger.info(f"DAP detected at: {self.dap_mount_point}")
+        os.makedirs(self.dap_music_path, exist_ok=True)
+        os.makedirs(self.dap_playlist_path, exist_ok=True)
         return True
-
-    def _sanitize_path_component(self, name: str) -> str:
-        """Removes illegal characters from a file/folder name."""
-        if not name:
-            name = "Unknown"
-        return re.sub(r'[\\/*?:"<>|]', "_", name)
 
     def _run_downloader(self):
         """Runs the downloader to retry failed/pending downloads."""
@@ -173,7 +166,7 @@ class EnhancedIpodSyncer:
             for p in playlists:
                 tracks = self.db.get_tracks_for_playlist(p.playlist_id)
                 for t in tracks:
-                    if t.local_path and not t.synced_to_ipod:
+                    if t.local_path and not t.synced_to_dap:
                         tracks_dict[t.mbid] = t
 
             return list(tracks_dict.values())
@@ -181,12 +174,12 @@ class EnhancedIpodSyncer:
         elif mode == SyncMode.FULL_LIBRARY:
             # Sync entire library
             all_tracks = self.db.get_all_tracks(local_only=True)
-            return [t for t in all_tracks if not t.synced_to_ipod]
+            return [t for t in all_tracks if not t.synced_to_dap]
 
         elif mode == SyncMode.SELECTIVE:
             # Sync specific artist or filtered tracks
             all_tracks = self.db.get_all_tracks(local_only=True)
-            tracks = [t for t in all_tracks if not t.synced_to_ipod]
+            tracks = [t for t in all_tracks if not t.synced_to_dap]
 
             if artist_filter:
                 tracks = [
@@ -197,24 +190,24 @@ class EnhancedIpodSyncer:
 
         return []
 
-    def _get_ipod_music_path(self) -> str:
+    def _get_dap_music_path(self) -> str:
         """Helper to safely get the music path, used by reconciliation and sync."""
-        return self.ipod_music_path
+        return self.dap_music_path
 
-    def reconcile_ipod_to_db(self):
+    def reconcile_dap_to_db(self):
         """
-        Scans the iPod's music directory, reads MBIDs, and reconciles the
+        Scans the DAP's music directory, reads MBIDs, and reconciles the
         dap_library.db by marking matched tracks as synced.
         """
-        logger.info("--- Starting iPod Reconciliation ---")
-        ipod_music_path = self._get_ipod_music_path()
+        logger.info("--- Starting DAP Reconciliation ---")
+        dap_music_path = self._get_dap_music_path()
 
         # Check for supported extensions (assuming defined in library_scanner.py)
         from .library_scanner import SUPPORTED_EXTENSIONS
 
-        if not os.path.isdir(ipod_music_path):
+        if not os.path.isdir(dap_music_path):
             logger.error(
-                f"iPod not mounted or music directory missing: {ipod_music_path}"
+                f"DAP not mounted or music directory missing: {dap_music_path}"
             )
             return
 
@@ -225,30 +218,30 @@ class EnhancedIpodSyncer:
             return
 
         match_count = 0
-        for root, _, files in os.walk(ipod_music_path):
+        for root, _, files in os.walk(dap_music_path):
             for file in files:
                 # Only look at supported audio files
                 if not file.lower().endswith(SUPPORTED_EXTENSIONS):
                     continue
 
-                ipod_file_path = os.path.join(root, file).replace("\\", "/")
+                dap_file_path = os.path.join(root, file).replace("\\", "/")
 
                 # Check file size to avoid trying to read metadata from tiny/corrupted files
-                if os.path.getsize(ipod_file_path) < 1024:
+                if os.path.getsize(dap_file_path) < 1024:
                     logger.debug(f"Skipping tiny file: {file}")
                     continue
 
-                ipod_mbid = get_mbid_from_tags(ipod_file_path)
+                dap_mbid = get_mbid_from_tags(dap_file_path)
 
-                if ipod_mbid and ipod_mbid in mbid_map:
-                    # Match found! This means we have the local file and the iPod file
+                if dap_mbid and dap_mbid in mbid_map:
+                    # Match found! This means we have the local file and the DAP file
                     # is tagged correctly with a known MBID.
-                    self.db.mark_track_synced(ipod_mbid, ipod_file_path)
+                    self.db.mark_track_synced(dap_mbid, dap_file_path)
                     match_count += 1
-                    logger.info(f"Matched and marked synced: {ipod_file_path}")
+                    logger.info(f"Matched and marked synced: {dap_file_path}")
 
         logger.info(
-            f"--- Reconciliation Complete. {match_count} tracks matched on iPod. ---"
+            f"--- Reconciliation Complete. {match_count} tracks matched on DAP. ---"
         )
 
     def _sync_tracks(
@@ -262,7 +255,7 @@ class EnhancedIpodSyncer:
         :param mode: SyncMode enum (PLAYLISTS_ONLY, FULL_LIBRARY, or SELECTIVE)
         :param artist_filter: For SELECTIVE mode, filter by artist name
         """
-        logger.info("--- Step 2: Syncing Tracks to iPod ---")
+        logger.info("--- Step 2: Syncing Tracks to DAP ---")
         logger.info(f"Sync mode: {mode.value}")
 
         tracks_to_sync = self._get_tracks_to_sync(mode, artist_filter)
@@ -298,41 +291,41 @@ class EnhancedIpodSyncer:
         logger.info(f"Sync complete. Success: {success_count}, Failed: {fail_count}")
 
     def _convert_and_copy(self, track: Track):
-        """Converts and copies track to iPod using clean path structure"""
+        """Converts and copies track to DAP using clean path structure"""
 
         if not track.local_path or not os.path.exists(track.local_path):
             logger.error(f"Local file not found: {track.local_path}")
             return
 
-        # Use the clean iPod path structure
+        # Use the clean DAP path structure
         safe_artist = (
-            self._sanitize_path_component(track.artist)
+            sanitize_path_component(track.artist)
             if track.artist
             else "Unknown Artist"
         )
         safe_title = (
-            self._sanitize_path_component(track.title)
+            sanitize_path_component(track.title)
             if track.title
             else "Unknown Title"
         )
         safe_album = (
-            self._sanitize_path_component(track.album)
+            sanitize_path_component(track.album)
             if track.album
             else "Unknown Album"
         )
 
         output_filename = f"{safe_title}.{self.conversion_options.get_extension()}"
         output_path = os.path.join(
-            self.ipod_music_path, safe_artist, safe_album, output_filename
+            self.dap_music_path, safe_artist, safe_album, output_filename
         ).replace("\\", "/")
 
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
-        ipod_mbid = get_mbid_from_tags(output_path)
+        dap_mbid = get_mbid_from_tags(output_path)
         db_mbid = track.mbid
-        if ipod_mbid and db_mbid:
-            if ipod_mbid.strip().lower() == db_mbid.strip().lower():
+        if dap_mbid and db_mbid:
+            if dap_mbid.strip().lower() == db_mbid.strip().lower():
                 logger.debug(f"Skipping (MBID match): {output_filename}")
                 self.db.mark_track_synced(track.mbid, output_path)
                 return
@@ -371,7 +364,7 @@ class EnhancedIpodSyncer:
 
         logger.debug(f"Saved: {output_path}")
 
-        # Update database with clean iPod path
+        # Update database with clean DAP path
         self.db.mark_track_synced(track.mbid, output_path)
 
     def _generate_playlists(self):
@@ -384,8 +377,8 @@ class EnhancedIpodSyncer:
             return
 
         for p in playlists:
-            sane_name = self._sanitize_path_component(p.name)
-            m3u_path = os.path.join(self.ipod_playlist_path, f"{sane_name}.m3u")
+            sane_name = sanitize_path_component(p.name)
+            m3u_path = os.path.join(self.dap_playlist_path, f"{sane_name}.m3u")
 
             logger.info(f"Generating: {sane_name}.m3u")
 
@@ -401,10 +394,10 @@ class EnhancedIpodSyncer:
                     f.write("#EXTM3U\n")
 
                     for track in tracks:
-                        # Only write tracks that are *actually* on the iPod
-                        if track.synced_to_ipod and track.ipod_path:
+                        # Only write tracks that are *actually* on the DAP
+                        if track.synced_to_dap and track.dap_path:
                             rel_path = os.path.relpath(
-                                track.ipod_path, self.ipod_mount_point
+                                track.dap_path, self.dap_mount_point
                             )
                             m3u_entry = rel_path.replace(os.sep, "/")
                             f.write(f"{m3u_entry}\n")
@@ -414,16 +407,16 @@ class EnhancedIpodSyncer:
 
         logger.info("Playlist generation complete")
 
-    def _import_missing_tracks_from_ipod(self):
+    def _import_missing_tracks_from_dap(self):
         """
-        Scans iPod for tracks that are NOT in the local database and copies them back.
+        Scans DAP for tracks that are NOT in the local database and copies them back.
         Does NOT delete anything.
         """
-        logger.info("--- Step 3b: Importing Missing Tracks from iPod ---")
-        ipod_music_path = self._get_ipod_music_path()
+        logger.info("--- Step 3b: Importing Missing Tracks from DAP ---")
+        dap_music_path = self._get_dap_music_path()
 
-        if not os.path.exists(ipod_music_path):
-            logger.warning("iPod music path not found, skipping import.")
+        if not os.path.exists(dap_music_path):
+            logger.warning("DAP music path not found, skipping import.")
             return
 
         # 1. Get all known MBIDs from DB
@@ -431,27 +424,27 @@ class EnhancedIpodSyncer:
         
         # 2. Prepare restore destination
         # We need the root music library path. We can infer it from the DB tracks or pass it in.
-        # But `EnhancedIpodSyncer` doesn't strictly know the library root in __init__.
+        # But `EnhancedDapSyncer` doesn't strictly know the library root in __init__.
         # We can try to use the downloader's config if available, or just a default relative to CWD?
-        # A safer bet is looking at where the DB is. Let's assume a 'Restored_From_iPod' folder 
+        # A safer bet is looking at where the DB is. Let's assume a 'Restored_From_DAP' folder 
         # in the parent dir of the DB or just explicit config.
         # For now, let's use the folder where `dap_library.db` resides as the base.
-        restore_base = os.path.join(os.path.dirname(os.path.abspath(self.db.db_path)), "Restored_From_iPod")
+        restore_base = os.path.join(os.path.dirname(os.path.abspath(self.db.db_path)), "Restored_From_DAP")
         os.makedirs(restore_base, exist_ok=True)
 
         imported_count = 0
         from .library_scanner import SUPPORTED_EXTENSIONS # re-import to be safe/lazy
 
-        for root, _, files in os.walk(ipod_music_path):
+        for root, _, files in os.walk(dap_music_path):
             for file in files:
                 if not file.lower().endswith(SUPPORTED_EXTENSIONS):
                     continue
                 
-                ipod_file_path = os.path.join(root, file)
+                dap_file_path = os.path.join(root, file)
                 
                 # Check if this file is known
                 # We mainly rely on MBID if possible
-                file_mbid = get_mbid_from_tags(ipod_file_path)
+                file_mbid = get_mbid_from_tags(dap_file_path)
                 
                 should_import = False
                 
@@ -460,18 +453,18 @@ class EnhancedIpodSyncer:
                     # Optional: We could check if the local file ACTUALLY exists.
                     local_path = mbid_map[file_mbid]
                     if not os.path.exists(local_path):
-                        logger.info(f"Local file missing for {file_mbid}, restoring from iPod...")
+                        logger.info(f"Local file missing for {file_mbid}, restoring from DAP...")
                         should_import = True
                     else:
                         pass # We have it.
                 else:
                     # MBID not in DB (or no MBID).
-                    # This is a "new" file from the iPod's perspective.
+                    # This is a "new" file from the DAP's perspective.
                     should_import = True
                 
                 if should_import:
                     # Construct destination path
-                    rel_path = os.path.relpath(ipod_file_path, ipod_music_path)
+                    rel_path = os.path.relpath(dap_file_path, dap_music_path)
                     dest_path = os.path.join(restore_base, rel_path)
                     
                     if os.path.exists(dest_path):
@@ -480,23 +473,23 @@ class EnhancedIpodSyncer:
                          
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                     try:
-                        shutil.copy2(ipod_file_path, dest_path)
-                        logger.info(f"Restored: {ipod_file_path} -> {dest_path}")
+                        shutil.copy2(dap_file_path, dest_path)
+                        logger.info(f"Restored: {dap_file_path} -> {dest_path}")
                         imported_count += 1
                     except Exception as e:
                         logger.error(f"Failed to import {file}: {e}")
 
         if imported_count > 0:
             logger.info(
-                f"Restored {imported_count} missing tracks from iPod to "
+                f"Restored {imported_count} missing tracks from DAP to "
                 f"'{restore_base}'. Run a library scan to register them."
             )
         else:
-            logger.info("No missing tracks found on iPod.")
+            logger.info("No missing tracks found on DAP.")
 
 
     def _backup_database(self):
-        """Copies the local database to the iPod root."""
+        """Copies the local database to the DAP root."""
         logger.info("--- Step 4: Backing up Database ---")
         try:
             db_source = self.db.db_path
@@ -504,8 +497,8 @@ class EnhancedIpodSyncer:
             # though usually it's best to rely on what was passed to DB manager.
             # Assuming db_source is valid as it's open.
             
-            # Construct destination: [ipod_mount]/dap_library.db
-            db_dest = os.path.join(self.ipod_mount_point, os.path.basename(db_source))
+            # Construct destination: [dap_mount]/dap_library.db
+            db_dest = os.path.join(self.dap_mount_point, os.path.basename(db_source))
 
             logger.info(f"Backing up DB: {db_source} -> {db_dest}")
             shutil.copy2(db_source, db_dest)
@@ -526,25 +519,25 @@ class EnhancedIpodSyncer:
         :param mode: Sync mode (PLAYLISTS_ONLY, FULL_LIBRARY, or SELECTIVE)
         :param artist_filter: For SELECTIVE mode
         :param skip_downloads: Skip the download queue step
-        :param reconcile: Run iPod reconciliation (matching) before sync
+        :param reconcile: Run DAP reconciliation (matching) before sync
         """
         logger.info("=" * 50)
-        logger.info("Starting iPod Sync")
+        logger.info("Starting DAP Sync")
         logger.info("=" * 50)
 
-        # if not self._detect_ipod():
+        # if not self._detect_dap():
         #     return
 
         if reconcile:
-             self.reconcile_ipod_to_db()
+             self.reconcile_dap_to_db()
 
         if not skip_downloads:
             self._run_downloader()
 
         self._sync_tracks(mode, artist_filter)
         
-        # New Step: Import from iPod (2-Way)
-        self._import_missing_tracks_from_ipod()
+        # New Step: Import from DAP (2-Way)
+        self._import_missing_tracks_from_dap()
 
         self._generate_playlists()
         
@@ -560,13 +553,13 @@ class EnhancedIpodSyncer:
         stats = {
             "total_tracks": len(self.db.get_all_tracks(local_only=True)),
             "synced_tracks": len(
-                [t for t in self.db.get_all_tracks(local_only=True) if t.synced_to_ipod]
+                [t for t in self.db.get_all_tracks(local_only=True) if t.synced_to_dap]
             ),
             "pending_tracks": len(
                 [
                     t
                     for t in self.db.get_all_tracks(local_only=True)
-                    if not t.synced_to_ipod
+                    if not t.synced_to_dap
                 ]
             ),
             "total_playlists": len(self.db.get_all_playlists()),
@@ -599,9 +592,9 @@ def main_run_sync(
     music_library_path = config.get("music_library_path")
     picard_cmd_path = config.get("picard_cmd_path")
     ffmpeg_path = config.get("ffmpeg_path")
-    ipod_mount = config.get("ipod_mount_point")
-    ipod_music_dir = config.get("ipod_music_dir_name", "Music")
-    ipod_playlist_dir = config.get("ipod_playlist_dir_name", "Playlists")
+    dap_mount = config.get("dap_mount_point")
+    dap_music_dir = config.get("dap_music_dir_name", "Music")
+    dap_playlist_dir = config.get("dap_playlist_dir_name", "Playlists")
 
     # Get conversion settings from config
     sample_rate = config.get("conversion_sample_rate", 44100)
@@ -630,13 +623,13 @@ def main_run_sync(
         slsk_password=config.get("slsk_password"),
     )
 
-    syncer = EnhancedIpodSyncer(
+    syncer = EnhancedDapSyncer(
         db=db,
         downloader=downloader,
         ffmpeg_path=ffmpeg_path,
-        ipod_mount=ipod_mount,
-        ipod_music_dir=ipod_music_dir,
-        ipod_playlist_dir=ipod_playlist_dir,
+        dap_mount=dap_mount,
+        dap_music_dir=dap_music_dir,
+        dap_playlist_dir=dap_playlist_dir,
         conversion_options=conversion_opts,
     )
 

@@ -29,8 +29,8 @@ class Track:
     album: Optional[str] = None
     isrc: Optional[str] = None
     local_path: Optional[str] = None
-    ipod_path: Optional[str] = None
-    synced_to_ipod: bool = False
+    dap_path: Optional[str] = None
+    synced_to_dap: bool = False
     # New Fields for Completer
     release_mbid: Optional[str] = None
     track_number: int = 0
@@ -78,6 +78,7 @@ class DatabaseManager:
         self.conn = None
         self._connect()
         self._create_tables()
+        self._migrate_schema()
 
     def _connect(self):
         try:
@@ -102,8 +103,8 @@ class DatabaseManager:
                     album TEXT,
                     isrc TEXT,
                     local_path TEXT UNIQUE,
-                    ipod_path TEXT,
-                    synced_to_ipod INTEGER DEFAULT 0,
+                    dap_path TEXT,
+                    synced_to_dap INTEGER DEFAULT 0,
                     release_mbid TEXT,
                     track_number INTEGER,
                     disc_number INTEGER
@@ -166,6 +167,26 @@ class DatabaseManager:
             if cursor:
                 cursor.close()
 
+    def _migrate_schema(self):
+        # Legacy DBs created before the iPod→DAP rename have columns named
+        # `ipod_path` / `synced_to_ipod`. Rename them in-place (SQLite 3.25+).
+        cursor = self.conn.cursor()
+        try:
+            cols = {row[1] for row in cursor.execute("PRAGMA table_info(tracks)").fetchall()}
+            if "ipod_path" in cols and "dap_path" not in cols:
+                cursor.execute("ALTER TABLE tracks RENAME COLUMN ipod_path TO dap_path")
+                logger.info("Migrated column: ipod_path → dap_path")
+            if "synced_to_ipod" in cols and "synced_to_dap" not in cols:
+                cursor.execute("ALTER TABLE tracks RENAME COLUMN synced_to_ipod TO synced_to_dap")
+                logger.info("Migrated column: synced_to_ipod → synced_to_dap")
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Schema migration failed: {e}")
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
     # --- Track Methods ---
     def add_or_update_track(self, track: Track):
         # Normalize path to ensure consistency (force forward slashes)
@@ -173,8 +194,8 @@ class DatabaseManager:
             track.local_path = os.path.normpath(track.local_path).replace("\\", "/")
 
         sql = """
-        INSERT OR REPLACE INTO tracks 
-        (mbid, title, artist, album, isrc, local_path, ipod_path, synced_to_ipod, release_mbid, track_number, disc_number)
+        INSERT OR REPLACE INTO tracks
+        (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap, release_mbid, track_number, disc_number)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         try:
@@ -188,8 +209,8 @@ class DatabaseManager:
                     track.album,
                     track.isrc,
                     track.local_path,
-                    track.ipod_path,
-                    int(track.synced_to_ipod),
+                    track.dap_path,
+                    int(track.synced_to_dap),
                     track.release_mbid,
                     track.track_number,
                     track.disc_number,
@@ -444,11 +465,11 @@ class DatabaseManager:
         cursor.close()
         return count
 
-    def mark_track_synced(self, mbid: str, ipod_path: str):
+    def mark_track_synced(self, mbid: str, dap_path: str):
         cursor = self.conn.cursor()
         cursor.execute(
-            "UPDATE tracks SET synced_to_ipod = 1, ipod_path = ? WHERE mbid = ?",
-            (ipod_path, mbid),
+            "UPDATE tracks SET synced_to_dap = 1, dap_path = ? WHERE mbid = ?",
+            (dap_path, mbid),
         )
         self.conn.commit()
         cursor.close()
@@ -541,8 +562,8 @@ class DatabaseManager:
             album=row["album"],
             isrc=row["isrc"],
             local_path=row["local_path"],
-            ipod_path=row["ipod_path"],
-            synced_to_ipod=bool(row["synced_to_ipod"]),
+            dap_path=row["dap_path"],
+            synced_to_dap=bool(row["synced_to_dap"]),
             release_mbid=row["release_mbid"],
             track_number=row["track_number"],
             disc_number=row["disc_number"],
