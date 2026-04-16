@@ -49,6 +49,7 @@ class Worker(QObject):
     """
 
     progress = Signal(str)
+    progress_ratio = Signal(int, int)  # (current, total)
     finished = Signal(bool, str)
 
     def __init__(self, task_name: str, fn: Callable, *args, **kwargs):
@@ -74,6 +75,9 @@ class Worker(QObject):
             msg = payload.get("message", "")
             detail = payload.get("detail")
             self.progress.emit(f"{msg} — {detail}" if detail else msg)
+            current, total = payload.get("current"), payload.get("total")
+            if isinstance(current, int) and isinstance(total, int) and total > 0:
+                self.progress_ratio.emit(current, total)
         else:
             self.progress.emit(str(payload))
 
@@ -239,6 +243,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_task_progress)
+        worker.progress_ratio.connect(self._on_task_progress_ratio)
         worker.finished.connect(self._on_task_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -255,9 +260,16 @@ class MainWindow(QMainWindow):
     def _on_task_progress(self, msg: str):
         self.statusBar().showMessage(msg)
 
+    def _on_task_progress_ratio(self, current: int, total: int):
+        if self.progress_bar.maximum() != total:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setTextVisible(True)
+        self.progress_bar.setValue(current)
+
     def _on_task_finished(self, success: bool, msg: str):
         self.progress_bar.hide()
         self.progress_bar.reset()
+        self.progress_bar.setTextVisible(False)
         self.statusBar().showMessage(msg, 8000)
         if not success:
             QMessageBox.warning(self, "Task failed", msg)

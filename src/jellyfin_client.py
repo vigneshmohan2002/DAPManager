@@ -56,12 +56,21 @@ class JellyfinClient:
 
         os.makedirs(self.music_library_path, exist_ok=True)
 
-    def _report(self, message: str, detail: Optional[str] = None):
+    def _report(
+        self,
+        message: str,
+        detail: Optional[str] = None,
+        current: Optional[int] = None,
+        total: Optional[int] = None,
+    ):
         logger.info(message)
         if self.progress_callback:
             payload = {"message": message}
             if detail is not None:
                 payload["detail"] = detail
+            if current is not None and total is not None:
+                payload["current"] = current
+                payload["total"] = total
             self.progress_callback(payload)
 
     # ---------- HTTP helpers ----------
@@ -242,10 +251,13 @@ class JellyfinClient:
         failed = 0
         mbid_by_jellyfin_id: Dict[str, str] = {}
 
+        total = len(items)
         for i, item in enumerate(items, 1):
             self._report(
-                f"[{i}/{len(items)}] {item.get('Name')}",
+                f"[{i}/{total}] {item.get('Name')}",
                 detail=item.get("AlbumArtist") or "",
+                current=i,
+                total=total,
             )
             try:
                 track = self._pull_item(item)
