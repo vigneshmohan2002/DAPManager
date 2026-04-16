@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QSplitter,
     QStatusBar,
     QTableView,
@@ -170,7 +171,13 @@ class MainWindow(QMainWindow):
         splitter.setSizes([240, 960])
         self.setCentralWidget(splitter)
 
-        self.setStatusBar(QStatusBar())
+        status = QStatusBar()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(220)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.hide()
+        status.addPermanentWidget(self.progress_bar)
+        self.setStatusBar(status)
         self._refresh()
 
     def _refresh(self):
@@ -240,6 +247,8 @@ class MainWindow(QMainWindow):
         self._thread = thread
         self._worker = worker
         self._set_actions_enabled(False)
+        self.progress_bar.setRange(0, 0)  # indeterminate busy animation
+        self.progress_bar.show()
         self.statusBar().showMessage(f"{task_name}: starting...")
         thread.start()
 
@@ -247,6 +256,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg)
 
     def _on_task_finished(self, success: bool, msg: str):
+        self.progress_bar.hide()
+        self.progress_bar.reset()
         self.statusBar().showMessage(msg, 8000)
         if not success:
             QMessageBox.warning(self, "Task failed", msg)
