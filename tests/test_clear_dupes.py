@@ -113,8 +113,9 @@ def test_resolve_duplicates_file_not_found(db, temp_dir):
     assert len(result["errors"]) > 0
 
 
-def test_find_and_resolve_duplicates(capsys):
+def test_find_and_resolve_duplicates(caplog):
     """Test finding and resolving duplicates."""
-    find_and_resolve_duplicates(None)
-    captured = capsys.readouterr()
-    assert "Use the Web UI for duplicate management." in captured.out
+    import logging
+    with caplog.at_level(logging.INFO):
+        find_and_resolve_duplicates(None)
+    assert "Use the Web UI for duplicate management." in caplog.text

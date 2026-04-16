@@ -1,6 +1,7 @@
 import pytest
 import time
 from unittest.mock import patch, MagicMock
+from mediafile import UnreadableFileError
 from src.utils import RateLimiter, EnvironmentManager, get_mbid_from_tags, write_mbid_to_file, find_mbid_by_fingerprint
 
 
@@ -86,7 +87,7 @@ def test_get_mbid_from_tags_success(mock_mediafile):
 @patch('src.utils.MediaFile')
 def test_get_mbid_from_tags_failure(mock_mediafile):
     """Test failed MBID retrieval from tags."""
-    mock_mediafile.side_effect = Exception("File error")
+    mock_mediafile.side_effect = UnreadableFileError("/test/file.flac", "corrupt file")
 
     mbid = get_mbid_from_tags("/test/file.flac")
     assert mbid is None
@@ -107,7 +108,7 @@ def test_write_mbid_to_file_success(mock_mediafile):
 def test_write_mbid_to_file_failure(mock_mediafile):
     """Test failed MBID writing to file."""
     mock_file = MagicMock()
-    mock_file.save.side_effect = Exception("Save error")
+    mock_file.save.side_effect = OSError("Save error")
     mock_mediafile.return_value = mock_file
 
     result = write_mbid_to_file("/test/file.flac", "test_mbid")

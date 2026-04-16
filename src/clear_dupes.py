@@ -122,7 +122,7 @@ def find_and_resolve_duplicates(db: DatabaseManager):
     """
     Main Logic for CLI/Script usage.
     """
-    print("Use the Web UI for duplicate management.")
+    logger.info("Use the Web UI for duplicate management.")
 
 
 

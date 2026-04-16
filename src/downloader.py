@@ -374,8 +374,8 @@ class Downloader:
                         os.rmdir(os.path.join(root, name))
                     except OSError:
                         pass
-        except Exception:
-            pass
+        except OSError as e:
+            logger.debug(f"Empty-dir cleanup failed: {e}")
 
         # Done
         self.db.remove_from_queue(item.id)

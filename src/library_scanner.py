@@ -1,14 +1,13 @@
 
 import os
 import logging
-import time
-import musicbrainzngs
 from mediafile import MediaFile, UnreadableFileError
 from typing import Optional, Tuple
 
 from .db_manager import DatabaseManager, Track
 from .config_manager import get_config
 from .utils import find_mbid_by_fingerprint, write_mbid_to_file
+from . import musicbrainz_client as mb
 
 logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = (
@@ -47,17 +46,7 @@ class LibraryScanner:
         self, recording_mbid: str, album_name_hint: str
     ) -> Tuple[Optional[str], int]:
         try:
-            try:
-                musicbrainzngs.set_useragent(
-                    "DAPManager", "0.1.0", "contact@example.com"
-                )
-            except Exception:
-                pass
-            time.sleep(1.1)
-
-            result = musicbrainzngs.get_recording_by_id(
-                recording_mbid, includes=["releases"]
-            )
+            result = mb.get_recording_by_id(recording_mbid, includes=["releases"])
             if "recording" not in result or "release-list" not in result["recording"]:
                 return None, 0
 
@@ -79,14 +68,14 @@ class LibraryScanner:
             if not target:
                 return None, 0
 
-            time.sleep(1.1)
-            details = musicbrainzngs.get_release_by_id(target["id"], includes=["media"])
+            details = mb.get_release_by_id(target["id"], includes=["media"])
             total = 0
             if "release" in details and "medium-list" in details["release"]:
                 for m in details["release"]["medium-list"]:
                     total += int(m.get("track-count", 0))
             return target["id"], total
-        except Exception:
+        except Exception as e:
+            logger.warning(f"MB lookup failed for {recording_mbid}: {e}")
             return None, 0
 
     def _process_file(self, file_path: str):
@@ -95,7 +84,8 @@ class LibraryScanner:
 
         try:
             f = MediaFile(file_path)
-        except Exception:
+        except (UnreadableFileError, OSError) as e:
+            logger.debug(f"Skipping unreadable file {file_path}: {e}")
             return "skipped"
 
         mbid = f.mb_trackid
@@ -104,7 +94,8 @@ class LibraryScanner:
                 try:
                     f = MediaFile(file_path)
                     mbid = f.mb_trackid
-                except Exception:
+                except (UnreadableFileError, OSError) as e:
+                    logger.debug(f"Skipping after picard re-read {file_path}: {e}")
                     return "skipped"
 
         if mbid:
@@ -125,8 +116,8 @@ class LibraryScanner:
                 if mod:
                     try:
                         f.save()
-                    except Exception:
-                        pass
+                    except (UnreadableFileError, OSError) as e:
+                        logger.warning(f"Could not save tags to {file_path}: {e}")
 
             # Update DB Cache
             if f.mb_albumid and f.tracktotal:

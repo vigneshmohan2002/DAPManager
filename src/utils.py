@@ -3,8 +3,8 @@ import time
 import os
 import logging
 from functools import wraps
-import acoustid  # Uses pyacoustid
-from mediafile import MediaFile
+import acoustid
+from mediafile import MediaFile, UnreadableFileError
 from .config_manager import get_config
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def get_mbid_from_tags(file_path: str):
     try:
         f = MediaFile(file_path)
         return f.mb_trackid
-    except Exception:
+    except (UnreadableFileError, OSError):
         return None
 
 
@@ -55,8 +55,8 @@ def write_mbid_to_file(file_path: str, mbid: str):
         f.mb_trackid = mbid
         f.save()
         return True
-    except Exception as e:
-        logger.error(f"Tag write failed: {e}")
+    except (UnreadableFileError, OSError) as e:
+        logger.error(f"Tag write failed for {file_path}: {e}")
         return False
 
 
@@ -73,6 +73,6 @@ def find_mbid_by_fingerprint(file_path: str):
                 logger.info(f"Match: {title} ({rid})")
                 write_mbid_to_file(file_path, rid)
                 return rid
-    except Exception as e:
+    except acoustid.AcoustidError as e:
         logger.error(f"AcoustID error: {e}")
     return None

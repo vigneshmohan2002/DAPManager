@@ -77,6 +77,12 @@ def get_recording_by_id(recording_mbid: str, includes=None):
     return musicbrainzngs.get_recording_by_id(recording_mbid, includes=includes or [])
 
 
+def get_recordings_by_isrc(isrc: str):
+    _ensure_configured()
+    _wait_for_slot()
+    return musicbrainzngs.get_recordings_by_isrc(isrc)
+
+
 def reset_for_tests() -> None:
     """Reset module state. Tests only."""
     global _useragent_set, _last_call

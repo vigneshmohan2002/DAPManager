@@ -26,7 +26,7 @@ def mock_env_vars(monkeypatch):
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_spotify_client_initialization(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test Spotify client initialization."""
     # Setup mocks
@@ -46,7 +46,7 @@ def test_spotify_client_initialization(mock_musicbrainz, mock_spotify, mock_cred
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_process_playlist_invalid_url(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test processing playlist with invalid URL."""
     mock_auth_manager = MagicMock()
@@ -68,7 +68,7 @@ def test_process_playlist_invalid_url(mock_musicbrainz, mock_spotify, mock_crede
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_get_mbid_from_isrc_success(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test successful MBID retrieval from ISRC."""
     # Setup mocks
@@ -96,7 +96,7 @@ def test_get_mbid_from_isrc_success(mock_musicbrainz, mock_spotify, mock_credent
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_get_mbid_from_isrc_failure(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test failed MBID retrieval from ISRC."""
     mock_auth_manager = MagicMock()
@@ -121,7 +121,7 @@ def test_get_mbid_from_isrc_failure(mock_musicbrainz, mock_spotify, mock_credent
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_process_track_no_isrc(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test processing track without ISRC."""
     # Setup mocks
@@ -150,7 +150,7 @@ def test_process_track_no_isrc(mock_musicbrainz, mock_spotify, mock_credentials,
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_process_track_success(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test successful track processing."""
     mock_auth_manager = MagicMock()
@@ -189,7 +189,7 @@ def test_process_track_success(mock_musicbrainz, mock_spotify, mock_credentials,
 @patch('src.spotify_client.get_config')
 @patch('src.spotify_client.SpotifyClientCredentials')
 @patch('src.spotify_client.spotipy.Spotify')
-@patch('src.spotify_client.musicbrainzngs')
+@patch('src.musicbrainz_client.musicbrainzngs')
 def test_process_track_existing_track(mock_musicbrainz, mock_spotify, mock_credentials, mock_get_config, db):
     """Test processing track that already exists in database."""
     mock_auth_manager = MagicMock()

@@ -13,6 +13,11 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# The default sqlite3 datetime adapter is deprecated in Python 3.12 and
+# scheduled for removal. Register an explicit ISO-format adapter so writes
+# from `datetime.now()` keep working on 3.13+.
+sqlite3.register_adapter(datetime, lambda d: d.isoformat())
+
 
 @dataclass
 class Track:

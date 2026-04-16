@@ -475,7 +475,13 @@ def main():
                 with DatabaseManager(db_path) as db:
                     incomplete = audit_library(db)
 
-                if incomplete:
+                if not incomplete:
+                    print("\nAll albums in your library are complete!")
+                else:
+                    print(f"\nFound {len(incomplete)} incomplete albums:\n")
+                    for item in incomplete:
+                        status = f"{item['have']}/{item['total']} (missing {item['missing']})"
+                        print(f"  {item['artist']} - {item['album']}  [{status}]")
                     print(f"\n{len(incomplete)} incomplete albums found.")
                     proceed = input("\nWould you like to queue missing tracks for download? (y/n): ").strip().lower()
                     if proceed == "y":

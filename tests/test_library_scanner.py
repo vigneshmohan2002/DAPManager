@@ -59,7 +59,7 @@ def test_scan_library_empty_directory(mock_exists, mock_walk, scanner):
 
 def test_fetch_release_info_from_api_success(scanner):
     """Test successful release info fetch."""
-    with patch('src.library_scanner.musicbrainzngs') as mock_mb:
+    with patch('src.musicbrainz_client.musicbrainzngs') as mock_mb:
         mock_mb.get_recording_by_id.return_value = {
             'recording': {
                 'release-list': [{'id': 'release1', 'title': 'Test Album', 'status': 'Official'}]
@@ -78,7 +78,7 @@ def test_fetch_release_info_from_api_success(scanner):
 
 def test_fetch_release_info_from_api_failure(scanner):
     """Test failed release info fetch."""
-    with patch('src.library_scanner.musicbrainzngs') as mock_mb:
+    with patch('src.musicbrainz_client.musicbrainzngs') as mock_mb:
         mock_mb.get_recording_by_id.side_effect = Exception("API Error")
 
         release_id, track_count = scanner._fetch_release_info_from_api("test_mbid", "Test Album")

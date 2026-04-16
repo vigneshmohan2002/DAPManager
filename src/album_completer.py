@@ -337,16 +337,11 @@ def audit_library(db: DatabaseManager):
 
     if not incomplete_albums:
         logger.info("All identified albums in your library appear to be complete!")
-        print("\nAll albums in your library are complete!")
         return []
 
     logger.info(f"ALBUM COMPLETENESS AUDIT: Found {len(incomplete_albums)} incomplete albums.")
-    print(f"\nFound {len(incomplete_albums)} incomplete albums:\n")
-
     for item in incomplete_albums:
         status = f"{item['have']}/{item['total']} (missing {item['missing']})"
-        line = f"  {item['artist']} - {item['album']}  [{status}]"
-        logger.info(f"INCOMPLETE: {line}")
-        print(line)
+        logger.info(f"INCOMPLETE: {item['artist']} - {item['album']}  [{status}]")
 
     return incomplete_albums
