@@ -129,11 +129,10 @@ class EnhancedIpodSyncer:
     def _detect_ipod(self) -> bool:
         """Checks if the iPod mount point is accessible."""
         if not os.path.isdir(self.ipod_mount_point):
-            logger.error(f"iPod mount point not found: {self.ipod_mount_point}")
-            print("=" * 80)
-            print(f"ERROR: iPod not detected at: {self.ipod_mount_point}")
-            print("Please connect your iPod (in Rockbox USB mode).")
-            print("=" * 80)
+            logger.error(
+                f"iPod not detected at {self.ipod_mount_point}. "
+                "Connect your iPod (Rockbox USB mode) and retry."
+            )
             return False
 
         logger.info(f"iPod detected at: {self.ipod_mount_point}")
@@ -214,17 +213,15 @@ class EnhancedIpodSyncer:
         from .library_scanner import SUPPORTED_EXTENSIONS
 
         if not os.path.isdir(ipod_music_path):
-            logger.error(f"iPod music path not found: {ipod_music_path}")
-            print(
-                f"ERROR: iPod not mounted or music directory missing: {ipod_music_path}"
+            logger.error(
+                f"iPod not mounted or music directory missing: {ipod_music_path}"
             )
             return
 
         # Get a map of MBID -> local_path from the DB for efficient lookups
         mbid_map = self.db.get_mbid_to_track_path_map()
         if not mbid_map:
-            logger.warning("Database has no tracks. Scan local library first.")
-            print("WARNING: Database is empty. Scan your local music library first.")
+            logger.warning("Database is empty. Scan your local music library first.")
             return
 
         match_count = 0
@@ -253,9 +250,6 @@ class EnhancedIpodSyncer:
         logger.info(
             f"--- Reconciliation Complete. {match_count} tracks matched on iPod. ---"
         )
-        print(
-            f"\nSUCCESS: Reconciled {match_count} existing tracks from iPod into the database."
-        )
 
     def _sync_tracks(
         self,
@@ -279,9 +273,11 @@ class EnhancedIpodSyncer:
 
         logger.info(f"Found {len(tracks_to_sync)} track(s) to sync")
 
-        # Ask for confirmation if syncing large number
+        # Ask for confirmation if syncing large number.
+        # NOTE: uses input() — only safe under CLI. Web callers should pre-confirm
+        # before invoking this code path.
         if len(tracks_to_sync) > 50:
-            print(f"\n⚠️  About to sync {len(tracks_to_sync)} tracks.")
+            logger.warning(f"About to sync {len(tracks_to_sync)} tracks.")
             confirm = input("This may take a while. Continue? (y/n): ").strip().lower()
             if confirm != "y":
                 logger.info("Sync cancelled by user")
@@ -485,16 +481,16 @@ class EnhancedIpodSyncer:
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                     try:
                         shutil.copy2(ipod_file_path, dest_path)
-                        logger.info(f"Imported: {ipod_file_path} -> {dest_path}")
+                        logger.info(f"Restored: {ipod_file_path} -> {dest_path}")
                         imported_count += 1
-                        print(f"Restored: {file}")
                     except Exception as e:
                         logger.error(f"Failed to import {file}: {e}")
 
         if imported_count > 0:
-            logger.info(f"Imported {imported_count} tracks from iPod.")
-            print(f"\nSUCCESS: Restored {imported_count} missing tracks from iPod to '{restore_base}'")
-            print("Please scan your library (Option 1) to add them to the database.")
+            logger.info(
+                f"Restored {imported_count} missing tracks from iPod to "
+                f"'{restore_base}'. Run a library scan to register them."
+            )
         else:
             logger.info("No missing tracks found on iPod.")
 
@@ -516,7 +512,6 @@ class EnhancedIpodSyncer:
             logger.info("Database backup successful")
         except Exception as e:
             logger.error(f"Database backup failed: {e}")
-            print(f"WARNING: Database backup failed: {e}")
 
     def run_sync(
         self,

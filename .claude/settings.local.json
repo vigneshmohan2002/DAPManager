@@ -2,7 +2,32 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(grep -E \"tests/__pycache__|^tests$\" .gitignore)",
+      "Bash(git checkout *)",
+      "Bash(git stash *)",
+      "Bash(git reset *)",
+      "Bash(rm -rf tests/__pycache__)",
+      "Bash(git rm *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git merge *)",
+      "Bash(git push *)",
+      "Bash(git branch *)",
+      "Bash(wc -l src/*.py manager.py web_server.py)",
+      "Bash(grep -n \"subprocess\\\\|os.system\\\\|shell=True\" src/*.py manager.py web_server.py)",
+      "Bash(grep -E \"__pycache__|\\\\.pyc$\")",
+      "Bash(git mv *)",
+      "Bash(ls config*.json)",
+      "Bash(pip3 show *)",
+      "Bash(brew list *)",
+      "Bash(brew install *)",
+      "Bash(git tag *)",
+      "Bash(git filter-repo *)",
+      "Bash(xargs -I {} git show {} -- config.json)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(git config *)"
     ]
   }
 }
