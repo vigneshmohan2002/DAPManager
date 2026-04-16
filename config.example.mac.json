@@ -3,9 +3,9 @@
     "music_library_path": "/tmp/dap_dummy_library",
     "downloads_path": "/tmp/dap_downloads",
     "ffmpeg_path": "ffmpeg",
-    "ipod_mount_point": "/Volumes/IPOD",
-    "ipod_music_dir_name": "Music",
-    "ipod_playlist_dir_name": "Playlists",
+    "dap_mount_point": "/Volumes/DAP",
+    "dap_music_dir_name": "Music",
+    "dap_playlist_dir_name": "Playlists",
     "slsk_cmd_base": [
         "./sldl.sh"
     ],
@@ -15,5 +15,8 @@
     "slsk_username": "",
     "slsk_password": "",
     "acoustid_api_key": "",
-    "contact_email": ""
+    "contact_email": "",
+    "jellyfin_url": "",
+    "jellyfin_api_key": "",
+    "jellyfin_user_id": ""
 }

@@ -3,9 +3,9 @@
     "music_library_path": "C:\\Music\\DAP_Library",
     "downloads_path": "C:\\Music\\Downloads",
     "ffmpeg_path": "ffmpeg.exe",
-    "ipod_mount_point": "E:\\",
-    "ipod_music_dir_name": "Music",
-    "ipod_playlist_dir_name": "Playlists",
+    "dap_mount_point": "E:\\",
+    "dap_music_dir_name": "Music",
+    "dap_playlist_dir_name": "Playlists",
     "slsk_cmd_base": [
         "sldl.exe"
     ],
@@ -15,5 +15,8 @@
     "slsk_username": "",
     "slsk_password": "",
     "acoustid_api_key": "",
-    "contact_email": ""
+    "contact_email": "",
+    "jellyfin_url": "",
+    "jellyfin_api_key": "",
+    "jellyfin_user_id": ""
 }

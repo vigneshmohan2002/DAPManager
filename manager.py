@@ -15,7 +15,7 @@ from src.db_manager import DatabaseManager
 from src.library_scanner import main_scan_library, LibraryScanner
 from src.spotify_client import SpotifyClient
 from src.downloader import main_run_downloader, Downloader
-from src.sync_ipod import main_run_sync
+from src.sync_dap import main_run_sync
 from src.utils import EnvironmentManager
 from src.album_completer import audit_library, complete_albums
 
@@ -34,16 +34,17 @@ def print_menu():
     print(" 1. [Setup] Scan local music library")
     print(" 2. [Add]   Add new Spotify playlist")
     print(" 3. [Fetch] Run download queue manually")
-    print(" 4. [SYNC]  Sync PLAYLISTS to iPod")
-    print(" 5. [SYNC]  Sync ENTIRE LIBRARY to iPod")
+    print(" 4. [SYNC]  Sync PLAYLISTS to DAP")
+    print(" 5. [SYNC]  Sync ENTIRE LIBRARY to DAP")
     print(" 6. [SYNC]  Selective sync (by artist)")
-    print(" 7. [Utils] Clean iPod music directory (resets sync flags)")
-    print(" 8. [Utils] RECONCILE iPod files to DB (Match existing files by MBID)")
+    print(" 7. [Utils] Clean DAP music directory (resets sync flags)")
+    print(" 8. [Utils] RECONCILE DAP files to DB (Match existing files by MBID)")
     print(" 9. [Utils] CLEAR DUPLICATES (Resolve file conflicts)")
     print(" 10. [Batch] Run Batch Sync (Scan -> Queue -> Download -> Sync)")
     print(" 11. [Audit] Find Incomplete Albums")
     print(" 12. [Auto]  COMPLETE ALBUMS (find gaps -> queue -> download)")
-    print(" 13. Exit")
+    print(" 13. [PULL]  Pull from Jellyfin")
+    print(" 14. Exit")
     print("=" * 60)
     print("NOTE: Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET in your environment.")
 
@@ -79,7 +80,7 @@ def show_sync_stats(db: DatabaseManager, config):
     """Display detailed sync statistics."""
     try:
         # We need to import here to avoid circular imports
-        from src.sync_ipod import EnhancedIpodSyncer, ConversionOptions
+        from src.sync_dap import EnhancedDapSyncer, ConversionOptions
 
         # Create a minimal syncer just for stats
         conversion_opts = ConversionOptions(
@@ -88,13 +89,13 @@ def show_sync_stats(db: DatabaseManager, config):
             format="flac",
         )
 
-        syncer = EnhancedIpodSyncer(
+        syncer = EnhancedDapSyncer(
             db=db,
             downloader=None,
             ffmpeg_path=config.get("ffmpeg_path", "ffmpeg"),
-            ipod_mount=config.get("ipod_mount_point", ""),
-            ipod_music_dir=config.get("ipod_music_dir_name", "Music"),
-            ipod_playlist_dir=config.get("ipod_playlist_dir_name", "Playlists"),
+            dap_mount=config.get("dap_mount_point", ""),
+            dap_music_dir=config.get("dap_music_dir_name", "Music"),
+            dap_playlist_dir=config.get("dap_playlist_dir_name", "Playlists"),
             conversion_options=conversion_opts,
         )
 
@@ -104,7 +105,7 @@ def show_sync_stats(db: DatabaseManager, config):
         print("   Library Statistics ")
         print("=" * 60)
         print(f" Total tracks in library:  {stats['total_tracks']:,}")
-        print(f" Already synced to iPod:   {stats['synced_tracks']:,}")
+        print(f" Already synced to DAP:   {stats['synced_tracks']:,}")
         print(f" Pending sync:             {stats['pending_tracks']:,}")
         print(f" Sync progress:            {stats['sync_percentage']:.1f}%")
         print(f" Total playlists:          {stats['total_playlists']}")
@@ -130,10 +131,10 @@ def show_sync_stats(db: DatabaseManager, config):
         print(f"\n Error getting stats: {e}")
 
 
-def reconcile_ipod(db: DatabaseManager, config: dict):
-    """Reconcile tracks already on the iPod with the database."""
-    # Ensure EnhancedIpodSyncer is imported or available in the global scope
-    from src.sync_ipod import EnhancedIpodSyncer
+def reconcile_dap(db: DatabaseManager, config: dict):
+    """Reconcile tracks already on the DAP with the database."""
+    # Ensure EnhancedDapSyncer is imported or available in the global scope
+    from src.sync_dap import EnhancedDapSyncer
 
     # We must instantiate the Syncer using configuration
     downloader = Downloader(
@@ -146,17 +147,17 @@ def reconcile_ipod(db: DatabaseManager, config: dict):
         slsk_password=config.get("slsk_password"),
     )
 
-    syncer = EnhancedIpodSyncer(
+    syncer = EnhancedDapSyncer(
         db=db,
         downloader=downloader,
         ffmpeg_path=config.get("ffmpeg_path"),
-        ipod_mount=config.get("ipod_mount_point"),
-        ipod_music_dir=config.get("ipod_music_dir_name", "Music"),
-        ipod_playlist_dir=config.get("ipod_playlist_dir_name", "Playlists"),
+        dap_mount=config.get("dap_mount_point"),
+        dap_music_dir=config.get("dap_music_dir_name", "Music"),
+        dap_playlist_dir=config.get("dap_playlist_dir_name", "Playlists"),
         conversion_options=None,  # Conversion options not needed for reconciliation
     )
 
-    syncer.reconcile_ipod_to_db()
+    syncer.reconcile_dap_to_db()
 
 
 def batch_sync():
@@ -164,7 +165,7 @@ def batch_sync():
     Runs a full automation cycle:
     1. Scan local library
     2. Run downloader
-    3. Sync to iPod
+    3. Sync to DAP
     """
     try:
         config = get_config()
@@ -186,9 +187,9 @@ def batch_sync():
         with DatabaseManager(db_path) as db:
             main_run_downloader(db, config._config)
 
-        # Step 3: Sync to iPod
-        logger.info("Batch Sync Step 3/3: Syncing to iPod...")
-        print("\n[Step 3/3] Syncing to iPod...")
+        # Step 3: Sync to DAP
+        logger.info("Batch Sync Step 3/3: Syncing to DAP...")
+        print("\n[Step 3/3] Syncing to DAP...")
         with DatabaseManager(db_path) as db:
             main_run_sync(db, config._config, sync_mode="playlists", conversion_format="flac")
 
@@ -226,23 +227,23 @@ def run_queue_playlists(db_path, config, playlist_urls):
         raise
 
 
-def clean_ipod_music(db, config):
-    """Remove all music from iPod (useful for format changes)."""
+def clean_dap_music(db, config):
+    """Remove all music from DAP (useful for format changes)."""
     import shutil
 
-    ipod_mount = config.get("ipod_mount_point")
-    ipod_music_dir = config.get("ipod_music_dir_name", "Music")
-    ipod_music_path = os.path.join(ipod_mount, ipod_music_dir)
+    dap_mount = config.get("dap_mount_point")
+    dap_music_dir = config.get("dap_music_dir_name", "Music")
+    dap_music_path = os.path.join(dap_mount, dap_music_dir)
 
-    if not os.path.exists(ipod_music_path):
-        print(f"\n iPod music path not found: {ipod_music_path}")
+    if not os.path.exists(dap_music_path):
+        print(f"\n DAP music path not found: {dap_music_path}")
         return
 
     # Count files
-    file_count = sum(len(files) for _, _, files in os.walk(ipod_music_path))
+    file_count = sum(len(files) for _, _, files in os.walk(dap_music_path))
 
     print(f"\n WARNING: This will delete {file_count} files from:")
-    print(f"    {ipod_music_path}")
+    print(f"    {dap_music_path}")
     print("\nThis action CANNOT be undone!")
 
     confirm = input("\nType 'DELETE' to confirm: ").strip()
@@ -252,13 +253,13 @@ def clean_ipod_music(db, config):
         return
 
     try:
-        shutil.rmtree(ipod_music_path)
-        os.makedirs(ipod_music_path)
-        logger.info(f"Cleaned iPod music directory: {ipod_music_path}")
-        print(f"Deleted {file_count} files from iPod")
+        shutil.rmtree(dap_music_path)
+        os.makedirs(dap_music_path)
+        logger.info(f"Cleaned DAP music directory: {dap_music_path}")
+        print(f"Deleted {file_count} files from DAP")
         print("Run a sync to repopulate with your desired format")
     except Exception as e:
-        logger.error(f"Failed to clean iPod: {e}")
+        logger.error(f"Failed to clean DAP: {e}")
         print(f"Error: {e}")
 
 
@@ -285,7 +286,7 @@ def main():
 
     while True:
         print_menu()
-        choice = input("\nEnter your choice (1-13): ").strip()
+        choice = input("\nEnter your choice (1-14): ").strip()
 
         try:
             if choice == "1":
@@ -356,13 +357,13 @@ def main():
 
             elif choice == "4":
                 # ============================================
-                # Sync Playlists to iPod
+                # Sync Playlists to DAP
                 # ============================================
                 logger.info("=" * 60)
-                logger.info("Syncing Playlists to iPod")
+                logger.info("Syncing Playlists to DAP")
                 logger.info("=" * 60)
 
-                print("\n Syncing playlist tracks to iPod...")
+                print("\n Syncing playlist tracks to DAP...")
 
                 fmt = get_conversion_format()
                 print(f"\n Converting to {fmt.upper()}...")
@@ -377,14 +378,14 @@ def main():
 
             elif choice == "5":
                 # ============================================
-                # Sync FULL Library to iPod
+                # Sync FULL Library to DAP
                 # ============================================
                 logger.info("=" * 60)
-                logger.info("Syncing Full Library to iPod")
+                logger.info("Syncing Full Library to DAP")
                 logger.info("=" * 60)
 
                 print("\n  FULL LIBRARY SYNC")
-                print("This will sync ALL tracks in your library to the iPod.")
+                print("This will sync ALL tracks in your library to the DAP.")
 
                 # Show what will be synced
                 with DatabaseManager(db_path) as db:
@@ -434,18 +435,18 @@ def main():
                 logger.info("Selective Sync Complete")
 
             elif choice == "7":
-                # 7. Clean iPod Music
-                print("\n> CLEAN: Deleting all files from iPod Music folder...")
+                # 7. Clean DAP Music
+                print("\n> CLEAN: Deleting all files from DAP Music folder...")
                 with DatabaseManager(db_path) as db:
-                    clean_ipod_music(db, config._config)
-                logger.info("iPod clean process finished.")
+                    clean_dap_music(db, config._config)
+                logger.info("DAP clean process finished.")
 
             elif choice == "8":
-                # 8. Reconcile existing iPod files
-                print("\n> RECONCILE: Matching iPod files to local database...")
+                # 8. Reconcile existing DAP files
+                print("\n> RECONCILE: Matching DAP files to local database...")
                 with DatabaseManager(db_path) as db:
-                    reconcile_ipod(db, config._config)
-                logger.info("iPod reconciliation process finished.")
+                    reconcile_dap(db, config._config)
+                logger.info("DAP reconciliation process finished.")
 
             elif choice == "9":
                 # 9. Clear Duplicates
@@ -548,7 +549,27 @@ def main():
                 logger.info("Album Completion finished.")
 
             elif choice == "13":
-                # 13. Exit
+                # 13. Pull from Jellyfin
+                logger.info("Starting Jellyfin Pull")
+                if not config.jellyfin_enabled:
+                    print(
+                        "\nJellyfin not configured. Set jellyfin_url, "
+                        "jellyfin_api_key, and jellyfin_user_id in config.json."
+                    )
+                    continue
+
+                from src.jellyfin_client import main_run_jellyfin_pull
+                print("\n> JELLYFIN: Pulling audio + playlists from Jellyfin...")
+                with DatabaseManager(db_path) as db:
+                    summary = main_run_jellyfin_pull(db, config._config)
+                print(
+                    f"\nDone. Pulled {summary['pulled']}, skipped {summary['skipped']}, "
+                    f"failed {summary['failed']}, mirrored {summary['playlists_mirrored']} playlists."
+                )
+                logger.info("Jellyfin Pull finished.")
+
+            elif choice == "14":
+                # 14. Exit
                 print("\n" + "=" * 60)
                 print("  Thanks for using DAP Manager!")
                 print("=" * 60)
@@ -556,7 +577,7 @@ def main():
                 break
 
             else:
-                print(f"\n Invalid choice '{choice}'. Please enter 1-13.")
+                print(f"\n Invalid choice '{choice}'. Please enter 1-14.")
 
         except KeyboardInterrupt:
             print("\n\nOperation cancelled by user (Ctrl+C).")
@@ -574,7 +595,7 @@ def main():
             print("\nTroubleshooting:")
             print("  1. Check 'dap_manager.log' for detailed error info")
             print("  2. Verify all paths in 'config.json' are correct")
-            print("  3. Ensure iPod is connected (for sync operations)")
+            print("  3. Ensure DAP is connected (for sync operations)")
             print("  4. Check environment variables (for Spotify features)")
             print("=" * 60)
             input("\nPress Enter to continue...")

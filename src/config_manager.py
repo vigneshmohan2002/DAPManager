@@ -27,10 +27,17 @@ class ConfigManager:
         "music_library_path",
         "downloads_path",
         "ffmpeg_path",
-        "ipod_mount_point",
-        "ipod_music_dir_name",
-        "ipod_playlist_dir_name",
+        "dap_mount_point",
+        "dap_music_dir_name",
+        "dap_playlist_dir_name",
     ]
+
+    # Old keys (pre-rename) → new keys. Applied in _load_config on legacy configs.
+    LEGACY_KEY_MAP = {
+        "ipod_mount_point": "dap_mount_point",
+        "ipod_music_dir_name": "dap_music_dir_name",
+        "ipod_playlist_dir_name": "dap_playlist_dir_name",
+    }
 
     def __new__(cls):
         """Singleton pattern to ensure only one config instance."""
@@ -56,6 +63,8 @@ class ConfigManager:
             print(f"ERROR: Invalid JSON in '{self.CONFIG_FILE}': {e}")
             sys.exit(1)
 
+        self._migrate_legacy_keys()
+
         # Validate required keys
         missing = [key for key in self.REQUIRED_KEYS if key not in self._config]
         if missing:
@@ -66,6 +75,21 @@ class ConfigManager:
         self._validate_paths()
 
         logger.info("Configuration loaded successfully")
+
+    def _migrate_legacy_keys(self):
+        """Rewrite pre-rename ipod_* keys to dap_* and persist the update."""
+        migrated = False
+        for old, new in self.LEGACY_KEY_MAP.items():
+            if old in self._config and new not in self._config:
+                self._config[new] = self._config.pop(old)
+                migrated = True
+        if migrated:
+            try:
+                with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(self._config, f, indent=4)
+                logger.info("Migrated legacy ipod_* config keys to dap_*")
+            except OSError as e:
+                logger.warning(f"Could not persist migrated config: {e}")
 
     def _validate_paths(self):
         """Validate that critical paths exist."""
@@ -124,6 +148,14 @@ class ConfigManager:
     @property
     def contact_email(self) -> str:
         return self._config.get("contact_email", "")
+
+    @property
+    def jellyfin_enabled(self) -> bool:
+        return bool(
+            self._config.get("jellyfin_url")
+            and self._config.get("jellyfin_api_key")
+            and self._config.get("jellyfin_user_id")
+        )
 
 
 def get_config() -> ConfigManager:

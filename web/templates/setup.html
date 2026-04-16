@@ -64,9 +64,30 @@
                 </div>
 
                 <div class="form-group">
-                    <label>iPod Mount Point</label>
-                    <input type="text" id="ipod_mount_point" placeholder="/Volumes/IPOD">
-                    <div class="help-text">Path where your iPod is mounted (e.g. /Volumes/IPOD).</div>
+                    <label>DAP Mount Point</label>
+                    <input type="text" id="dap_mount_point" placeholder="/Volumes/DAP">
+                    <div class="help-text">Path where your DAP (Rockbox iPod, Shanling, etc.) is mounted.</div>
+                </div>
+
+                <hr style="border-color: #333; margin: 20px 0;">
+                <h3 style="color: var(--secondary); font-size: 16px; margin-bottom: 15px;">Jellyfin (Optional)</h3>
+
+                <div class="form-group">
+                    <label>Jellyfin Server URL</label>
+                    <input type="text" id="jellyfin_url" placeholder="http://192.168.1.10:8096">
+                    <div class="help-text">Base URL of your Jellyfin server. Leave blank to disable Jellyfin pull.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Jellyfin API Key</label>
+                    <input type="password" id="jellyfin_api_key">
+                    <div class="help-text">Dashboard → Advanced → API Keys.</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Jellyfin User ID</label>
+                    <input type="text" id="jellyfin_user_id">
+                    <div class="help-text">Dashboard → Users → (click your user) → User ID in URL.</div>
                 </div>
 
                 <hr style="border-color: #333; margin: 20px 0;">
@@ -153,7 +174,10 @@
             const config = {
                 music_library_path: document.getElementById('music_library_path').value,
                 downloads_path: document.getElementById('downloads_path').value,
-                ipod_mount_point: document.getElementById('ipod_mount_point').value,
+                dap_mount_point: document.getElementById('dap_mount_point').value,
+                jellyfin_url: document.getElementById('jellyfin_url').value,
+                jellyfin_api_key: document.getElementById('jellyfin_api_key').value,
+                jellyfin_user_id: document.getElementById('jellyfin_user_id').value,
                 spotify_client_id: document.getElementById('spotify_client_id').value,
                 spotify_client_secret: document.getElementById('spotify_client_secret').value,
                 slsk_command: document.getElementById('slsk_command').value,

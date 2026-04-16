@@ -86,7 +86,7 @@ def init_app_logic():
     from src.db_manager import DatabaseManager, DownloadItem
     from src.library_scanner import main_scan_library
     from src.downloader import main_run_downloader
-    from src.sync_ipod import main_run_sync
+    from src.sync_dap import main_run_sync
     from src.album_completer import audit_library as audit_lib_logic
     from src.album_completer import complete_albums as complete_albums_logic
 
@@ -115,6 +115,12 @@ def run_sync(db_path, conf, mode, fmt, reconcile=False):
         main_run_sync(
             db, conf._config, sync_mode=mode, conversion_format=fmt, reconcile=reconcile
         )
+
+
+def run_jellyfin_pull(db_path, conf, progress_callback=None):
+    from src.jellyfin_client import main_run_jellyfin_pull
+    with DatabaseManager(db_path) as db:
+        main_run_jellyfin_pull(db, conf._config, progress_callback=progress_callback)
 
 
 def run_batch():
@@ -194,9 +200,9 @@ def save_config():
             "slsk_cmd_base": ["slsk-batchdl"],  # Default
             "picard_cmd_path": "picard",  # Default
             "ffmpeg_path": "ffmpeg",  # Default
-            "ipod_mount_point": data.get("ipod_mount_point"),
-            "ipod_music_dir_name": "Music",
-            "ipod_playlist_dir_name": "Playlists",
+            "dap_mount_point": data.get("dap_mount_point"),
+            "dap_music_dir_name": "Music",
+            "dap_playlist_dir_name": "Playlists",
             "database_file": "dap_library.db",
             "slsk_username": data.get("slsk_username"),
             "slsk_password": data.get("slsk_password"),
@@ -206,6 +212,9 @@ def save_config():
             "strict_quality": data.get("strict_quality", False),
             "conversion_sample_rate": 44100,
             "conversion_bit_depth": 16,
+            "jellyfin_url": data.get("jellyfin_url", ""),
+            "jellyfin_api_key": data.get("jellyfin_api_key", ""),
+            "jellyfin_user_id": data.get("jellyfin_user_id", ""),
         }
 
         # Save as config.json
@@ -265,6 +274,21 @@ def sync():
     fmt = data.get("format", "flac")
     success, msg = task_manager.start_task(
         run_sync, (config.db_path, config, mode, fmt), f"Sync ({mode})"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/jellyfin/pull", methods=["POST"])
+def jellyfin_pull():
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    if not config.jellyfin_enabled:
+        return jsonify({
+            "success": False,
+            "message": "Jellyfin not configured. Set jellyfin_url, jellyfin_api_key, and jellyfin_user_id in config.",
+        })
+    success, msg = task_manager.start_task(
+        run_jellyfin_pull, (config.db_path, config), "Jellyfin Pull"
     )
     return jsonify({"success": success, "message": msg})
 
