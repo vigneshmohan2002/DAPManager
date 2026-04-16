@@ -7,10 +7,12 @@ not yet wired — long-running jobs will be moved onto QThread workers in
 a follow-up commit.
 """
 
+import inspect
+import logging
 import sys
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,8 +31,48 @@ from src.config_manager import get_config
 from src.db_manager import DatabaseManager, Track
 from src.logger_setup import setup_logging
 
+logger = logging.getLogger(__name__)
 
 ALL_LIBRARY_ID = "__library__"
+
+
+class Worker(QObject):
+    """Runs a blocking function on a QThread and emits progress/finished signals.
+
+    If the wrapped callable accepts a `progress_callback` kwarg, the worker
+    injects one that forwards dict payloads ({"message", "detail"}) or plain
+    strings to the `progress` signal — matching the convention used by the
+    Flask TaskManager and Jellyfin client.
+    """
+
+    progress = Signal(str)
+    finished = Signal(bool, str)
+
+    def __init__(self, task_name: str, fn: Callable, *args, **kwargs):
+        super().__init__()
+        self._task_name = task_name
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+
+    @Slot()
+    def run(self):
+        try:
+            if "progress_callback" in inspect.signature(self._fn).parameters:
+                self._kwargs["progress_callback"] = self._forward_progress
+            self._fn(*self._args, **self._kwargs)
+            self.finished.emit(True, f"{self._task_name} complete")
+        except Exception as e:
+            logger.exception("Task '%s' failed", self._task_name)
+            self.finished.emit(False, f"{self._task_name} failed: {e}")
+
+    def _forward_progress(self, payload):
+        if isinstance(payload, dict):
+            msg = payload.get("message", "")
+            detail = payload.get("detail")
+            self.progress.emit(f"{msg} — {detail}" if detail else msg)
+        else:
+            self.progress.emit(str(payload))
 
 
 class TrackTableModel(QAbstractTableModel):
@@ -77,22 +119,29 @@ class TrackTableModel(QAbstractTableModel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db_path: str):
+    def __init__(self, config, db_path: str):
         super().__init__()
+        self.config = config
         self.db_path = db_path
+        self._thread: Optional[QThread] = None
+        self._worker: Optional[Worker] = None
         self.setWindowTitle("DAP Manager")
         self.resize(1200, 720)
 
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        for label in (
-            "Scan Library",
-            "Add Spotify Playlist",
-            "Sync to DAP",
-            "Pull from Jellyfin",
+
+        self._task_actions: List[QAction] = []
+        for label, handler in (
+            ("Scan Library", self._scan_library),
+            ("Add Spotify Playlist", self._placeholder),
+            ("Sync to DAP", self._placeholder),
+            ("Pull from Jellyfin", self._placeholder),
         ):
-            toolbar.addAction(QAction(label, self, triggered=self._placeholder))
+            action = QAction(label, self, triggered=handler)
+            toolbar.addAction(action)
+            self._task_actions.append(action)
         toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
@@ -168,13 +217,69 @@ class MainWindow(QMainWindow):
         name = action.text() if action else "Action"
         QMessageBox.information(self, name, f"{name} is not wired up yet.")
 
+    # ---------- Task dispatch ----------
+
+    def _run_worker(self, task_name: str, fn: Callable, *args, **kwargs):
+        if self._thread is not None:
+            QMessageBox.information(
+                self, "Busy", "Another task is already running — wait for it to finish."
+            )
+            return
+        thread = QThread(self)
+        worker = Worker(task_name, fn, *args, **kwargs)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_task_progress)
+        worker.finished.connect(self._on_task_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_thread_ref)
+        self._thread = thread
+        self._worker = worker
+        self._set_actions_enabled(False)
+        self.statusBar().showMessage(f"{task_name}: starting...")
+        thread.start()
+
+    def _on_task_progress(self, msg: str):
+        self.statusBar().showMessage(msg)
+
+    def _on_task_finished(self, success: bool, msg: str):
+        self.statusBar().showMessage(msg, 8000)
+        if not success:
+            QMessageBox.warning(self, "Task failed", msg)
+        self._set_actions_enabled(True)
+        self._refresh()
+
+    def _clear_thread_ref(self):
+        self._thread = None
+        self._worker = None
+
+    def _set_actions_enabled(self, enabled: bool):
+        for action in self._task_actions:
+            action.setEnabled(enabled)
+
+    # ---------- Individual actions ----------
+
+    def _scan_library(self):
+        from src.library_scanner import main_scan_library
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task():
+            with DatabaseManager(db_path) as db:
+                main_scan_library(db, cfg)
+
+        self._run_worker("Scan Library", task)
+
 
 def main():
     setup_logging()
     config = get_config()
     app = QApplication(sys.argv)
     app.setApplicationName("DAP Manager")
-    window = MainWindow(config.db_path)
+    window = MainWindow(config, config.db_path)
     window.show()
     sys.exit(app.exec())
 
