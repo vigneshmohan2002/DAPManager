@@ -137,7 +137,7 @@ class MainWindow(QMainWindow):
             ("Scan Library", self._scan_library),
             ("Add Spotify Playlist", self._placeholder),
             ("Sync to DAP", self._placeholder),
-            ("Pull from Jellyfin", self._placeholder),
+            ("Pull from Jellyfin", self._pull_jellyfin),
         ):
             action = QAction(label, self, triggered=handler)
             toolbar.addAction(action)
@@ -272,6 +272,26 @@ class MainWindow(QMainWindow):
                 main_scan_library(db, cfg)
 
         self._run_worker("Scan Library", task)
+
+    def _pull_jellyfin(self):
+        if not self.config.jellyfin_enabled:
+            QMessageBox.warning(
+                self,
+                "Jellyfin not configured",
+                "Set jellyfin_url, jellyfin_api_key, and jellyfin_user_id in config.json.",
+            )
+            return
+
+        from src.jellyfin_client import main_run_jellyfin_pull
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_jellyfin_pull(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Pull from Jellyfin", task)
 
 
 def main():
