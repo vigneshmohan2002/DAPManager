@@ -9,6 +9,7 @@ a follow-up commit.
 
 import inspect
 import logging
+import os
 import sys
 from typing import Callable, List, Optional
 
@@ -136,7 +137,7 @@ class MainWindow(QMainWindow):
         self._task_actions: List[QAction] = []
         for label, handler in (
             ("Scan Library", self._scan_library),
-            ("Add Spotify Playlist", self._placeholder),
+            ("Add Spotify Playlist", self._add_spotify_playlist),
             ("Sync to DAP", self._sync_dap),
             ("Pull from Jellyfin", self._pull_jellyfin),
         ):
@@ -273,6 +274,34 @@ class MainWindow(QMainWindow):
                 main_scan_library(db, cfg)
 
         self._run_worker("Scan Library", task)
+
+    def _add_spotify_playlist(self):
+        if not (os.environ.get("SPOTIPY_CLIENT_ID") and os.environ.get("SPOTIPY_CLIENT_SECRET")):
+            QMessageBox.warning(
+                self,
+                "Spotify not configured",
+                "Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET in your environment.",
+            )
+            return
+
+        url, ok = QInputDialog.getText(
+            self,
+            "Add Spotify Playlist",
+            "Playlist URL (e.g. https://open.spotify.com/playlist/...)",
+        )
+        if not ok or not url.strip():
+            return
+
+        from src.spotify_client import SpotifyClient
+
+        db_path = self.db_path
+        playlist_url = url.strip()
+
+        def task():
+            with DatabaseManager(db_path) as db:
+                SpotifyClient(db).process_playlist(playlist_url)
+
+        self._run_worker("Add Spotify Playlist", task)
 
     def _sync_dap(self):
         if not self.config.get("dap_mount_point"):
