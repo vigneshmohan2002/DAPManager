@@ -17,8 +17,10 @@ from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QObject, QThrea
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QDialog,
     QDialogButtonBox,
+    QGroupBox,
     QHeaderView,
     QInputDialog,
     QLabel,
@@ -28,11 +30,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QRadioButton,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QTableView,
     QToolBar,
     QVBoxLayout,
+    QWidget,
 )
 
 from src.config_manager import get_config
@@ -42,6 +47,16 @@ from src.logger_setup import setup_logging
 logger = logging.getLogger(__name__)
 
 ALL_LIBRARY_ID = "__library__"
+
+
+def compute_delete_paths(keep_path: Optional[str], all_paths: List[str]) -> List[str]:
+    """Given a duplicate group's keep_path and all candidate paths, return the paths to delete.
+
+    If keep_path is None or empty (user chose to skip), nothing is deleted.
+    """
+    if not keep_path:
+        return []
+    return [p for p in all_paths if p != keep_path]
 
 
 def format_incomplete_album(item: dict) -> str:
@@ -189,6 +204,7 @@ class MainWindow(QMainWindow):
         complete_action = QAction("Complete Albums", self, triggered=self._complete_albums)
         toolbar.addAction(complete_action)
         self._task_actions.append(complete_action)
+        toolbar.addAction(QAction("Resolve Duplicates", self, triggered=self._resolve_duplicates))
         toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
@@ -461,6 +477,106 @@ class MainWindow(QMainWindow):
                     main_scan_library(db, cfg)
 
         self._run_worker("Complete Albums", task)
+
+    def _resolve_duplicates(self):
+        from src.clear_dupes import get_duplicates_for_ui, resolve_duplicates
+
+        try:
+            with DatabaseManager(self.db_path) as db:
+                groups = get_duplicates_for_ui(db)
+        except Exception as e:
+            QMessageBox.critical(self, "Database error", str(e))
+            return
+
+        if not groups:
+            QMessageBox.information(
+                self, "Resolve Duplicates", "No duplicate tracks found."
+            )
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Resolve Duplicates ({len(groups)})")
+        dialog.resize(780, 560)
+        outer = QVBoxLayout(dialog)
+        outer.addWidget(QLabel(
+            "Pick which copy to keep in each group. \u201cSkip\u201d leaves the group untouched."
+        ))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        inner = QVBoxLayout(container)
+        scroll.setWidget(container)
+        outer.addWidget(scroll, 1)
+
+        # Each entry: (mbid, all_paths, button_group, skip_button)
+        entries = []
+        for group in groups:
+            box = QGroupBox(f"{group.get('artist', '?')} — {group.get('title', '?')}")
+            box_layout = QVBoxLayout(box)
+            btn_group = QButtonGroup(box)
+            btn_group.setExclusive(True)
+            all_paths = []
+            for candidate in group["candidates"]:
+                path = candidate["path"]
+                all_paths.append(path)
+                tag = " (recommended)" if candidate.get("is_recommended") else ""
+                rb = QRadioButton(f"Keep: {path}  [score {candidate['score']}]{tag}")
+                if candidate.get("is_recommended"):
+                    rb.setChecked(True)
+                rb.setProperty("keep_path", path)
+                btn_group.addButton(rb)
+                box_layout.addWidget(rb)
+            skip_rb = QRadioButton("Skip this group")
+            skip_rb.setProperty("keep_path", "")
+            btn_group.addButton(skip_rb)
+            box_layout.addWidget(skip_rb)
+            inner.addWidget(box)
+            entries.append((group["mbid"], all_paths, btn_group))
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        outer.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        plans = []
+        for mbid, all_paths, btn_group in entries:
+            checked = btn_group.checkedButton()
+            keep_path = checked.property("keep_path") if checked else ""
+            delete_paths = compute_delete_paths(keep_path, all_paths)
+            if keep_path and delete_paths:
+                plans.append((mbid, keep_path, delete_paths))
+
+        if not plans:
+            QMessageBox.information(self, "Resolve Duplicates", "Nothing to resolve.")
+            return
+
+        errors = []
+        resolved = 0
+        deleted_total = 0
+        try:
+            with DatabaseManager(self.db_path) as db:
+                for mbid, keep_path, delete_paths in plans:
+                    result = resolve_duplicates(db, mbid, keep_path, delete_paths)
+                    errors.extend(result.get("errors", []))
+                    deleted_total += len(result.get("deleted", []))
+                    resolved += 1
+        except Exception as e:
+            QMessageBox.critical(self, "Resolve failed", str(e))
+            return
+
+        msg = f"Resolved {resolved} group(s); deleted {deleted_total} file(s)."
+        if errors:
+            msg += "\n\nErrors:\n" + "\n".join(errors[:10])
+            if len(errors) > 10:
+                msg += f"\n... and {len(errors) - 10} more"
+            QMessageBox.warning(self, "Resolve Duplicates", msg)
+        else:
+            QMessageBox.information(self, "Resolve Duplicates", msg)
+        self._refresh()
 
     def _download_queue(self):
         from src.downloader import main_run_downloader

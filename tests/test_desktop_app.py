@@ -1,6 +1,10 @@
 """Tests for pure helpers in desktop_app (no Qt event loop required)."""
 
-from desktop_app import format_incomplete_album, parse_playlist_urls
+from desktop_app import (
+    compute_delete_paths,
+    format_incomplete_album,
+    parse_playlist_urls,
+)
 
 
 def test_parse_playlist_urls_splits_and_trims():
@@ -39,3 +43,19 @@ def test_format_incomplete_album_handles_missing_metadata():
     row = format_incomplete_album({})
     assert "Unknown Artist" in row
     assert "Unknown Album" in row
+
+
+def test_compute_delete_paths_excludes_keep():
+    paths = ["/a.flac", "/b.flac", "/c.flac"]
+    assert compute_delete_paths("/b.flac", paths) == ["/a.flac", "/c.flac"]
+
+
+def test_compute_delete_paths_skip_returns_empty():
+    paths = ["/a.flac", "/b.flac"]
+    assert compute_delete_paths("", paths) == []
+    assert compute_delete_paths(None, paths) == []
+
+
+def test_compute_delete_paths_keep_not_in_list_deletes_all():
+    paths = ["/a.flac", "/b.flac"]
+    assert compute_delete_paths("/other.flac", paths) == ["/a.flac", "/b.flac"]
