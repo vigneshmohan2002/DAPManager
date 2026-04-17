@@ -13,6 +13,8 @@ import os
 import sys
 from typing import Callable, List, Optional
 
+import requests
+
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -47,6 +49,55 @@ from src.logger_setup import setup_logging
 logger = logging.getLogger(__name__)
 
 ALL_LIBRARY_ID = "__library__"
+
+
+def tracks_to_suggestions(tracks: List[Track]) -> List[dict]:
+    """Build /api/suggestions payload items from local Track rows.
+
+    Prefers MBID (most reliable for the host's MusicBrainz-driven downloader);
+    falls back to artist+title. Tracks with no MBID and no artist+title are
+    skipped. Duplicates by MBID are collapsed.
+    """
+    items = []
+    seen_mbids = set()
+    for t in tracks:
+        mbid = (t.mbid or "").strip()
+        artist = (t.artist or "").strip()
+        title = (t.title or "").strip()
+        if mbid:
+            if mbid in seen_mbids:
+                continue
+            seen_mbids.add(mbid)
+            item = {"mbid": mbid}
+            if artist:
+                item["artist"] = artist
+            if title:
+                item["title"] = title
+            items.append(item)
+        elif artist and title:
+            items.append({"artist": artist, "title": title})
+    return items
+
+
+def parse_manual_suggestions(text: str) -> List[dict]:
+    """Parse a multiline block where each line is 'artist - title' (or just a free-form query).
+
+    Blank lines and lines starting with '#' are skipped. Lines without ' - '
+    fall through as a plain search_query.
+    """
+    items = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if " - " in line:
+            artist, _, title = line.partition(" - ")
+            artist, title = artist.strip(), title.strip()
+            if artist and title:
+                items.append({"artist": artist, "title": title})
+                continue
+        items.append({"search_query": line})
+    return items
 
 
 def compute_delete_paths(keep_path: Optional[str], all_paths: List[str]) -> List[str]:
@@ -206,6 +257,8 @@ class MainWindow(QMainWindow):
         self._task_actions.append(complete_action)
         toolbar.addAction(QAction("Resolve Duplicates", self, triggered=self._resolve_duplicates))
         toolbar.addSeparator()
+        toolbar.addAction(QAction("Suggest to Jellyfin", self, triggered=self._suggest_to_jellyfin))
+        toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
         splitter = QSplitter(Qt.Horizontal)
@@ -219,6 +272,7 @@ class MainWindow(QMainWindow):
         self.track_view.setModel(self.track_model)
         self.track_view.setSortingEnabled(True)
         self.track_view.setSelectionBehavior(QTableView.SelectRows)
+        self.track_view.setSelectionMode(QTableView.ExtendedSelection)
         self.track_view.setAlternatingRowColors(True)
         self.track_view.verticalHeader().setVisible(False)
         header = self.track_view.horizontalHeader()
@@ -477,6 +531,83 @@ class MainWindow(QMainWindow):
                     main_scan_library(db, cfg)
 
         self._run_worker("Complete Albums", task)
+
+    def _suggest_to_jellyfin(self):
+        host = (self.config.get("dap_manager_host_url") or "").strip()
+        if not host:
+            QMessageBox.warning(
+                self,
+                "Host not configured",
+                "Set 'dap_manager_host_url' in config.json (e.g. http://jellyfin.local:5001) "
+                "to point this device at the Jellyfin host's DAPManager.",
+            )
+            return
+
+        selected_tracks = self._selected_tracks()
+        if selected_tracks:
+            items = tracks_to_suggestions(selected_tracks)
+            source_desc = f"{len(items)} selected track(s)"
+        else:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Suggest to Jellyfin")
+            dialog.resize(520, 320)
+            layout = QVBoxLayout(dialog)
+            layout.addWidget(QLabel(
+                "Select tracks in the library, or paste 'Artist - Title' one per line.\n"
+                "Each suggestion will be queued on the Jellyfin host's downloader."
+            ))
+            editor = QPlainTextEdit()
+            editor.setPlaceholderText("Radiohead - Idioteque\nPortishead - Roads")
+            layout.addWidget(editor)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            items = parse_manual_suggestions(editor.toPlainText())
+            source_desc = f"{len(items)} manual entry/entries"
+
+        if not items:
+            QMessageBox.information(self, "Nothing to suggest", "No usable items were found.")
+            return
+
+        url = host.rstrip("/") + "/api/suggestions"
+        try:
+            response = requests.post(url, json={"items": items}, timeout=20)
+            response.raise_for_status()
+            result = response.json()
+        except requests.RequestException as e:
+            QMessageBox.critical(self, "Suggestion failed", f"Could not reach host:\n{e}")
+            return
+        except ValueError:
+            QMessageBox.critical(
+                self, "Suggestion failed", "Host returned a non-JSON response."
+            )
+            return
+
+        if not result.get("success"):
+            QMessageBox.warning(
+                self, "Host rejected suggestions", result.get("message", "Unknown error")
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Suggestions sent",
+            f"Sent {source_desc} to {host}.\n\n"
+            f"Queued: {result.get('queued', 0)}\n"
+            f"Skipped (already queued): {result.get('skipped', 0)}",
+        )
+
+    def _selected_tracks(self) -> List[Track]:
+        indexes = self.track_view.selectionModel().selectedRows()
+        tracks = []
+        for idx in indexes:
+            row = idx.row()
+            if 0 <= row < len(self.track_model._tracks):
+                tracks.append(self.track_model._tracks[row])
+        return tracks
 
     def _resolve_duplicates(self):
         from src.clear_dupes import get_duplicates_for_ui, resolve_duplicates

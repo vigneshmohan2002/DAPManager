@@ -3,8 +3,11 @@
 from desktop_app import (
     compute_delete_paths,
     format_incomplete_album,
+    parse_manual_suggestions,
     parse_playlist_urls,
+    tracks_to_suggestions,
 )
+from src.db_manager import Track
 
 
 def test_parse_playlist_urls_splits_and_trims():
@@ -59,3 +62,52 @@ def test_compute_delete_paths_skip_returns_empty():
 def test_compute_delete_paths_keep_not_in_list_deletes_all():
     paths = ["/a.flac", "/b.flac"]
     assert compute_delete_paths("/other.flac", paths) == ["/a.flac", "/b.flac"]
+
+
+def _track(mbid="", artist="", title=""):
+    return Track(mbid=mbid, artist=artist, title=title, album="", local_path=None)
+
+
+def test_tracks_to_suggestions_prefers_mbid():
+    items = tracks_to_suggestions([_track(mbid="m1", artist="A", title="T")])
+    assert items == [{"mbid": "m1", "artist": "A", "title": "T"}]
+
+
+def test_tracks_to_suggestions_falls_back_to_artist_title():
+    items = tracks_to_suggestions([_track(artist="A", title="T")])
+    assert items == [{"artist": "A", "title": "T"}]
+
+
+def test_tracks_to_suggestions_skips_unsalvageable_rows():
+    items = tracks_to_suggestions([
+        _track(),                   # nothing usable
+        _track(artist="A"),         # title missing
+        _track(mbid="m1"),          # mbid alone is fine
+    ])
+    assert items == [{"mbid": "m1"}]
+
+
+def test_tracks_to_suggestions_dedupes_by_mbid():
+    items = tracks_to_suggestions([
+        _track(mbid="m1", artist="A", title="T"),
+        _track(mbid="m1", artist="A", title="T"),
+    ])
+    assert len(items) == 1
+
+
+def test_parse_manual_suggestions_splits_artist_title():
+    items = parse_manual_suggestions("Radiohead - Idioteque\nPortishead - Roads")
+    assert items == [
+        {"artist": "Radiohead", "title": "Idioteque"},
+        {"artist": "Portishead", "title": "Roads"},
+    ]
+
+
+def test_parse_manual_suggestions_free_form_falls_through_to_query():
+    items = parse_manual_suggestions("just a song name")
+    assert items == [{"search_query": "just a song name"}]
+
+
+def test_parse_manual_suggestions_ignores_blank_and_comments():
+    items = parse_manual_suggestions("\n# comment\nA - B\n   ")
+    assert items == [{"artist": "A", "title": "B"}]
