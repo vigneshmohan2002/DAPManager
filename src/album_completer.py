@@ -267,7 +267,7 @@ def complete_albums(db: DatabaseManager, progress_callback=None) -> dict:
                 # Update the track's release_mbid in the DB
                 cursor = db.conn.cursor()
                 cursor.execute(
-                    "UPDATE tracks SET release_mbid = ? WHERE mbid = ?",
+                    "UPDATE tracks SET release_mbid = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
                     (release_mbid, track.mbid),
                 )
                 db.conn.commit()

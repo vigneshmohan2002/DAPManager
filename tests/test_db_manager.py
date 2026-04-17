@@ -115,6 +115,12 @@ def test_schema_migration_renames_ipod_columns():
             assert "synced_to_ipod" not in cols
             assert "dap_path" in cols
             assert "synced_to_dap" in cols
+            # Legacy DBs gain updated_at and get backfilled with current time
+            assert "updated_at" in cols
+            row = mgr.conn.execute(
+                "SELECT updated_at FROM tracks WHERE mbid = ?", ("mb1",)
+            ).fetchone()
+            assert row["updated_at"] is not None
 
             # Existing row data survives the rename.
             track = mgr.get_track_by_mbid("mb1")
@@ -123,3 +129,56 @@ def test_schema_migration_renames_ipod_columns():
             assert track.synced_to_dap is True
         finally:
             mgr.close()
+
+
+def _catalog_row(db, mbid):
+    return db.conn.execute(
+        "SELECT updated_at FROM tracks WHERE mbid = ?", (mbid,)
+    ).fetchone()["updated_at"]
+
+
+def test_add_or_update_track_sets_updated_at(db):
+    db.add_or_update_track(Track(mbid="u1", title="S", artist="A"))
+    assert _catalog_row(db, "u1") is not None
+
+
+def test_add_or_update_track_bumps_updated_at_on_rewrite(db):
+    import time
+
+    db.add_or_update_track(Track(mbid="u1", title="S", artist="A"))
+    first = _catalog_row(db, "u1")
+    # SQLite CURRENT_TIMESTAMP resolution is 1s — wait enough to see a tick
+    time.sleep(1.1)
+    db.add_or_update_track(Track(mbid="u1", title="S2", artist="A"))
+    second = _catalog_row(db, "u1")
+    assert second > first
+
+
+def test_get_catalog_since_returns_delta(db):
+    import time
+
+    db.add_or_update_track(Track(mbid="c1", title="Old", artist="A"))
+    cutoff = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+    time.sleep(1.1)
+    db.add_or_update_track(Track(mbid="c2", title="New", artist="B"))
+
+    delta = db.get_catalog_since(cutoff)
+    mbids = {row["mbid"] for row in delta}
+    assert mbids == {"c2"}
+
+
+def test_get_catalog_since_no_filter_returns_all(db):
+    db.add_or_update_track(Track(mbid="c1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="c2", title="T", artist="B"))
+    rows = db.get_catalog_since()
+    assert {r["mbid"] for r in rows} == {"c1", "c2"}
+
+
+def test_get_catalog_since_omits_local_only_fields(db):
+    db.add_or_update_track(Track(
+        mbid="c1", title="T", artist="A", local_path="/x.flac", dap_path="/y.flac",
+    ))
+    rows = db.get_catalog_since()
+    assert "local_path" not in rows[0]
+    assert "dap_path" not in rows[0]
+    assert "synced_to_dap" not in rows[0]

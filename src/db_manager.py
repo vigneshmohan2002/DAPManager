@@ -107,7 +107,8 @@ class DatabaseManager:
                     synced_to_dap INTEGER DEFAULT 0,
                     release_mbid TEXT,
                     track_number INTEGER,
-                    disc_number INTEGER
+                    disc_number INTEGER,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """,
             "albums": """
@@ -179,6 +180,12 @@ class DatabaseManager:
             if "synced_to_ipod" in cols and "synced_to_dap" not in cols:
                 cursor.execute("ALTER TABLE tracks RENAME COLUMN synced_to_ipod TO synced_to_dap")
                 logger.info("Migrated column: synced_to_ipod → synced_to_dap")
+            if "updated_at" not in cols:
+                # ADD COLUMN rejects CURRENT_TIMESTAMP defaults, so add nullable
+                # then backfill existing rows in a single pass.
+                cursor.execute("ALTER TABLE tracks ADD COLUMN updated_at TIMESTAMP")
+                cursor.execute("UPDATE tracks SET updated_at = CURRENT_TIMESTAMP")
+                logger.info("Added column: tracks.updated_at (backfilled)")
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Schema migration failed: {e}")
@@ -195,8 +202,8 @@ class DatabaseManager:
 
         sql = """
         INSERT OR REPLACE INTO tracks
-        (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap, release_mbid, track_number, disc_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap, release_mbid, track_number, disc_number, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """
         try:
             cursor = self.conn.cursor()
@@ -403,7 +410,7 @@ class DatabaseManager:
             target_title = row[0]
 
             cursor.execute(
-                "UPDATE tracks SET release_mbid = ?, album = ? WHERE release_mbid = ?",
+                "UPDATE tracks SET release_mbid = ?, album = ?, updated_at = CURRENT_TIMESTAMP WHERE release_mbid = ?",
                 (target_mbid, target_title, source_mbid),
             )
             cursor.execute("DELETE FROM albums WHERE release_mbid = ?", (source_mbid,))
@@ -468,7 +475,7 @@ class DatabaseManager:
     def mark_track_synced(self, mbid: str, dap_path: str):
         cursor = self.conn.cursor()
         cursor.execute(
-            "UPDATE tracks SET synced_to_dap = 1, dap_path = ? WHERE mbid = ?",
+            "UPDATE tracks SET synced_to_dap = 1, dap_path = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
             (dap_path, mbid),
         )
         self.conn.commit()
@@ -483,6 +490,28 @@ class DatabaseManager:
         tracks = [self._row_to_track(row) for row in cursor.fetchall()]
         cursor.close()
         return tracks
+
+    def get_catalog_since(self, since_iso: Optional[str] = None) -> List[dict]:
+        """Return catalog-shape rows (device-agnostic fields + updated_at).
+
+        If ``since_iso`` is provided, only rows with updated_at > since_iso
+        are returned. Local-only columns (local_path, dap_path, synced_to_dap)
+        are deliberately omitted since they don't travel between devices.
+        """
+        sql = (
+            "SELECT mbid, title, artist, album, isrc, release_mbid, "
+            "track_number, disc_number, updated_at FROM tracks"
+        )
+        params: tuple = ()
+        if since_iso:
+            sql += " WHERE updated_at > ?"
+            params = (since_iso,)
+        sql += " ORDER BY updated_at ASC"
+        cursor = self.conn.cursor()
+        cursor.execute(sql, params)
+        rows = [dict(row) for row in cursor.fetchall()]
+        cursor.close()
+        return rows
 
     def get_all_playlists(self):
         cursor = self.conn.cursor()
@@ -548,7 +577,10 @@ class DatabaseManager:
         if path:
             path = os.path.normpath(path).replace("\\", "/")
         cursor = self.conn.cursor()
-        cursor.execute("UPDATE tracks SET local_path = ? WHERE mbid = ?", (path, mbid))
+        cursor.execute(
+            "UPDATE tracks SET local_path = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
+            (path, mbid),
+        )
         self.conn.commit()
         cursor.close()
 
