@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import logging
+import uuid
 from typing import Dict, Any, Optional
 from shutil import which
 
@@ -64,6 +65,7 @@ class ConfigManager:
             sys.exit(1)
 
         self._migrate_legacy_keys()
+        self._ensure_device_identity()
 
         # Validate required keys
         missing = [key for key in self.REQUIRED_KEYS if key not in self._config]
@@ -90,6 +92,32 @@ class ConfigManager:
                 logger.info("Migrated legacy ipod_* config keys to dap_*")
             except OSError as e:
                 logger.warning(f"Could not persist migrated config: {e}")
+
+    def _ensure_device_identity(self):
+        """Generate a stable device_id on first run and default device_role.
+
+        `device_id` is a UUID4 used by the host to distinguish satellites.
+        `device_role` defaults to 'satellite'; the Jellyfin host's install
+        should flip this to 'master' manually in config.json.
+        """
+        changed = False
+        if not self._config.get("device_id"):
+            self._config["device_id"] = str(uuid.uuid4())
+            changed = True
+        if not self._config.get("device_role"):
+            self._config["device_role"] = "satellite"
+            changed = True
+        if changed:
+            try:
+                with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(self._config, f, indent=4)
+                logger.info(
+                    "Assigned device identity: id=%s role=%s",
+                    self._config["device_id"],
+                    self._config["device_role"],
+                )
+            except OSError as e:
+                logger.warning("Could not persist device identity: %s", e)
 
     def _validate_paths(self):
         """Validate that critical paths exist."""
@@ -148,6 +176,18 @@ class ConfigManager:
     @property
     def contact_email(self) -> str:
         return self._config.get("contact_email", "")
+
+    @property
+    def device_id(self) -> str:
+        return self._config.get("device_id", "")
+
+    @property
+    def device_role(self) -> str:
+        return self._config.get("device_role", "satellite")
+
+    @property
+    def is_master(self) -> bool:
+        return self.device_role == "master"
 
     @property
     def jellyfin_enabled(self) -> bool:

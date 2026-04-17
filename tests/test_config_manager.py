@@ -268,3 +268,69 @@ def test_config_manager_get_method():
             # Restore original config file path
             ConfigManager.CONFIG_FILE = original_file
             ConfigManager._instance = None
+
+
+def _write_minimal_config(path, overrides=None):
+    """Write a minimal valid config.json; returns the written dict."""
+    tmp = os.path.dirname(path)
+    data = {
+        "database_file": "test.db",
+        "picard_cmd_path": "picard",
+        "music_library_path": os.path.join(tmp, "music"),
+        "downloads_path": os.path.join(tmp, "downloads"),
+        "ffmpeg_path": "ffmpeg",
+        "dap_mount_point": os.path.join(tmp, "dap"),
+        "dap_music_dir_name": "Music",
+        "dap_playlist_dir_name": "Playlists",
+    }
+    if overrides:
+        data.update(overrides)
+    with open(path, "w") as f:
+        json.dump(data, f)
+    return data
+
+
+def test_device_identity_generated_on_first_run():
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        _write_minimal_config(config_file)
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.device_id  # non-empty UUID
+            assert len(config.device_id) == 36  # canonical UUID string length
+            assert config.device_role == "satellite"
+            assert config.is_master is False
+
+            # Persisted back to disk
+            with open(config_file) as f:
+                on_disk = json.load(f)
+            assert on_disk["device_id"] == config.device_id
+            assert on_disk["device_role"] == "satellite"
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
+def test_device_identity_preserved_between_loads():
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        _write_minimal_config(
+            config_file,
+            overrides={"device_id": "fixed-uuid-123", "device_role": "master"},
+        )
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.device_id == "fixed-uuid-123"
+            assert config.device_role == "master"
+            assert config.is_master is True
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
