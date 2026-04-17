@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         for label, handler in (
             ("Scan Library", self._scan_library),
             ("Add Spotify Playlist", self._add_spotify_playlist),
+            ("Download Queue", self._download_queue),
             ("Sync to DAP", self._sync_dap),
             ("Pull from Jellyfin", self._pull_jellyfin),
         ):
@@ -325,6 +326,18 @@ class MainWindow(QMainWindow):
                 SpotifyClient(db).process_playlist(playlist_url)
 
         self._run_worker("Add Spotify Playlist", task)
+
+    def _download_queue(self):
+        from src.downloader import main_run_downloader
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_downloader(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Download Queue", task)
 
     def _sync_dap(self):
         if not self.config.get("dap_mount_point"):
