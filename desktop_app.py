@@ -17,17 +17,22 @@ from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QObject, QThrea
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QHeaderView,
     QInputDialog,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QSplitter,
     QStatusBar,
     QTableView,
     QToolBar,
+    QVBoxLayout,
 )
 
 from src.config_manager import get_config
@@ -37,6 +42,25 @@ from src.logger_setup import setup_logging
 logger = logging.getLogger(__name__)
 
 ALL_LIBRARY_ID = "__library__"
+
+
+def parse_playlist_urls(text: str) -> List[str]:
+    """Split a multi-line string into cleaned Spotify playlist URLs.
+
+    Empty lines and lines starting with '#' are ignored. Whitespace is trimmed.
+    Duplicates are removed while preserving first-occurrence order.
+    """
+    seen = set()
+    urls: List[str] = []
+    for line in (text or "").splitlines():
+        url = line.strip()
+        if not url or url.startswith("#"):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
 
 
 class Worker(QObject):
@@ -308,24 +332,52 @@ class MainWindow(QMainWindow):
             )
             return
 
-        url, ok = QInputDialog.getText(
-            self,
-            "Add Spotify Playlist",
-            "Playlist URL (e.g. https://open.spotify.com/playlist/...)",
-        )
-        if not ok or not url.strip():
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Spotify Playlists")
+        dialog.resize(520, 320)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            "Paste one or more Spotify playlist URLs, one per line.\n"
+            "Lines starting with '#' are ignored."
+        ))
+        editor = QPlainTextEdit()
+        editor.setPlaceholderText("https://open.spotify.com/playlist/...")
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        urls = parse_playlist_urls(editor.toPlainText())
+        if not urls:
+            QMessageBox.information(self, "No URLs", "No playlist URLs were entered.")
             return
 
         from src.spotify_client import SpotifyClient
 
         db_path = self.db_path
-        playlist_url = url.strip()
 
-        def task():
+        def task(progress_callback=None):
             with DatabaseManager(db_path) as db:
-                SpotifyClient(db).process_playlist(playlist_url)
+                client = SpotifyClient(db)
+                total = len(urls)
+                for idx, url in enumerate(urls, 1):
+                    if progress_callback:
+                        progress_callback({
+                            "message": f"Processing playlist {idx}/{total}",
+                            "detail": url,
+                            "current": idx - 1,
+                            "total": total,
+                        })
+                    client.process_playlist(url)
+                if progress_callback:
+                    progress_callback({"current": total, "total": total})
 
-        self._run_worker("Add Spotify Playlist", task)
+        label = "Add Spotify Playlist" if len(urls) == 1 else f"Queue {len(urls)} Spotify Playlists"
+        self._run_worker(label, task)
 
     def _download_queue(self):
         from src.downloader import main_run_downloader
