@@ -2,6 +2,7 @@ import pytest
 import json
 from unittest.mock import patch, MagicMock
 from src.db_manager import DatabaseManager
+from web_server import build_suggestion_items
 
 def test_api_status(client, mock_config):
     """Test the status endpoint returns correct structure."""
@@ -59,3 +60,101 @@ def test_search_api(client, mock_config):
         assert data['success'] is True
         assert len(data['results']) == 1
         assert data['results'][0]['artist'] == "Foo"
+
+
+# ---------------------------------------------------------------------------
+# build_suggestion_items
+# ---------------------------------------------------------------------------
+
+def test_build_suggestion_items_prefers_search_query():
+    pairs = build_suggestion_items([{"search_query": "Radiohead - Idioteque", "mbid": "abc"}])
+    assert pairs == [("Radiohead - Idioteque", "abc")]
+
+
+def test_build_suggestion_items_joins_artist_and_title():
+    pairs = build_suggestion_items([{"artist": "Radiohead", "title": "Idioteque"}])
+    assert pairs == [("Radiohead - Idioteque", "")]
+
+
+def test_build_suggestion_items_skips_invalid_entries():
+    pairs = build_suggestion_items([
+        {},
+        {"artist": "A"},          # title missing
+        "not a dict",
+        {"title": "Lonely Song"}, # title-only is acceptable
+        {"search_query": "  "},   # whitespace-only
+    ])
+    assert pairs == [("Lonely Song", "")]
+
+
+def test_build_suggestion_items_dedupes_case_insensitively():
+    pairs = build_suggestion_items([
+        {"search_query": "Foo - Bar"},
+        {"search_query": "foo - bar"},
+        {"artist": "FOO", "title": "BAR"},
+    ])
+    assert pairs == [("Foo - Bar", "")]
+
+
+# ---------------------------------------------------------------------------
+# /api/suggestions
+# ---------------------------------------------------------------------------
+
+def test_post_suggestions_queues_new_items(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.is_download_queued.return_value = False
+
+        res = client.post('/api/suggestions', json={
+            "items": [
+                {"artist": "Radiohead", "title": "Idioteque", "mbid": "mb1"},
+                {"search_query": "Portishead - Roads"},
+            ]
+        })
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data == {
+        "success": True,
+        "received": 2,
+        "queued": 2,
+        "skipped": 0,
+    }
+    assert mock_db.queue_download.call_count == 2
+    queued_item = mock_db.queue_download.call_args_list[0].args[0]
+    assert queued_item.search_query == "Radiohead - Idioteque"
+    assert queued_item.playlist_id == "SUGGESTED"
+    assert queued_item.mbid_guess == "mb1"
+
+
+def test_post_suggestions_skips_already_queued(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.is_download_queued.return_value = True
+
+        res = client.post('/api/suggestions', json={
+            "items": [{"search_query": "Foo - Bar"}]
+        })
+
+    data = res.get_json()
+    assert data["queued"] == 0
+    assert data["skipped"] == 1
+    mock_db.queue_download.assert_not_called()
+
+
+def test_post_suggestions_dedupes_within_payload(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.is_download_queued.return_value = False
+
+        res = client.post('/api/suggestions', json={
+            "items": [
+                {"search_query": "Foo - Bar"},
+                {"search_query": "foo - bar"},
+            ]
+        })
+
+    data = res.get_json()
+    assert data["received"] == 2
+    assert data["queued"] == 1
+    assert mock_db.queue_download.call_count == 1

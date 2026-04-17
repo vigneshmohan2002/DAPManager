@@ -143,6 +143,41 @@ def run_audit(db_path):
         audit_lib_logic(db)
 
 
+def build_suggestion_items(raw_items):
+    """Normalize a suggestions payload into (search_query, mbid_guess) pairs.
+
+    Each raw item may provide any of:
+      - search_query: used verbatim
+      - mbid: kept as mbid_guess; if artist+title are also present they form the query
+      - artist + title: combined into "artist - title"
+
+    Returns a list of (query, mbid) tuples. Items without a usable query are dropped.
+    Duplicates (same query, case-insensitive) are removed preserving first occurrence.
+    """
+    seen = set()
+    results = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        query = (item.get("search_query") or "").strip()
+        mbid = (item.get("mbid") or "").strip()
+        if not query:
+            artist = (item.get("artist") or "").strip()
+            title = (item.get("title") or "").strip()
+            if artist and title:
+                query = f"{artist} - {title}"
+            elif title:
+                query = title
+        if not query:
+            continue
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append((query, mbid))
+    return results
+
+
 def run_complete_albums(db_path, conf, run_downloads=False, progress_callback=None):
     """Run the full album completion pipeline, optionally followed by downloads."""
     with DatabaseManager(db_path) as db:
@@ -308,6 +343,48 @@ def queue_playlists():
         f"Queueing {len(urls)} Playlists",
     )
     return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/suggestions", methods=["POST"])
+def post_suggestions():
+    """Accept track suggestions from a satellite device and queue them for download.
+
+    Body: { "items": [ {mbid?, artist?, title?, search_query?}, ... ] }
+    Response: { success, queued, skipped, received }
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    raw_items = data.get("items", [])
+    pairs = build_suggestion_items(raw_items)
+
+    queued = 0
+    skipped = 0
+    try:
+        with DatabaseManager(config.db_path) as db:
+            for query, mbid in pairs:
+                if db.is_download_queued(query):
+                    skipped += 1
+                    continue
+                db.queue_download(
+                    DownloadItem(
+                        search_query=query,
+                        playlist_id="SUGGESTED",
+                        mbid_guess=mbid,
+                        status="pending",
+                    )
+                )
+                queued += 1
+    except Exception as e:
+        logger.error(f"Failed to process suggestions: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "received": len(raw_items),
+        "queued": queued,
+        "skipped": skipped,
+    })
 
 
 @app.route("/api/audit", methods=["POST"])
