@@ -185,10 +185,10 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
             self._task_actions.append(action)
         toolbar.addSeparator()
-        for label, handler in (
-            ("Audit Library", self._audit_library),
-        ):
-            toolbar.addAction(QAction(label, self, triggered=handler))
+        toolbar.addAction(QAction("Audit Library", self, triggered=self._audit_library))
+        complete_action = QAction("Complete Albums", self, triggered=self._complete_albums)
+        toolbar.addAction(complete_action)
+        self._task_actions.append(complete_action)
         toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
@@ -425,6 +425,42 @@ class MainWindow(QMainWindow):
         buttons.accepted.connect(dialog.accept)
         layout.addWidget(buttons)
         dialog.exec()
+
+    def _complete_albums(self):
+        choice = QMessageBox.question(
+            self,
+            "Complete Albums",
+            "Discover missing tracks for incomplete albums and queue them.\n\n"
+            "Also run the downloader and rescan when the queue is built?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.No,
+        )
+        if choice == QMessageBox.Cancel:
+            return
+        run_downloads = choice == QMessageBox.Yes
+
+        from src.album_completer import complete_albums
+        from src.downloader import main_run_downloader
+        from src.library_scanner import main_scan_library
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                summary = complete_albums(db, progress_callback=progress_callback)
+
+            if run_downloads and summary.get("tracks_queued", 0) > 0:
+                if progress_callback:
+                    progress_callback({"message": "Downloading queued tracks..."})
+                with DatabaseManager(db_path) as db:
+                    main_run_downloader(db, cfg, progress_callback=progress_callback)
+                if progress_callback:
+                    progress_callback({"message": "Re-scanning library..."})
+                with DatabaseManager(db_path) as db:
+                    main_scan_library(db, cfg)
+
+        self._run_worker("Complete Albums", task)
 
     def _download_queue(self):
         from src.downloader import main_run_downloader
