@@ -44,6 +44,16 @@ logger = logging.getLogger(__name__)
 ALL_LIBRARY_ID = "__library__"
 
 
+def format_incomplete_album(item: dict) -> str:
+    """Render an incomplete-album summary row for display in a list widget."""
+    artist = item.get("artist") or "Unknown Artist"
+    album = item.get("album") or "Unknown Album"
+    have = item.get("have", 0)
+    total = item.get("total", 0)
+    missing = item.get("missing", max(total - have, 0))
+    return f"{artist} — {album}  ({have}/{total}, {missing} missing)"
+
+
 def parse_playlist_urls(text: str) -> List[str]:
     """Split a multi-line string into cleaned Spotify playlist URLs.
 
@@ -174,6 +184,11 @@ class MainWindow(QMainWindow):
             action = QAction(label, self, triggered=handler)
             toolbar.addAction(action)
             self._task_actions.append(action)
+        toolbar.addSeparator()
+        for label, handler in (
+            ("Audit Library", self._audit_library),
+        ):
+            toolbar.addAction(QAction(label, self, triggered=handler))
         toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
@@ -378,6 +393,38 @@ class MainWindow(QMainWindow):
 
         label = "Add Spotify Playlist" if len(urls) == 1 else f"Queue {len(urls)} Spotify Playlists"
         self._run_worker(label, task)
+
+    def _audit_library(self):
+        try:
+            with DatabaseManager(self.db_path) as db:
+                incomplete = db.get_incomplete_albums()
+        except Exception as e:
+            QMessageBox.critical(self, "Database error", str(e))
+            return
+
+        if not incomplete:
+            QMessageBox.information(
+                self, "Audit Library", "All identified albums appear to be complete."
+            )
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Incomplete Albums ({len(incomplete)})")
+        dialog.resize(640, 480)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            f"Found {len(incomplete)} incomplete albums. "
+            "Use \u201cComplete Albums\u201d to queue missing tracks."
+        ))
+        list_widget = QListWidget()
+        for item in incomplete:
+            list_widget.addItem(format_incomplete_album(item))
+        layout.addWidget(list_widget)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _download_queue(self):
         from src.downloader import main_run_downloader
