@@ -142,6 +142,44 @@ def test_post_suggestions_skips_already_queued(client, mock_config):
     mock_db.queue_download.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# /api/catalog
+# ---------------------------------------------------------------------------
+
+def test_get_catalog_returns_all_rows_without_since(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-17 12:00:00"}
+        mock_db.get_catalog_since.return_value = [
+            {"mbid": "m1", "title": "Song", "artist": "A", "updated_at": "2026-04-17 11:00:00"},
+            {"mbid": "m2", "title": "Song2", "artist": "B", "updated_at": "2026-04-17 11:30:00"},
+        ]
+
+        res = client.get('/api/catalog')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["count"] == 2
+    assert data["as_of"] == "2026-04-17 12:00:00"
+    assert len(data["tracks"]) == 2
+    mock_db.get_catalog_since.assert_called_once_with(None)
+
+
+def test_get_catalog_with_since_filter(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-17 13:00:00"}
+        mock_db.get_catalog_since.return_value = []
+
+        res = client.get('/api/catalog?since=2026-04-17+12:00:00')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["count"] == 0
+    mock_db.get_catalog_since.assert_called_once_with("2026-04-17 12:00:00")
+
+
 def test_post_suggestions_dedupes_within_payload(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

@@ -345,6 +345,39 @@ def queue_playlists():
     return jsonify({"success": success, "message": msg})
 
 
+@app.route("/api/catalog", methods=["GET"])
+def get_catalog():
+    """Return catalog rows for replica sync.
+
+    Query params:
+      since: ISO-ish timestamp (matching SQLite CURRENT_TIMESTAMP format,
+             e.g. '2026-04-17 12:00:00'). Optional. If present, only rows
+             with updated_at > since are returned.
+
+    Response:
+      { success, as_of, count, tracks: [...] }
+      `as_of` is the server's CURRENT_TIMESTAMP at query time — callers
+      should use it as the next ?since to avoid missing concurrent writes.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    since = request.args.get("since") or None
+    try:
+        with DatabaseManager(config.db_path) as db:
+            as_of = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+            rows = db.get_catalog_since(since)
+    except Exception as e:
+        logger.error(f"Catalog query failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "as_of": as_of,
+        "count": len(rows),
+        "tracks": rows,
+    })
+
+
 @app.route("/api/suggestions", methods=["POST"])
 def post_suggestions():
     """Accept track suggestions from a satellite device and queue them for download.
