@@ -122,7 +122,8 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS playlists (
                     playlist_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    spotify_url TEXT
+                    spotify_url TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """,
             "playlist_tracks": """
@@ -192,6 +193,15 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN updated_at TIMESTAMP")
                 cursor.execute("UPDATE tracks SET updated_at = CURRENT_TIMESTAMP")
                 logger.info("Added column: tracks.updated_at (backfilled)")
+
+            pl_cols = {
+                row[1]
+                for row in cursor.execute("PRAGMA table_info(playlists)").fetchall()
+            }
+            if "updated_at" not in pl_cols:
+                cursor.execute("ALTER TABLE playlists ADD COLUMN updated_at TIMESTAMP")
+                cursor.execute("UPDATE playlists SET updated_at = CURRENT_TIMESTAMP")
+                logger.info("Added column: playlists.updated_at (backfilled)")
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Schema migration failed: {e}")
@@ -432,9 +442,28 @@ class DatabaseManager:
 
     # --- Playlist / Download / Misc Methods (Abbreviated, assumes exist from prior code) ---
     def add_or_update_playlist(self, playlist: Playlist):
-        sql = "INSERT OR REPLACE INTO playlists (playlist_id, name, spotify_url) VALUES (?, ?, ?)"
+        # ON CONFLICT DO UPDATE (not INSERT OR REPLACE) so the row's identity
+        # is preserved — REPLACE would delete + reinsert and cascade-wipe
+        # playlist_tracks rows.
+        sql = """
+        INSERT INTO playlists (playlist_id, name, spotify_url, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(playlist_id) DO UPDATE SET
+            name = excluded.name,
+            spotify_url = excluded.spotify_url,
+            updated_at = CURRENT_TIMESTAMP
+        """
         cursor = self.conn.cursor()
         cursor.execute(sql, (playlist.playlist_id, playlist.name, playlist.spotify_url))
+        self.conn.commit()
+        cursor.close()
+
+    def _bump_playlist_updated_at(self, playlist_id: str):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE playlists SET updated_at = CURRENT_TIMESTAMP WHERE playlist_id = ?",
+            (playlist_id,),
+        )
         self.conn.commit()
         cursor.close()
 
@@ -591,6 +620,39 @@ class DatabaseManager:
         cursor.close()
         return playlists
 
+    def get_playlists_since(self, since_iso: Optional[str] = None) -> List[dict]:
+        """Return playlists changed since ``since_iso`` with their full
+        current membership nested as ``tracks``.
+
+        Each returned dict: {playlist_id, name, spotify_url, updated_at,
+        tracks: [{track_mbid, track_order}, ...]}. Membership is always the
+        complete current list — satellites replace, not diff, to handle
+        track removals correctly.
+        """
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute(
+                "SELECT playlist_id, name, spotify_url, updated_at "
+                "FROM playlists WHERE updated_at > ? ORDER BY updated_at ASC",
+                (since_iso,),
+            )
+        else:
+            cursor.execute(
+                "SELECT playlist_id, name, spotify_url, updated_at "
+                "FROM playlists ORDER BY updated_at ASC"
+            )
+        playlists = [dict(row) for row in cursor.fetchall()]
+
+        for pl in playlists:
+            cursor.execute(
+                "SELECT track_mbid, track_order FROM playlist_tracks "
+                "WHERE playlist_id = ? ORDER BY track_order ASC",
+                (pl["playlist_id"],),
+            )
+            pl["tracks"] = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return playlists
+
     def get_playlist_tracks(self, playlist_id: str):
         sql = "SELECT t.* FROM tracks t JOIN playlist_tracks pt ON t.mbid = pt.track_mbid WHERE pt.playlist_id = ? ORDER BY pt.track_order"
         cursor = self.conn.cursor()
@@ -608,8 +670,14 @@ class DatabaseManager:
             "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_mbid, track_order) VALUES (?, ?, ?)",
             (playlist_id, track_mbid, order),
         )
+        inserted = cursor.rowcount > 0
         self.conn.commit()
         cursor.close()
+        if inserted:
+            # Membership changes are an edit to the playlist from a sync
+            # standpoint; bump the parent's updated_at so the delta feed
+            # picks it up.
+            self._bump_playlist_updated_at(playlist_id)
 
     def get_mbid_to_track_path_map(self):
         cursor = self.conn.cursor()

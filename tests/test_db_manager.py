@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 
 import pytest
-from src.db_manager import Track, DownloadItem, DatabaseManager
+from src.db_manager import Track, DownloadItem, DatabaseManager, Playlist
 
 def test_add_and_get_track(db):
     t = Track(
@@ -229,6 +229,124 @@ def test_apply_catalog_row_preserves_local_path(db):
 def test_apply_catalog_row_skips_when_mbid_missing(db):
     assert db.apply_catalog_row({"title": "No MBID"}) == "skipped"
     assert db.apply_catalog_row({}) == "skipped"
+
+
+def _playlist_updated_at(db, pid):
+    return db.conn.execute(
+        "SELECT updated_at FROM playlists WHERE playlist_id = ?", (pid,)
+    ).fetchone()["updated_at"]
+
+
+def test_add_or_update_playlist_preserves_membership(db):
+    """ON CONFLICT DO UPDATE must not cascade-wipe playlist_tracks."""
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="List", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    assert len(db.get_playlist_tracks("p1")) == 1
+
+    # Re-upsert the same playlist (e.g. name change) — membership must survive.
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Renamed", spotify_url=""))
+    assert len(db.get_playlist_tracks("p1")) == 1
+
+
+def test_add_or_update_playlist_sets_and_bumps_updated_at(db):
+    import time
+
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="A", spotify_url=""))
+    first = _playlist_updated_at(db, "p1")
+    assert first is not None
+    time.sleep(1.1)
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="B", spotify_url=""))
+    second = _playlist_updated_at(db, "p1")
+    assert second > first
+
+
+def test_link_track_bumps_playlist_updated_at_on_new_membership(db):
+    import time
+
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="L", spotify_url=""))
+    before = _playlist_updated_at(db, "p1")
+    time.sleep(1.1)
+    db.link_track_to_playlist("p1", "t1", 0)
+    after = _playlist_updated_at(db, "p1")
+    assert after > before
+
+    # Re-linking the same track (IGNORE) should NOT bump further.
+    time.sleep(1.1)
+    db.link_track_to_playlist("p1", "t1", 0)
+    assert _playlist_updated_at(db, "p1") == after
+
+
+def test_get_playlists_since_returns_delta_with_tracks(db):
+    import time
+
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="B"))
+    db.add_or_update_playlist(Playlist(playlist_id="p_old", name="Old", spotify_url=""))
+    db.link_track_to_playlist("p_old", "t1", 0)
+
+    cutoff = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+    time.sleep(1.1)
+
+    db.add_or_update_playlist(Playlist(playlist_id="p_new", name="New", spotify_url=""))
+    db.link_track_to_playlist("p_new", "t2", 0)
+
+    delta = db.get_playlists_since(cutoff)
+    ids = {pl["playlist_id"] for pl in delta}
+    assert ids == {"p_new"}
+
+    new_pl = delta[0]
+    assert new_pl["name"] == "New"
+    assert new_pl["tracks"] == [{"track_mbid": "t2", "track_order": 0}]
+
+
+def test_get_playlists_since_no_filter_returns_all(db):
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="A", spotify_url=""))
+    db.add_or_update_playlist(Playlist(playlist_id="p2", name="B", spotify_url=""))
+    rows = db.get_playlists_since()
+    assert {r["playlist_id"] for r in rows} == {"p1", "p2"}
+    for r in rows:
+        assert "tracks" in r
+        assert "updated_at" in r
+
+
+def test_playlists_updated_at_migration_on_legacy_db():
+    import tempfile
+    import os
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "legacy.db")
+        conn = sqlite3.connect(db_path)
+        # Pre-updated_at playlists schema.
+        conn.execute("""
+            CREATE TABLE playlists (
+                playlist_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                spotify_url TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO playlists (playlist_id, name, spotify_url) VALUES (?, ?, ?)",
+            ("p1", "Legacy", ""),
+        )
+        conn.commit()
+        conn.close()
+
+        mgr = DatabaseManager(db_path)
+        try:
+            cols = {
+                row[1]
+                for row in mgr.conn.execute("PRAGMA table_info(playlists)").fetchall()
+            }
+            assert "updated_at" in cols
+            row = mgr.conn.execute(
+                "SELECT updated_at FROM playlists WHERE playlist_id = ?", ("p1",)
+            ).fetchone()
+            assert row["updated_at"] is not None
+        finally:
+            mgr.close()
 
 
 def test_sync_state_roundtrip(db):
