@@ -324,6 +324,58 @@ def test_post_inventory_rejects_non_list_items(client, mock_config):
     assert res.status_code == 400
 
 
+def test_fleet_summary_returns_devices(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_fleet_summary.return_value = [
+            {"device_id": "dev-A", "track_count": 3, "last_reported_at": "2026-04-18"},
+        ]
+        res = client.get('/api/fleet/summary')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["devices"][0]["device_id"] == "dev-A"
+
+
+def test_fleet_track_lookup_by_mbid(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_devices_holding_mbid.return_value = [
+            {"device_id": "dev-A", "local_path": "/a", "reported_at": "2026-04-18"},
+        ]
+        res = client.get('/api/fleet/track?mbid=m1')
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["mbid"] == "m1"
+    assert data["holders"][0]["device_id"] == "dev-A"
+
+
+def test_fleet_track_lookup_by_query_enriches_with_holders(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.find_tracks_for_fleet_search.return_value = [
+            {"mbid": "m1", "artist": "A", "title": "T", "album": "X", "device_count": 1},
+        ]
+        mock_db.get_devices_holding_mbid.return_value = [
+            {"device_id": "dev-A", "local_path": "/a", "reported_at": "2026-04-18"},
+        ]
+        res = client.get('/api/fleet/track?q=title')
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["results"][0]["holders"][0]["device_id"] == "dev-A"
+
+
+def test_fleet_track_lookup_requires_param(client, mock_config):
+    res = client.get('/api/fleet/track')
+    assert res.status_code == 400
+
+
+def test_fleet_page_renders(client, mock_config):
+    res = client.get('/fleet')
+    assert res.status_code == 200
+    assert b"Fleet View" in res.data
+
+
 def test_get_playlists_delta_returns_rows(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

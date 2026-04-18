@@ -532,6 +532,48 @@ def test_replace_device_inventory_requires_device_id(db):
         db.replace_device_inventory("", [{"mbid": "m1"}])
 
 
+def test_get_fleet_summary_groups_by_device(db):
+    db.replace_device_inventory("dev-A", [
+        {"mbid": "m1", "local_path": "/a/1"},
+        {"mbid": "m2", "local_path": "/a/2"},
+    ])
+    db.replace_device_inventory("dev-B", [{"mbid": "m1", "local_path": "/b/1"}])
+    summary = db.get_fleet_summary()
+    by_id = {row["device_id"]: row for row in summary}
+    assert by_id["dev-A"]["track_count"] == 2
+    assert by_id["dev-B"]["track_count"] == 1
+    assert by_id["dev-A"]["last_reported_at"] is not None
+
+
+def test_get_fleet_summary_empty(db):
+    assert db.get_fleet_summary() == []
+
+
+def test_get_devices_holding_mbid(db):
+    db.replace_device_inventory("dev-A", [{"mbid": "m1", "local_path": "/a"}])
+    db.replace_device_inventory("dev-B", [{"mbid": "m1", "local_path": "/b"}])
+    db.replace_device_inventory("dev-C", [{"mbid": "m2", "local_path": "/c"}])
+    holders = db.get_devices_holding_mbid("m1")
+    assert {row["device_id"] for row in holders} == {"dev-A", "dev-B"}
+    assert db.get_devices_holding_mbid("missing") == []
+
+
+def test_find_tracks_for_fleet_search_ranks_by_device_count(db):
+    db.add_or_update_track(Track(mbid="m_common", title="Common Song", artist="Artist"))
+    db.add_or_update_track(Track(mbid="m_rare", title="Common Song Rare", artist="Artist"))
+    db.replace_device_inventory("dev-A", [{"mbid": "m_common", "local_path": "/a"}])
+    db.replace_device_inventory("dev-B", [{"mbid": "m_common", "local_path": "/b"}])
+    db.replace_device_inventory("dev-C", [{"mbid": "m_rare", "local_path": "/c"}])
+    hits = db.find_tracks_for_fleet_search("common")
+    assert [h["mbid"] for h in hits[:2]] == ["m_common", "m_rare"]
+    assert hits[0]["device_count"] == 2
+    assert hits[1]["device_count"] == 1
+
+
+def test_find_tracks_for_fleet_search_empty_query(db):
+    assert db.find_tracks_for_fleet_search("") == []
+
+
 def test_sync_state_roundtrip(db):
     assert db.get_sync_state("last_catalog_sync") is None
     db.set_sync_state("last_catalog_sync", "2026-04-17 12:00:00")

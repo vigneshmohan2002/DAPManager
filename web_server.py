@@ -592,6 +592,53 @@ def post_inventory():
     })
 
 
+@app.route("/fleet")
+def fleet_page():
+    """Master-side overview of which devices have what.
+
+    Reads from the device_inventory table populated by /api/inventory.
+    """
+    return render_template("fleet.html")
+
+
+@app.route("/api/fleet/summary", methods=["GET"])
+def fleet_summary():
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            summary = db.get_fleet_summary()
+    except Exception as e:
+        logger.error(f"Fleet summary failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "devices": summary})
+
+
+@app.route("/api/fleet/track", methods=["GET"])
+def fleet_track_lookup():
+    """Which devices hold a given MBID, or search by artist/title/album."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    mbid = (request.args.get("mbid") or "").strip()
+    query = (request.args.get("q") or "").strip()
+    try:
+        with DatabaseManager(config.db_path) as db:
+            if mbid:
+                holders = db.get_devices_holding_mbid(mbid)
+                return jsonify({"success": True, "mbid": mbid, "holders": holders})
+            if query:
+                matches = db.find_tracks_for_fleet_search(query)
+                enriched = []
+                for row in matches:
+                    holders = db.get_devices_holding_mbid(row["mbid"])
+                    enriched.append({**row, "holders": holders})
+                return jsonify({"success": True, "query": query, "results": enriched})
+    except Exception as e:
+        logger.error(f"Fleet track lookup failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": False, "message": "provide mbid or q"}), 400
+
+
 @app.route("/api/suggestions", methods=["POST"])
 def post_suggestions():
     """Accept track suggestions from a satellite device and queue them for download.

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAP Manager — Fleet</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .fleet-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        .fleet-table th,
+        .fleet-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #333;
+            text-align: left;
+        }
+        .fleet-table th {
+            background: #222;
+            color: #ddd;
+        }
+        .fleet-table tr:hover {
+            background: #1b1b1b;
+        }
+        .device-pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #2a4a6a;
+            color: #cfe;
+            font-size: 12px;
+            margin: 0 4px 4px 0;
+        }
+        .muted {
+            color: #888;
+            font-size: 12px;
+        }
+        .empty {
+            padding: 20px;
+            color: #888;
+            text-align: center;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Fleet View</h1>
+            <div class="muted">
+                Per-device inventory reported via <code>/api/inventory</code>.
+                <a href="/" style="color:#8bd;">← Dashboard</a>
+            </div>
+        </header>
+
+        <main>
+            <section class="card">
+                <h2>Devices</h2>
+                <div id="fleet-summary-container">
+                    <div class="empty">Loading…</div>
+                </div>
+            </section>
+
+            <section class="card" style="margin-top:20px;">
+                <h2>Find a track across the fleet</h2>
+                <div style="display:flex; gap:10px; margin-bottom:10px;">
+                    <input type="text" id="fleet-search-input"
+                        placeholder="Search artist / album / title…"
+                        style="flex:1; padding:8px; background:#333; color:#fff; border:1px solid #555; border-radius:4px;">
+                    <button onclick="searchFleet()">Search</button>
+                </div>
+                <div id="fleet-search-results">
+                    <div class="muted">Type a query above to see which devices hold each match.</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        async function loadSummary() {
+            const container = document.getElementById('fleet-summary-container');
+            try {
+                const resp = await fetch('/api/fleet/summary');
+                const data = await resp.json();
+                if (!data.success) {
+                    container.innerHTML = `<div class="empty">Error: ${data.message || 'unknown'}</div>`;
+                    return;
+                }
+                const devices = data.devices || [];
+                if (!devices.length) {
+                    container.innerHTML = '<div class="empty">No devices have reported inventory yet. Run "Report Inventory" on a device to populate this view.</div>';
+                    return;
+                }
+                let html = '<table class="fleet-table"><thead><tr>'
+                    + '<th>Device</th><th>Tracks</th><th>Last reported</th></tr></thead><tbody>';
+                for (const d of devices) {
+                    html += `<tr>
+                        <td><strong>${escapeHtml(d.device_id)}</strong></td>
+                        <td>${d.track_count}</td>
+                        <td class="muted">${escapeHtml(d.last_reported_at || '')}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = `<div class="empty">Failed to load: ${e}</div>`;
+            }
+        }
+
+        async function searchFleet() {
+            const q = document.getElementById('fleet-search-input').value.trim();
+            const out = document.getElementById('fleet-search-results');
+            if (!q) {
+                out.innerHTML = '<div class="muted">Enter a query first.</div>';
+                return;
+            }
+            out.innerHTML = '<div class="muted">Searching…</div>';
+            try {
+                const resp = await fetch('/api/fleet/track?q=' + encodeURIComponent(q));
+                const data = await resp.json();
+                if (!data.success) {
+                    out.innerHTML = `<div class="empty">Error: ${data.message || 'unknown'}</div>`;
+                    return;
+                }
+                const results = data.results || [];
+                if (!results.length) {
+                    out.innerHTML = '<div class="empty">No matching tracks.</div>';
+                    return;
+                }
+                let html = '<table class="fleet-table"><thead><tr>'
+                    + '<th>Artist</th><th>Title</th><th>Album</th><th>Held by</th>'
+                    + '</tr></thead><tbody>';
+                for (const r of results) {
+                    const holders = (r.holders || []).map(h =>
+                        `<span class="device-pill" title="${escapeHtml(h.local_path || '')}">${escapeHtml(h.device_id)}</span>`
+                    ).join('') || '<span class="muted">no device</span>';
+                    html += `<tr>
+                        <td>${escapeHtml(r.artist || '')}</td>
+                        <td>${escapeHtml(r.title || '')}</td>
+                        <td>${escapeHtml(r.album || '')}</td>
+                        <td>${holders}</td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                out.innerHTML = html;
+            } catch (e) {
+                out.innerHTML = `<div class="empty">Failed: ${e}</div>`;
+            }
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        document.getElementById('fleet-search-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') searchFleet();
+        });
+
+        loadSummary();
+    </script>
+</body>
+
+</html>

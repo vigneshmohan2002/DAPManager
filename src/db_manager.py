@@ -709,6 +709,55 @@ class DatabaseManager:
         cursor.close()
         return rows
 
+    def get_fleet_summary(self) -> List[dict]:
+        """Per-device inventory summary: device_id, track_count, last_reported_at."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT device_id, COUNT(*) AS track_count, MAX(reported_at) AS last_reported_at "
+            "FROM device_inventory "
+            "GROUP BY device_id "
+            "ORDER BY device_id"
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def get_devices_holding_mbid(self, mbid: str) -> List[dict]:
+        """Which devices have reported holding a given track."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT device_id, local_path, reported_at FROM device_inventory "
+            "WHERE mbid = ? ORDER BY device_id",
+            (mbid,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def find_tracks_for_fleet_search(self, query: str, limit: int = 50) -> List[dict]:
+        """Find tracks matching artist/title/album for fleet lookup.
+
+        Returns lightweight rows ({mbid, artist, title, album}) plus a
+        per-row device_count so the UI can show matches ordered by
+        how widely a track is held.
+        """
+        if not query:
+            return []
+        term = f"%{query}%"
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT t.mbid, t.artist, t.title, t.album, "
+            "       (SELECT COUNT(*) FROM device_inventory d WHERE d.mbid = t.mbid) AS device_count "
+            "FROM tracks t "
+            "WHERE t.title LIKE ? OR t.artist LIKE ? OR t.album LIKE ? "
+            "ORDER BY device_count DESC, t.artist, t.album, t.title "
+            "LIMIT ?",
+            (term, term, term, int(limit)),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def apply_pushed_playlist_row(self, row: dict) -> str:
         """Apply a playlist pushed from a satellite, using last-writer-wins
         on ``updated_at``.
