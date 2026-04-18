@@ -339,6 +339,39 @@ def test_master_url_defaults_empty_and_strips_trailing_slash():
             ConfigManager._instance = None
 
 
+def test_report_inventory_default_master_is_on_satellite_is_off():
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+
+        # Satellite default: off
+        _write_minimal_config(config_file, overrides={"device_role": "satellite"})
+        try:
+            assert get_config().report_inventory_to_host is False
+        finally:
+            ConfigManager._instance = None
+
+        # Master default: on
+        _write_minimal_config(config_file, overrides={"device_role": "master"})
+        try:
+            assert get_config().report_inventory_to_host is True
+        finally:
+            ConfigManager._instance = None
+
+        # Explicit override beats default
+        _write_minimal_config(
+            config_file,
+            overrides={"device_role": "master", "report_inventory_to_host": False},
+        )
+        try:
+            assert get_config().report_inventory_to_host is False
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
 def test_device_identity_preserved_between_loads():
     ConfigManager._instance = None
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -201,6 +201,25 @@ def test_catalog_pull_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_inventory_report_rejects_when_disabled(client, mock_config):
+    mock_config.report_inventory_to_host = False
+    res = client.post('/api/inventory/report')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is False
+    assert "report_inventory_to_host" in data["message"]
+
+
+def test_inventory_report_starts_task_when_enabled(client, mock_config):
+    mock_config.report_inventory_to_host = True
+    with patch('web_server.run_inventory_report') as mock_run:
+        res = client.post('/api/inventory/report')
+        mock_run.return_value = None
+
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+
+
 def test_playlists_pull_rejects_when_master_url_missing(client, mock_config):
     mock_config.master_url = ""
     res = client.post('/api/playlists/pull')

@@ -190,6 +190,18 @@ class ConfigManager:
         return self.device_role == "master"
 
     @property
+    def report_inventory_to_host(self) -> bool:
+        """Whether this device should report its MBID→path inventory.
+
+        Explicit config wins. If unset, defaults to True on the master
+        (so the master's own presence shows in the fleet view) and False
+        on satellites (opt-in — quiet by default).
+        """
+        if "report_inventory_to_host" in self._config:
+            return bool(self._config["report_inventory_to_host"])
+        return self.is_master
+
+    @property
     def master_url(self) -> str:
         """Base URL of the master DAPManager (e.g. http://host.local:5001).
 

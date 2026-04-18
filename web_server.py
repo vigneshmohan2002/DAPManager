@@ -135,6 +135,12 @@ def run_playlist_pull(db_path, conf, progress_callback=None):
         main_run_playlist_pull(db, conf._config, progress_callback=progress_callback)
 
 
+def run_inventory_report(db_path, conf, progress_callback=None):
+    from src.inventory_sync import main_run_inventory_report
+    with DatabaseManager(db_path) as db:
+        main_run_inventory_report(db, conf._config, progress_callback=progress_callback)
+
+
 def run_batch():
     from manager import batch_sync
     batch_sync()
@@ -352,6 +358,28 @@ def catalog_pull():
         })
     success, msg = task_manager.start_task(
         run_catalog_pull, (config.db_path, config), "Catalog Pull"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/inventory/report", methods=["POST"])
+def inventory_report():
+    """Publish this device's inventory snapshot.
+
+    Satellites POST to the master; a master (or any device acting as one)
+    writes the snapshot into its own device_inventory. Gated by the
+    ``report_inventory_to_host`` config flag so quiet-by-default
+    satellites stay quiet.
+    """
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    if not config.report_inventory_to_host:
+        return jsonify({
+            "success": False,
+            "message": "report_inventory_to_host is disabled in config; set it to true to opt in.",
+        })
+    success, msg = task_manager.start_task(
+        run_inventory_report, (config.db_path, config), "Inventory Report"
     )
     return jsonify({"success": success, "message": msg})
 
