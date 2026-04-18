@@ -221,6 +221,23 @@
             </section>
 
             <section class="card">
+                <details>
+                    <summary style="cursor:pointer; font-size:18px; font-weight:bold; padding:4px 0;">
+                        Settings
+                    </summary>
+                    <div id="settings-status" style="color:#8bd; font-size:12px; margin-bottom:10px;"></div>
+                    <div id="settings-groups"></div>
+                    <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+                        <button onclick="saveSettings()">Save</button>
+                        <button onclick="loadSettings()" style="background:#444;">Reload</button>
+                        <span class="muted" style="color:#888; font-size:12px;">
+                            Secret fields (passwords / API keys) are masked — leave blank to keep current value.
+                        </span>
+                    </div>
+                </details>
+            </section>
+
+            <section class="card">
                 <h2>Logs / Output</h2>
                 <div id="log-display">
                     Last Message: <span id="last-message">None</span>
@@ -234,6 +251,119 @@
     </div>
 
     <script>
+        const SETTINGS_GROUPS = [
+            {
+                label: "Paths",
+                keys: ["music_library_path", "downloads_path"],
+            },
+            {
+                label: "DAP",
+                keys: ["dap_mount_point", "dap_music_dir_name", "dap_playlist_dir_name"],
+            },
+            {
+                label: "Downloader (Soulseek)",
+                keys: ["slsk_username", "slsk_password", "fast_search", "remove_ft", "desperate_mode", "strict_quality"],
+            },
+            {
+                label: "Jellyfin",
+                keys: ["jellyfin_url", "jellyfin_api_key", "jellyfin_user_id"],
+            },
+            {
+                label: "Multi-Device Sync",
+                keys: ["is_master", "device_id", "device_role", "master_url", "dap_manager_host_url", "report_inventory_to_host"],
+            },
+        ];
+        const SETTINGS_SECRET_KEYS = new Set(["slsk_password", "jellyfin_api_key"]);
+        const SETTINGS_BOOL_KEYS = new Set([
+            "fast_search", "remove_ft", "desperate_mode", "strict_quality",
+            "report_inventory_to_host", "is_master",
+        ]);
+        let settingsCurrent = {};
+
+        async function loadSettings() {
+            const statusEl = document.getElementById('settings-status');
+            statusEl.textContent = 'Loading…';
+            try {
+                const resp = await fetch('/api/config');
+                const data = await resp.json();
+                if (!data.success) {
+                    statusEl.textContent = 'Error: ' + (data.message || 'unknown');
+                    return;
+                }
+                settingsCurrent = data.config || {};
+                renderSettings();
+                statusEl.textContent = '';
+            } catch (e) {
+                statusEl.textContent = 'Load failed: ' + e;
+            }
+        }
+
+        function renderSettings() {
+            const container = document.getElementById('settings-groups');
+            let html = '';
+            for (const group of SETTINGS_GROUPS) {
+                html += `<fieldset style="border:1px solid #444; padding:10px; margin-bottom:10px;">
+                    <legend style="padding:0 6px; color:#aaa;">${group.label}</legend>`;
+                for (const key of group.keys) {
+                    const value = settingsCurrent[key];
+                    html += `<div style="display:flex; align-items:center; gap:10px; margin:4px 0;">
+                        <label style="width:220px; color:#bbb; font-size:13px;" title="${key}">${key}</label>
+                        ${renderField(key, value)}
+                    </div>`;
+                }
+                html += '</fieldset>';
+            }
+            container.innerHTML = html;
+        }
+
+        function renderField(key, value) {
+            if (SETTINGS_BOOL_KEYS.has(key)) {
+                const checked = value === true ? 'checked' : '';
+                return `<input type="checkbox" data-config-key="${key}" ${checked}>`;
+            }
+            const type = SETTINGS_SECRET_KEYS.has(key) ? 'password' : 'text';
+            const placeholder = SETTINGS_SECRET_KEYS.has(key) ? '(leave blank to keep current)' : '';
+            const safe = value == null ? '' : String(value).replace(/"/g, '&quot;');
+            return `<input type="${type}" data-config-key="${key}" value="${safe}"
+                placeholder="${placeholder}"
+                style="flex:1; padding:5px; background:#222; color:#fff; border:1px solid #555; border-radius:3px;">`;
+        }
+
+        async function saveSettings() {
+            const statusEl = document.getElementById('settings-status');
+            const payload = {};
+            document.querySelectorAll('#settings-groups [data-config-key]').forEach(el => {
+                const key = el.getAttribute('data-config-key');
+                if (el.type === 'checkbox') {
+                    payload[key] = el.checked;
+                } else {
+                    payload[key] = el.value;
+                }
+            });
+            statusEl.textContent = 'Saving…';
+            try {
+                const resp = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!data.success) {
+                    statusEl.textContent = 'Save failed: ' + (data.message || 'unknown');
+                    return;
+                }
+                const count = (data.changed || []).length;
+                statusEl.textContent = count
+                    ? `Saved ${count} change(s): ${data.changed.join(', ')}`
+                    : 'No changes.';
+                loadSettings();
+            } catch (e) {
+                statusEl.textContent = 'Save failed: ' + e;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadSettings);
+
         function updateStatus() {
             fetch('/api/status')
                 .then(response => response.json())

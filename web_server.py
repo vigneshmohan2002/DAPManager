@@ -248,6 +248,109 @@ def setup():
     return render_template("setup.html")
 
 
+CONFIG_SECRET_KEYS = {"slsk_password", "jellyfin_api_key"}
+CONFIG_EDITABLE_KEYS = {
+    "music_library_path",
+    "downloads_path",
+    "dap_mount_point",
+    "dap_music_dir_name",
+    "dap_playlist_dir_name",
+    "slsk_username",
+    "slsk_password",
+    "fast_search",
+    "remove_ft",
+    "desperate_mode",
+    "strict_quality",
+    "jellyfin_url",
+    "jellyfin_api_key",
+    "jellyfin_user_id",
+    "dap_manager_host_url",
+    "master_url",
+    "device_id",
+    "device_role",
+    "report_inventory_to_host",
+    "is_master",
+}
+
+
+@app.route("/api/config", methods=["GET"])
+def get_config_json():
+    """Return current config with secret fields redacted to ''.
+
+    The UI shows a placeholder for secret fields; leaving them blank on
+    save means "don't change". Unknown keys are passed through so the
+    page can at least show them, but the edit form only surfaces the
+    editable set.
+    """
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return jsonify({"success": False, "message": "config.json not found"}), 404
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    redacted = dict(raw)
+    for key in CONFIG_SECRET_KEYS:
+        if key in redacted and redacted[key]:
+            redacted[key] = ""
+    return jsonify({
+        "success": True,
+        "config": redacted,
+        "editable_keys": sorted(CONFIG_EDITABLE_KEYS),
+        "secret_keys": sorted(CONFIG_SECRET_KEYS),
+    })
+
+
+@app.route("/api/config", methods=["POST"])
+def update_config():
+    """Partial-merge update into config.json.
+
+    Only keys in CONFIG_EDITABLE_KEYS are accepted; others are silently
+    ignored so the UI can't wipe e.g. the db path. Empty strings for
+    secret keys mean "don't change".
+    """
+    data = request.json or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "body must be an object"}), 400
+
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            current = json.load(f)
+    except FileNotFoundError:
+        return jsonify({"success": False, "message": "config.json not found"}), 404
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    changed = []
+    for key, value in data.items():
+        if key not in CONFIG_EDITABLE_KEYS:
+            continue
+        if key in CONFIG_SECRET_KEYS and value == "":
+            continue
+        if current.get(key) != value:
+            current[key] = value
+            changed.append(key)
+
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(current, f, indent=4)
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    # Reload the in-process config so subsequent requests see the new values.
+    try:
+        from src.config_manager import ConfigManager
+        ConfigManager._instance = None
+        global config
+        if config is not None:
+            config._load_config()
+    except Exception as e:
+        logger.warning(f"Config written but in-process reload failed: {e}")
+
+    return jsonify({"success": True, "changed": changed})
+
+
 @app.route("/api/save_config", methods=["POST"])
 def save_config():
     data = request.json

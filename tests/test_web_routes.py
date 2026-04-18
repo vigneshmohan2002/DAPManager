@@ -376,6 +376,76 @@ def test_fleet_page_renders(client, mock_config):
     assert b"Fleet View" in res.data
 
 
+def _config_roundtrip_fixtures(tmp_path, monkeypatch):
+    """Point web_server.CONFIG_FILE at a temp file and return its path."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "database_file": "dap.db",
+        "music_library_path": "/music",
+        "slsk_password": "supersecret",
+        "jellyfin_api_key": "key-abc",
+        "master_url": "",
+        "is_master": True,
+        "report_inventory_to_host": False,
+    }))
+    import web_server as ws
+    monkeypatch.setattr(ws, "CONFIG_FILE", str(cfg_path))
+    return cfg_path
+
+
+def test_get_config_redacts_secrets(client, mock_config, tmp_path, monkeypatch):
+    _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    res = client.get('/api/config')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["config"]["slsk_password"] == ""
+    assert data["config"]["jellyfin_api_key"] == ""
+    assert data["config"]["music_library_path"] == "/music"
+    assert "slsk_password" in data["secret_keys"]
+
+
+def test_post_config_merges_and_ignores_unknown_keys(client, mock_config, tmp_path, monkeypatch):
+    cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    res = client.post('/api/config', json={
+        "music_library_path": "/new/music",
+        "master_url": "http://host:5001",
+        "report_inventory_to_host": True,
+        "database_file": "HACKED.db",  # not in editable set — must be ignored
+    })
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert set(data["changed"]) == {"music_library_path", "master_url", "report_inventory_to_host"}
+
+    saved = json.loads(cfg_path.read_text())
+    assert saved["music_library_path"] == "/new/music"
+    assert saved["master_url"] == "http://host:5001"
+    assert saved["report_inventory_to_host"] is True
+    assert saved["database_file"] == "dap.db"  # untouched
+
+
+def test_post_config_blank_secret_keeps_existing(client, mock_config, tmp_path, monkeypatch):
+    cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    res = client.post('/api/config', json={
+        "slsk_password": "",  # blank → keep current
+        "jellyfin_api_key": "new-key",  # non-blank → update
+    })
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["changed"] == ["jellyfin_api_key"]
+
+    saved = json.loads(cfg_path.read_text())
+    assert saved["slsk_password"] == "supersecret"
+    assert saved["jellyfin_api_key"] == "new-key"
+
+
+def test_post_config_rejects_non_object(client, mock_config, tmp_path, monkeypatch):
+    _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    res = client.post('/api/config', json=[1, 2, 3])
+    assert res.status_code == 400
+
+
 def test_get_playlists_delta_returns_rows(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
