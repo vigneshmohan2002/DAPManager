@@ -221,6 +221,43 @@ def test_playlists_pull_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_post_inventory_writes_snapshot(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.replace_device_inventory.return_value = 2
+
+        res = client.post('/api/inventory', json={
+            "device_id": "dev-A",
+            "items": [
+                {"mbid": "m1", "local_path": "/a"},
+                {"mbid": "m2", "local_path": "/b"},
+            ],
+        })
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["device_id"] == "dev-A"
+    assert data["received"] == 2
+    assert data["written"] == 2
+    mock_db.replace_device_inventory.assert_called_once()
+
+
+def test_post_inventory_requires_device_id(client, mock_config):
+    res = client.post('/api/inventory', json={"items": []})
+    assert res.status_code == 400
+    data = res.get_json()
+    assert data["success"] is False
+
+
+def test_post_inventory_rejects_non_list_items(client, mock_config):
+    res = client.post('/api/inventory', json={
+        "device_id": "dev-A",
+        "items": "not a list",
+    })
+    assert res.status_code == 400
+
+
 def test_get_playlists_delta_returns_rows(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

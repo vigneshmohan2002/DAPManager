@@ -456,6 +456,40 @@ def get_playlists_delta():
     })
 
 
+@app.route("/api/inventory", methods=["POST"])
+def post_inventory():
+    """Accept a device's inventory snapshot (MBID → local_path map).
+
+    Body: { "device_id": "...", "items": [{"mbid": "...", "local_path": "..."}, ...] }
+    The full snapshot is authoritative — the device's previous inventory is
+    replaced in a single transaction.
+    Response: { success, device_id, written }
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    device_id = (data.get("device_id") or "").strip()
+    if not device_id:
+        return jsonify({"success": False, "message": "device_id required"}), 400
+    items = data.get("items") or []
+    if not isinstance(items, list):
+        return jsonify({"success": False, "message": "items must be a list"}), 400
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            written = db.replace_device_inventory(device_id, items)
+    except Exception as e:
+        logger.error(f"Inventory write failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "device_id": device_id,
+        "received": len(items),
+        "written": written,
+    })
+
+
 @app.route("/api/suggestions", methods=["POST"])
 def post_suggestions():
     """Accept track suggestions from a satellite device and queue them for download.

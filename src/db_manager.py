@@ -160,6 +160,15 @@ class DatabaseManager:
                     value TEXT
                 );
             """,
+            "device_inventory": """
+                CREATE TABLE IF NOT EXISTS device_inventory (
+                    device_id TEXT NOT NULL,
+                    mbid TEXT NOT NULL,
+                    local_path TEXT,
+                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (device_id, mbid)
+                );
+            """,
         }
 
         try:
@@ -650,6 +659,55 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
         return "updated" if existed else "inserted"
+
+    def replace_device_inventory(self, device_id: str, items: List[dict]) -> int:
+        """Replace the recorded inventory for ``device_id`` in one transaction.
+
+        Each item is {mbid, local_path}. The whole snapshot is authoritative
+        — rows not in the payload are dropped so removed tracks disappear.
+        Returns the number of rows written.
+        """
+        if not device_id:
+            raise ValueError("device_id is required")
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN")
+            cursor.execute(
+                "DELETE FROM device_inventory WHERE device_id = ?", (device_id,)
+            )
+            written = 0
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                mbid = item.get("mbid")
+                if not mbid:
+                    continue
+                cursor.execute(
+                    "INSERT INTO device_inventory "
+                    "(device_id, mbid, local_path, reported_at) "
+                    "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                    (device_id, mbid, item.get("local_path")),
+                )
+                written += 1
+            self.conn.commit()
+            return written
+        except sqlite3.Error:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def get_device_inventory(self, device_id: str) -> List[dict]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT mbid, local_path, reported_at FROM device_inventory "
+            "WHERE device_id = ? ORDER BY mbid",
+            (device_id,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
 
     def get_sync_state(self, key: str) -> Optional[str]:
         cursor = self.conn.cursor()

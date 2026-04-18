@@ -412,6 +412,48 @@ def test_apply_playlist_row_skips_missing_playlist_id(db):
     assert db.apply_playlist_row({}) == "skipped"
 
 
+def test_replace_device_inventory_writes_rows(db):
+    written = db.replace_device_inventory("dev-A", [
+        {"mbid": "m1", "local_path": "/music/m1.flac"},
+        {"mbid": "m2", "local_path": "/music/m2.flac"},
+    ])
+    assert written == 2
+    inv = db.get_device_inventory("dev-A")
+    assert {r["mbid"] for r in inv} == {"m1", "m2"}
+
+
+def test_replace_device_inventory_replaces_previous(db):
+    db.replace_device_inventory("dev-A", [{"mbid": "m1", "local_path": "/old"}])
+    db.replace_device_inventory("dev-A", [{"mbid": "m2", "local_path": "/new"}])
+    inv = db.get_device_inventory("dev-A")
+    assert len(inv) == 1
+    assert inv[0]["mbid"] == "m2"
+
+
+def test_replace_device_inventory_isolates_devices(db):
+    db.replace_device_inventory("dev-A", [{"mbid": "m1", "local_path": "/a"}])
+    db.replace_device_inventory("dev-B", [{"mbid": "m2", "local_path": "/b"}])
+    # Replacing A must not touch B.
+    db.replace_device_inventory("dev-A", [])
+    assert db.get_device_inventory("dev-A") == []
+    assert len(db.get_device_inventory("dev-B")) == 1
+
+
+def test_replace_device_inventory_skips_bad_items(db):
+    written = db.replace_device_inventory("dev-A", [
+        {"mbid": "m1", "local_path": "/a"},
+        {"local_path": "/no-mbid"},  # missing mbid
+        "not a dict",
+        {"mbid": ""},  # empty mbid
+    ])
+    assert written == 1
+
+
+def test_replace_device_inventory_requires_device_id(db):
+    with pytest.raises(ValueError):
+        db.replace_device_inventory("", [{"mbid": "m1"}])
+
+
 def test_sync_state_roundtrip(db):
     assert db.get_sync_state("last_catalog_sync") is None
     db.set_sync_state("last_catalog_sync", "2026-04-17 12:00:00")
