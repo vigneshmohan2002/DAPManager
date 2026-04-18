@@ -412,6 +412,69 @@ def test_apply_playlist_row_skips_missing_playlist_id(db):
     assert db.apply_playlist_row({}) == "skipped"
 
 
+def test_apply_pushed_playlist_row_inserts_when_absent(db):
+    action = db.apply_pushed_playlist_row({
+        "playlist_id": "p1",
+        "name": "From Sat",
+        "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00",
+        "tracks": [],
+    })
+    assert action == "inserted"
+
+
+def test_apply_pushed_playlist_row_accepts_newer(db):
+    db.apply_playlist_row({
+        "playlist_id": "p1", "name": "old", "spotify_url": "",
+        "updated_at": "2026-04-18 10:00:00", "tracks": [],
+    })
+    action = db.apply_pushed_playlist_row({
+        "playlist_id": "p1", "name": "new", "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00", "tracks": [],
+    })
+    assert action == "updated"
+    row = db.conn.execute(
+        "SELECT name, updated_at FROM playlists WHERE playlist_id = 'p1'"
+    ).fetchone()
+    assert row["name"] == "new"
+    assert row["updated_at"] == "2026-04-18 12:00:00"
+
+
+def test_apply_pushed_playlist_row_rejects_older(db):
+    db.apply_playlist_row({
+        "playlist_id": "p1", "name": "current", "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00", "tracks": [],
+    })
+    action = db.apply_pushed_playlist_row({
+        "playlist_id": "p1", "name": "stale", "spotify_url": "",
+        "updated_at": "2026-04-18 10:00:00", "tracks": [],
+    })
+    assert action == "stale"
+    row = db.conn.execute(
+        "SELECT name FROM playlists WHERE playlist_id = 'p1'"
+    ).fetchone()
+    assert row["name"] == "current"
+
+
+def test_apply_pushed_playlist_row_rejects_equal_timestamp(db):
+    """Equal timestamps are treated as stale — the master keeps its copy.
+    This is what protects round-tripped pulls from overwriting a master
+    edit that happened to land at the same timestamp."""
+    db.apply_playlist_row({
+        "playlist_id": "p1", "name": "current", "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00", "tracks": [],
+    })
+    action = db.apply_pushed_playlist_row({
+        "playlist_id": "p1", "name": "echo", "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00", "tracks": [],
+    })
+    assert action == "stale"
+
+
+def test_apply_pushed_playlist_row_without_playlist_id(db):
+    assert db.apply_pushed_playlist_row({}) == "skipped"
+
+
 def test_replace_device_inventory_writes_rows(db):
     written = db.replace_device_inventory("dev-A", [
         {"mbid": "m1", "local_path": "/music/m1.flac"},

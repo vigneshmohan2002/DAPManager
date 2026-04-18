@@ -709,6 +709,32 @@ class DatabaseManager:
         cursor.close()
         return rows
 
+    def apply_pushed_playlist_row(self, row: dict) -> str:
+        """Apply a playlist pushed from a satellite, using last-writer-wins
+        on ``updated_at``.
+
+        Returns:
+          - 'inserted' / 'updated': incoming accepted and applied.
+          - 'stale': local updated_at is equal to or newer than incoming —
+                    incoming ignored so a round-tripped pull doesn't
+                    overwrite a subsequent master-side edit.
+          - 'skipped': no playlist_id in payload.
+
+        Lexicographic ISO-string comparison matches SQLite's CURRENT_TIMESTAMP
+        ordering, which is what both sides store.
+        """
+        pid = (row or {}).get("playlist_id")
+        if not pid:
+            return "skipped"
+        incoming_ts = row.get("updated_at")
+        if incoming_ts:
+            cur = self.conn.execute(
+                "SELECT updated_at FROM playlists WHERE playlist_id = ?", (pid,)
+            ).fetchone()
+            if cur and cur["updated_at"] and cur["updated_at"] >= incoming_ts:
+                return "stale"
+        return self.apply_playlist_row(row)
+
     def get_sync_state(self, key: str) -> Optional[str]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT value FROM sync_state WHERE key = ?", (key,))

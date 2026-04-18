@@ -240,6 +240,34 @@ def test_playlists_pull_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_post_playlists_accepts_and_reports_per_row(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.apply_pushed_playlist_row.side_effect = ["inserted", "stale", "skipped"]
+
+        res = client.post('/api/playlists', json={
+            "playlists": [
+                {"playlist_id": "p1", "updated_at": "2026-04-18 12:00:00"},
+                {"playlist_id": "p2", "updated_at": "2026-04-18 09:00:00"},
+                {},
+            ],
+        })
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["received"] == 3
+    assert data["accepted"] == 1
+    assert data["stale"] == 1
+    assert data["skipped"] == 1
+    assert [r["result"] for r in data["results"]] == ["inserted", "stale", "skipped"]
+
+
+def test_post_playlists_rejects_non_list(client, mock_config):
+    res = client.post('/api/playlists', json={"playlists": "not-a-list"})
+    assert res.status_code == 400
+
+
 def test_post_inventory_writes_snapshot(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

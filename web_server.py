@@ -484,6 +484,58 @@ def get_playlists_delta():
     })
 
 
+@app.route("/api/playlists", methods=["POST"])
+def post_playlists():
+    """Accept playlists pushed from a satellite (write-anywhere semantics).
+
+    Body: { "playlists": [ {playlist_id, name, spotify_url, updated_at,
+                            tracks: [{track_mbid, track_order}, ...]}, ... ] }
+
+    Merge strategy is last-writer-wins by updated_at. Rows with updated_at
+    no newer than the local copy are rejected as 'stale' and the caller
+    gets a per-row verdict so it can confirm what landed.
+
+    Response: { success, received, accepted, stale, skipped, results }
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    items = data.get("playlists") or []
+    if not isinstance(items, list):
+        return jsonify({"success": False, "message": "playlists must be a list"}), 400
+
+    accepted = 0
+    stale = 0
+    skipped = 0
+    results = []
+    try:
+        with DatabaseManager(config.db_path) as db:
+            for row in items:
+                action = db.apply_pushed_playlist_row(row)
+                if action in ("inserted", "updated"):
+                    accepted += 1
+                elif action == "stale":
+                    stale += 1
+                else:
+                    skipped += 1
+                results.append({
+                    "playlist_id": (row or {}).get("playlist_id"),
+                    "result": action,
+                })
+    except Exception as e:
+        logger.error(f"Playlist push apply failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "received": len(items),
+        "accepted": accepted,
+        "stale": stale,
+        "skipped": skipped,
+        "results": results,
+    })
+
+
 @app.route("/api/inventory", methods=["POST"])
 def post_inventory():
     """Accept a device's inventory snapshot (MBID → local_path map).
