@@ -108,7 +108,8 @@ class DatabaseManager:
                     release_mbid TEXT,
                     track_number INTEGER,
                     disc_number INTEGER,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    deleted_at TIMESTAMP
                 );
             """,
             "albums": """
@@ -123,7 +124,8 @@ class DatabaseManager:
                     playlist_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     spotify_url TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    deleted_at TIMESTAMP
                 );
             """,
             "playlist_tracks": """
@@ -202,6 +204,9 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN updated_at TIMESTAMP")
                 cursor.execute("UPDATE tracks SET updated_at = CURRENT_TIMESTAMP")
                 logger.info("Added column: tracks.updated_at (backfilled)")
+            if "deleted_at" not in cols:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN deleted_at TIMESTAMP")
+                logger.info("Added column: tracks.deleted_at")
 
             pl_cols = {
                 row[1]
@@ -211,6 +216,9 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE playlists ADD COLUMN updated_at TIMESTAMP")
                 cursor.execute("UPDATE playlists SET updated_at = CURRENT_TIMESTAMP")
                 logger.info("Added column: playlists.updated_at (backfilled)")
+            if "deleted_at" not in pl_cols:
+                cursor.execute("ALTER TABLE playlists ADD COLUMN deleted_at TIMESTAMP")
+                logger.info("Added column: playlists.deleted_at")
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Schema migration failed: {e}")
@@ -525,15 +533,87 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
-    def get_all_tracks(self, local_only: bool = False):
+    def get_all_tracks(self, local_only: bool = False, include_orphans: bool = False):
         sql = "SELECT * FROM tracks"
+        clauses = []
         if local_only:
-            sql += " WHERE local_path IS NOT NULL"
+            clauses.append("local_path IS NOT NULL")
+        if not include_orphans:
+            clauses.append("deleted_at IS NULL")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         cursor = self.conn.cursor()
         cursor.execute(sql)
         tracks = [self._row_to_track(row) for row in cursor.fetchall()]
         cursor.close()
         return tracks
+
+    def soft_delete_track(self, mbid: str) -> bool:
+        """Mark a track as deleted without removing the row.
+
+        Stamps ``deleted_at`` and bumps ``updated_at`` so the delta feed
+        carries the signal to satellites on their next pull. Returns True
+        if a row was stamped, False if no track matched.
+        """
+        if not mbid:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET deleted_at = CURRENT_TIMESTAMP, "
+            "updated_at = CURRENT_TIMESTAMP "
+            "WHERE mbid = ? AND deleted_at IS NULL",
+            (mbid,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def restore_track(self, mbid: str) -> bool:
+        """Un-soft-delete a track: clears deleted_at and bumps updated_at."""
+        if not mbid:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET deleted_at = NULL, "
+            "updated_at = CURRENT_TIMESTAMP "
+            "WHERE mbid = ? AND deleted_at IS NOT NULL",
+            (mbid,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def soft_delete_playlist(self, playlist_id: str) -> bool:
+        if not playlist_id:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, "
+            "updated_at = CURRENT_TIMESTAMP "
+            "WHERE playlist_id = ? AND deleted_at IS NULL",
+            (playlist_id,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def restore_playlist(self, playlist_id: str) -> bool:
+        if not playlist_id:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE playlists SET deleted_at = NULL, "
+            "updated_at = CURRENT_TIMESTAMP "
+            "WHERE playlist_id = ? AND deleted_at IS NOT NULL",
+            (playlist_id,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
 
     def get_catalog_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Return catalog-shape rows (device-agnostic fields + updated_at).
@@ -544,7 +624,7 @@ class DatabaseManager:
         """
         sql = (
             "SELECT mbid, title, artist, album, isrc, release_mbid, "
-            "track_number, disc_number, updated_at FROM tracks"
+            "track_number, disc_number, updated_at, deleted_at FROM tracks"
         )
         params: tuple = ()
         if since_iso:
@@ -575,8 +655,8 @@ class DatabaseManager:
         sql = """
         INSERT INTO tracks
             (mbid, title, artist, album, isrc, release_mbid,
-             track_number, disc_number, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+             track_number, disc_number, updated_at, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
         ON CONFLICT(mbid) DO UPDATE SET
             title = excluded.title,
             artist = excluded.artist,
@@ -585,7 +665,8 @@ class DatabaseManager:
             release_mbid = excluded.release_mbid,
             track_number = excluded.track_number,
             disc_number = excluded.disc_number,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            deleted_at = excluded.deleted_at
         """
         cursor.execute(
             sql,
@@ -599,6 +680,7 @@ class DatabaseManager:
                 row.get("track_number") or 0,
                 row.get("disc_number") or 1,
                 row.get("updated_at"),
+                row.get("deleted_at"),
             ),
         )
         self.conn.commit()
@@ -625,18 +707,20 @@ class DatabaseManager:
 
         cursor.execute(
             """
-            INSERT INTO playlists (playlist_id, name, spotify_url, updated_at)
-            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            INSERT INTO playlists (playlist_id, name, spotify_url, updated_at, deleted_at)
+            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
                 name = excluded.name,
                 spotify_url = excluded.spotify_url,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                deleted_at = excluded.deleted_at
             """,
             (
                 pid,
                 row.get("name") or "Untitled Playlist",
                 row.get("spotify_url") or "",
                 row.get("updated_at"),
+                row.get("deleted_at"),
             ),
         )
 
@@ -801,9 +885,12 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
-    def get_all_playlists(self):
+    def get_all_playlists(self, include_orphans: bool = False):
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM playlists")
+        if include_orphans:
+            cursor.execute("SELECT * FROM playlists")
+        else:
+            cursor.execute("SELECT * FROM playlists WHERE deleted_at IS NULL")
         playlists = [self._row_to_playlist(row) for row in cursor.fetchall()]
         cursor.close()
         return playlists
@@ -820,13 +907,13 @@ class DatabaseManager:
         cursor = self.conn.cursor()
         if since_iso:
             cursor.execute(
-                "SELECT playlist_id, name, spotify_url, updated_at "
+                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at "
                 "FROM playlists WHERE updated_at > ? ORDER BY updated_at ASC",
                 (since_iso,),
             )
         else:
             cursor.execute(
-                "SELECT playlist_id, name, spotify_url, updated_at "
+                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at "
                 "FROM playlists ORDER BY updated_at ASC"
             )
         playlists = [dict(row) for row in cursor.fetchall()]
@@ -841,7 +928,12 @@ class DatabaseManager:
         cursor.close()
         return playlists
 
-    def get_playlist_tracks(self, playlist_id: str, local_only: bool = False):
+    def get_playlist_tracks(
+        self,
+        playlist_id: str,
+        local_only: bool = False,
+        include_orphans: bool = False,
+    ):
         sql = (
             "SELECT t.* FROM tracks t "
             "JOIN playlist_tracks pt ON t.mbid = pt.track_mbid "
@@ -849,6 +941,8 @@ class DatabaseManager:
         )
         if local_only:
             sql += " AND t.local_path IS NOT NULL"
+        if not include_orphans:
+            sql += " AND t.deleted_at IS NULL"
         sql += " ORDER BY pt.track_order"
         cursor = self.conn.cursor()
         cursor.execute(sql, (playlist_id,))
@@ -856,8 +950,15 @@ class DatabaseManager:
         cursor.close()
         return tracks
 
-    def get_tracks_for_playlist(self, playlist_id: str, local_only: bool = False):
-        return self.get_playlist_tracks(playlist_id, local_only=local_only)
+    def get_tracks_for_playlist(
+        self,
+        playlist_id: str,
+        local_only: bool = False,
+        include_orphans: bool = False,
+    ):
+        return self.get_playlist_tracks(
+            playlist_id, local_only=local_only, include_orphans=include_orphans
+        )
 
     def link_track_to_playlist(self, playlist_id: str, track_mbid: str, order: int):
         cursor = self.conn.cursor()

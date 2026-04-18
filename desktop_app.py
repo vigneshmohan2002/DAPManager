@@ -279,6 +279,13 @@ class MainWindow(QMainWindow):
         self.catalog_only_checkbox.toggled.connect(lambda _: self._reload_tracks())
         toolbar.addWidget(self.catalog_only_checkbox)
 
+        self.show_orphans_checkbox = QCheckBox("Show orphans")
+        self.show_orphans_checkbox.setToolTip(
+            "Include tracks/playlists the master has soft-deleted but this device still has."
+        )
+        self.show_orphans_checkbox.toggled.connect(lambda _: self._refresh())
+        toolbar.addWidget(self.show_orphans_checkbox)
+
         splitter = QSplitter(Qt.Horizontal)
 
         self.playlist_list = QListWidget()
@@ -316,11 +323,19 @@ class MainWindow(QMainWindow):
         cb = getattr(self, "catalog_only_checkbox", None)
         return bool(cb and cb.isChecked())
 
+    def _show_orphans_enabled(self) -> bool:
+        cb = getattr(self, "show_orphans_checkbox", None)
+        return bool(cb and cb.isChecked())
+
     def _refresh(self):
+        include_orphans = self._show_orphans_enabled()
         try:
             with DatabaseManager(self.db_path) as db:
-                playlists = db.get_all_playlists()
-                tracks = db.get_all_tracks(local_only=not self._catalog_only_enabled())
+                playlists = db.get_all_playlists(include_orphans=include_orphans)
+                tracks = db.get_all_tracks(
+                    local_only=not self._catalog_only_enabled(),
+                    include_orphans=include_orphans,
+                )
         except Exception as e:
             QMessageBox.critical(self, "Database error", str(e))
             return
@@ -354,12 +369,17 @@ class MainWindow(QMainWindow):
             return
         pid = item.data(Qt.UserRole)
         local_only = not self._catalog_only_enabled()
+        include_orphans = self._show_orphans_enabled()
         try:
             with DatabaseManager(self.db_path) as db:
                 if pid == ALL_LIBRARY_ID:
-                    tracks = db.get_all_tracks(local_only=local_only)
+                    tracks = db.get_all_tracks(
+                        local_only=local_only, include_orphans=include_orphans
+                    )
                 else:
-                    tracks = db.get_tracks_for_playlist(pid, local_only=local_only)
+                    tracks = db.get_tracks_for_playlist(
+                        pid, local_only=local_only, include_orphans=include_orphans
+                    )
         except Exception as e:
             QMessageBox.critical(self, "Database error", str(e))
             return

@@ -427,6 +427,94 @@ def test_apply_playlist_row_skips_missing_playlist_id(db):
     assert db.apply_playlist_row({}) == "skipped"
 
 
+def test_soft_delete_track_marks_and_bumps(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    assert db.soft_delete_track("t1") is True
+    rows = db.get_catalog_since()
+    row = next(r for r in rows if r["mbid"] == "t1")
+    assert row["deleted_at"] is not None
+    # Repeat soft-delete is a no-op (already deleted).
+    assert db.soft_delete_track("t1") is False
+
+
+def test_soft_delete_track_hidden_by_default(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A", local_path="/a"))
+    db.soft_delete_track("t1")
+    assert db.get_all_tracks() == []
+    assert db.get_all_tracks(local_only=True) == []
+    assert [t.mbid for t in db.get_all_tracks(include_orphans=True)] == ["t1"]
+
+
+def test_restore_track_clears_deleted_at(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.soft_delete_track("t1")
+    assert db.restore_track("t1") is True
+    assert [t.mbid for t in db.get_all_tracks()] == ["t1"]
+    # Restore on a non-deleted track is a no-op.
+    assert db.restore_track("t1") is False
+
+
+def test_catalog_delta_carries_deletion(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    first_cursor = db.get_catalog_since()[-1]["updated_at"]
+    import time; time.sleep(1.1)
+    db.soft_delete_track("t1")
+    delta = db.get_catalog_since(first_cursor)
+    assert len(delta) == 1
+    assert delta[0]["mbid"] == "t1"
+    assert delta[0]["deleted_at"] is not None
+
+
+def test_apply_catalog_row_propagates_deleted_at(db):
+    db.apply_catalog_row({
+        "mbid": "t1", "title": "T", "artist": "A",
+        "updated_at": "2026-04-18 12:00:00",
+    })
+    assert [t.mbid for t in db.get_all_tracks()] == ["t1"]
+    # Master later sends a soft-delete.
+    db.apply_catalog_row({
+        "mbid": "t1", "title": "T", "artist": "A",
+        "updated_at": "2026-04-18 13:00:00",
+        "deleted_at": "2026-04-18 13:00:00",
+    })
+    assert db.get_all_tracks() == []
+    assert [t.mbid for t in db.get_all_tracks(include_orphans=True)] == ["t1"]
+
+
+def test_soft_delete_playlist_hidden_by_default(db):
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="X", spotify_url=""))
+    assert [p.playlist_id for p in db.get_all_playlists()] == ["p1"]
+    assert db.soft_delete_playlist("p1") is True
+    assert db.get_all_playlists() == []
+    assert [p.playlist_id for p in db.get_all_playlists(include_orphans=True)] == ["p1"]
+
+
+def test_get_playlist_tracks_hides_deleted_tracks_by_default(db):
+    db.add_or_update_track(Track(mbid="t1", title="A", artist="X", local_path="/a"))
+    db.add_or_update_track(Track(mbid="t2", title="B", artist="X", local_path="/b"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    db.link_track_to_playlist("p1", "t2", 1)
+    db.soft_delete_track("t2")
+    assert [t.mbid for t in db.get_playlist_tracks("p1")] == ["t1"]
+    assert {t.mbid for t in db.get_playlist_tracks("p1", include_orphans=True)} == {"t1", "t2"}
+
+
+def test_apply_playlist_row_propagates_deleted_at(db):
+    db.apply_playlist_row({
+        "playlist_id": "p1", "name": "Mix", "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00", "tracks": [],
+    })
+    assert [p.playlist_id for p in db.get_all_playlists()] == ["p1"]
+    db.apply_playlist_row({
+        "playlist_id": "p1", "name": "Mix", "spotify_url": "",
+        "updated_at": "2026-04-18 13:00:00",
+        "deleted_at": "2026-04-18 13:00:00",
+        "tracks": [],
+    })
+    assert db.get_all_playlists() == []
+
+
 def test_apply_pushed_playlist_row_inserts_when_absent(db):
     action = db.apply_pushed_playlist_row({
         "playlist_id": "p1",

@@ -446,6 +446,40 @@ def test_post_config_rejects_non_object(client, mock_config, tmp_path, monkeypat
     assert res.status_code == 400
 
 
+def test_soft_delete_track_route_stamps(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.soft_delete_track.return_value = True
+        res = client.delete('/api/tracks/abc123')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["deleted"] is True
+    assert data["mbid"] == "abc123"
+    mock_db.soft_delete_track.assert_called_once_with("abc123")
+
+
+def test_soft_delete_track_route_reports_no_op(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.soft_delete_track.return_value = False
+        res = client.delete('/api/tracks/missing')
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["deleted"] is False
+
+
+def test_soft_delete_playlist_route(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.soft_delete_playlist.return_value = True
+        res = client.delete('/api/playlists/p1')
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["deleted"] is True
+    mock_db.soft_delete_playlist.assert_called_once_with("p1")
+
+
 def test_get_playlists_delta_returns_rows(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

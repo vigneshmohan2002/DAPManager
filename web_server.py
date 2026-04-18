@@ -695,6 +695,38 @@ def post_inventory():
     })
 
 
+@app.route("/api/tracks/<mbid>", methods=["DELETE"])
+def soft_delete_track(mbid):
+    """Master-side soft-delete of a track by MBID.
+
+    Stamps deleted_at + bumps updated_at so the next catalog delta
+    carries the deletion to satellites. Satellites mark the row as
+    an orphan rather than hard-deleting.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            changed = db.soft_delete_track(mbid)
+    except Exception as e:
+        logger.error(f"soft_delete_track({mbid}) failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "deleted": changed, "mbid": mbid})
+
+
+@app.route("/api/playlists/<playlist_id>", methods=["DELETE"])
+def soft_delete_playlist_route(playlist_id):
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            changed = db.soft_delete_playlist(playlist_id)
+    except Exception as e:
+        logger.error(f"soft_delete_playlist({playlist_id}) failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "deleted": changed, "playlist_id": playlist_id})
+
+
 @app.route("/fleet")
 def fleet_page():
     """Master-side overview of which devices have what.
