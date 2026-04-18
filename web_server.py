@@ -123,6 +123,12 @@ def run_jellyfin_pull(db_path, conf, progress_callback=None):
         main_run_jellyfin_pull(db, conf._config, progress_callback=progress_callback)
 
 
+def run_catalog_pull(db_path, conf, progress_callback=None):
+    from src.catalog_sync import main_run_catalog_pull
+    with DatabaseManager(db_path) as db:
+        main_run_catalog_pull(db, conf._config, progress_callback=progress_callback)
+
+
 def run_batch():
     from manager import batch_sync
     batch_sync()
@@ -324,6 +330,22 @@ def jellyfin_pull():
         })
     success, msg = task_manager.start_task(
         run_jellyfin_pull, (config.db_path, config), "Jellyfin Pull"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/catalog/pull", methods=["POST"])
+def catalog_pull():
+    """Trigger a delta pull of the master's catalog into this replica."""
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    if not config.master_url:
+        return jsonify({
+            "success": False,
+            "message": "master_url not configured. Set master_url in config.json to the master DAPManager's base URL.",
+        })
+    success, msg = task_manager.start_task(
+        run_catalog_pull, (config.db_path, config), "Catalog Pull"
     )
     return jsonify({"success": success, "message": msg})
 

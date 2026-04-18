@@ -180,6 +180,27 @@ def test_get_catalog_with_since_filter(client, mock_config):
     mock_db.get_catalog_since.assert_called_once_with("2026-04-17 12:00:00")
 
 
+def test_catalog_pull_rejects_when_master_url_missing(client, mock_config):
+    mock_config.master_url = ""
+    res = client.post('/api/catalog/pull')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is False
+    assert "master_url" in data["message"]
+
+
+def test_catalog_pull_starts_task_when_configured(client, mock_config):
+    mock_config.master_url = "http://host.local:5001"
+    with patch('web_server.run_catalog_pull') as mock_run:
+        res = client.post('/api/catalog/pull')
+        # Let the spawned thread see a no-op target
+        mock_run.return_value = None
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+
+
 def test_post_suggestions_dedupes_within_payload(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
