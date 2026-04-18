@@ -190,6 +190,15 @@ class ConfigManager:
         return self.device_role == "master"
 
     @property
+    def master_url(self) -> str:
+        """Base URL of the master DAPManager (e.g. http://host.local:5001).
+
+        Empty on the master itself, and on satellites that haven't been
+        pointed at one yet. Trailing slashes are stripped.
+        """
+        return (self._config.get("master_url") or "").rstrip("/")
+
+    @property
     def jellyfin_enabled(self) -> bool:
         return bool(
             self._config.get("jellyfin_url")

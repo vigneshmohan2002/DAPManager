@@ -315,6 +315,30 @@ def test_device_identity_generated_on_first_run():
             ConfigManager._instance = None
 
 
+def test_master_url_defaults_empty_and_strips_trailing_slash():
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        _write_minimal_config(config_file)
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            assert get_config().master_url == ""
+        finally:
+            ConfigManager._instance = None
+
+        _write_minimal_config(
+            config_file,
+            overrides={"master_url": "http://host.local:5001/"},
+        )
+        try:
+            assert get_config().master_url == "http://host.local:5001"
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
 def test_device_identity_preserved_between_loads():
     ConfigManager._instance = None
     with tempfile.TemporaryDirectory() as temp_dir:
