@@ -182,3 +182,59 @@ def test_get_catalog_since_omits_local_only_fields(db):
     assert "local_path" not in rows[0]
     assert "dap_path" not in rows[0]
     assert "synced_to_dap" not in rows[0]
+
+
+def test_apply_catalog_row_inserts_new_track(db):
+    action = db.apply_catalog_row({
+        "mbid": "a1",
+        "title": "Catalog Song",
+        "artist": "Catalog Artist",
+        "album": "Catalog Album",
+        "isrc": "ISRC01",
+        "release_mbid": "r1",
+        "track_number": 3,
+        "disc_number": 1,
+        "updated_at": "2026-04-17 12:00:00",
+    })
+    assert action == "inserted"
+    track = db.get_track_by_mbid("a1")
+    assert track is not None
+    assert track.title == "Catalog Song"
+    assert track.local_path is None  # catalog row has no device presence
+
+
+def test_apply_catalog_row_preserves_local_path(db):
+    db.add_or_update_track(Track(
+        mbid="a1",
+        title="Stale Title",
+        artist="Stale Artist",
+        local_path="/music/a1.flac",
+        dap_path="/dap/a1.flac",
+        synced_to_dap=True,
+    ))
+    action = db.apply_catalog_row({
+        "mbid": "a1",
+        "title": "Fresh Title",
+        "artist": "Fresh Artist",
+        "updated_at": "2026-04-17 13:00:00",
+    })
+    assert action == "updated"
+    track = db.get_track_by_mbid("a1")
+    assert track.title == "Fresh Title"
+    assert track.local_path == "/music/a1.flac"
+    assert track.dap_path == "/dap/a1.flac"
+    assert track.synced_to_dap is True
+
+
+def test_apply_catalog_row_skips_when_mbid_missing(db):
+    assert db.apply_catalog_row({"title": "No MBID"}) == "skipped"
+    assert db.apply_catalog_row({}) == "skipped"
+
+
+def test_sync_state_roundtrip(db):
+    assert db.get_sync_state("last_catalog_sync") is None
+    db.set_sync_state("last_catalog_sync", "2026-04-17 12:00:00")
+    assert db.get_sync_state("last_catalog_sync") == "2026-04-17 12:00:00"
+    # overwrite
+    db.set_sync_state("last_catalog_sync", "2026-04-18 09:00:00")
+    assert db.get_sync_state("last_catalog_sync") == "2026-04-18 09:00:00"

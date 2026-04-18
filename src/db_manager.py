@@ -153,6 +153,12 @@ class DatabaseManager:
                     UNIQUE(mbid, file_path)
                 );
             """,
+            "sync_state": """
+                CREATE TABLE IF NOT EXISTS sync_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
+            """,
         }
 
         try:
@@ -512,6 +518,71 @@ class DatabaseManager:
         rows = [dict(row) for row in cursor.fetchall()]
         cursor.close()
         return rows
+
+    def apply_catalog_row(self, row: dict) -> str:
+        """Upsert a catalog row pulled from the master, preserving device-local
+        columns (local_path, dap_path, synced_to_dap).
+
+        Returns 'inserted' or 'updated' to indicate what happened. Rows missing
+        an ``mbid`` are skipped and return 'skipped'.
+        """
+        mbid = (row or {}).get("mbid")
+        if not mbid:
+            return "skipped"
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM tracks WHERE mbid = ?", (mbid,))
+        existed = cursor.fetchone() is not None
+
+        sql = """
+        INSERT INTO tracks
+            (mbid, title, artist, album, isrc, release_mbid,
+             track_number, disc_number, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        ON CONFLICT(mbid) DO UPDATE SET
+            title = excluded.title,
+            artist = excluded.artist,
+            album = excluded.album,
+            isrc = excluded.isrc,
+            release_mbid = excluded.release_mbid,
+            track_number = excluded.track_number,
+            disc_number = excluded.disc_number,
+            updated_at = excluded.updated_at
+        """
+        cursor.execute(
+            sql,
+            (
+                mbid,
+                row.get("title") or "Unknown Title",
+                row.get("artist") or "Unknown Artist",
+                row.get("album"),
+                row.get("isrc"),
+                row.get("release_mbid"),
+                row.get("track_number") or 0,
+                row.get("disc_number") or 1,
+                row.get("updated_at"),
+            ),
+        )
+        self.conn.commit()
+        cursor.close()
+        return "updated" if existed else "inserted"
+
+    def get_sync_state(self, key: str) -> Optional[str]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT value FROM sync_state WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        cursor.close()
+        return row["value"] if row else None
+
+    def set_sync_state(self, key: str, value: str):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO sync_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+        cursor.close()
 
     def get_all_playlists(self):
         cursor = self.conn.cursor()
