@@ -249,6 +249,21 @@ def test_add_or_update_playlist_preserves_membership(db):
     assert len(db.get_playlist_tracks("p1")) == 1
 
 
+def test_get_playlist_tracks_local_only_filters_ghost_rows(db):
+    """local_only=True must hide rows pulled from the master that this
+    device doesn't actually have on disk (local_path IS NULL)."""
+    db.add_or_update_track(
+        Track(mbid="have", title="T1", artist="A", local_path="/music/a.flac")
+    )
+    db.add_or_update_track(Track(mbid="ghost", title="T2", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "have", 0)
+    db.link_track_to_playlist("p1", "ghost", 1)
+
+    assert {t.mbid for t in db.get_playlist_tracks("p1")} == {"have", "ghost"}
+    assert {t.mbid for t in db.get_playlist_tracks("p1", local_only=True)} == {"have"}
+
+
 def test_add_or_update_playlist_sets_and_bumps_updated_at(db):
     import time
 

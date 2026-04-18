@@ -20,6 +20,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
@@ -271,6 +272,13 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
+        self.catalog_only_checkbox = QCheckBox("Show catalog-only")
+        self.catalog_only_checkbox.setToolTip(
+            "Include tracks the master catalog has but this device doesn't."
+        )
+        self.catalog_only_checkbox.toggled.connect(lambda _: self._reload_tracks())
+        toolbar.addWidget(self.catalog_only_checkbox)
+
         splitter = QSplitter(Qt.Horizontal)
 
         self.playlist_list = QListWidget()
@@ -304,11 +312,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status)
         self._refresh()
 
+    def _catalog_only_enabled(self) -> bool:
+        cb = getattr(self, "catalog_only_checkbox", None)
+        return bool(cb and cb.isChecked())
+
     def _refresh(self):
         try:
             with DatabaseManager(self.db_path) as db:
                 playlists = db.get_all_playlists()
-                tracks = db.get_all_tracks()
+                tracks = db.get_all_tracks(local_only=not self._catalog_only_enabled())
         except Exception as e:
             QMessageBox.critical(self, "Database error", str(e))
             return
@@ -328,17 +340,26 @@ class MainWindow(QMainWindow):
             f"{len(tracks)} tracks · {len(playlists)} playlists"
         )
 
+    def _reload_tracks(self):
+        """Re-query the currently selected playlist/library view."""
+        item = self.playlist_list.currentItem()
+        if item is None:
+            self._refresh()
+            return
+        self._on_playlist_selected()
+
     def _on_playlist_selected(self):
         item = self.playlist_list.currentItem()
         if not item:
             return
         pid = item.data(Qt.UserRole)
+        local_only = not self._catalog_only_enabled()
         try:
             with DatabaseManager(self.db_path) as db:
                 if pid == ALL_LIBRARY_ID:
-                    tracks = db.get_all_tracks()
+                    tracks = db.get_all_tracks(local_only=local_only)
                 else:
-                    tracks = db.get_tracks_for_playlist(pid)
+                    tracks = db.get_tracks_for_playlist(pid, local_only=local_only)
         except Exception as e:
             QMessageBox.critical(self, "Database error", str(e))
             return

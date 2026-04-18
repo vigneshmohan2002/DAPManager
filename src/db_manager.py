@@ -792,16 +792,23 @@ class DatabaseManager:
         cursor.close()
         return playlists
 
-    def get_playlist_tracks(self, playlist_id: str):
-        sql = "SELECT t.* FROM tracks t JOIN playlist_tracks pt ON t.mbid = pt.track_mbid WHERE pt.playlist_id = ? ORDER BY pt.track_order"
+    def get_playlist_tracks(self, playlist_id: str, local_only: bool = False):
+        sql = (
+            "SELECT t.* FROM tracks t "
+            "JOIN playlist_tracks pt ON t.mbid = pt.track_mbid "
+            "WHERE pt.playlist_id = ?"
+        )
+        if local_only:
+            sql += " AND t.local_path IS NOT NULL"
+        sql += " ORDER BY pt.track_order"
         cursor = self.conn.cursor()
         cursor.execute(sql, (playlist_id,))
         tracks = [self._row_to_track(row) for row in cursor.fetchall()]
         cursor.close()
         return tracks
 
-    def get_tracks_for_playlist(self, playlist_id: str):
-        return self.get_playlist_tracks(playlist_id)
+    def get_tracks_for_playlist(self, playlist_id: str, local_only: bool = False):
+        return self.get_playlist_tracks(playlist_id, local_only=local_only)
 
     def link_track_to_playlist(self, playlist_id: str, track_mbid: str, order: int):
         cursor = self.conn.cursor()
