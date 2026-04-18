@@ -259,6 +259,16 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(QAction("Suggest to Jellyfin", self, triggered=self._suggest_to_jellyfin))
         toolbar.addSeparator()
+        for label, handler in (
+            ("Pull Catalog", self._pull_catalog),
+            ("Pull Playlists", self._pull_playlists),
+            ("Push Playlists", self._push_playlists),
+            ("Report Inventory", self._report_inventory),
+        ):
+            action = QAction(label, self, triggered=handler)
+            toolbar.addAction(action)
+            self._task_actions.append(action)
+        toolbar.addSeparator()
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
         splitter = QSplitter(Qt.Horizontal)
@@ -769,6 +779,95 @@ class MainWindow(QMainWindow):
                 main_run_jellyfin_pull(db, cfg, progress_callback=progress_callback)
 
         self._run_worker("Pull from Jellyfin", task)
+
+    def _pull_catalog(self):
+        if not self.config.master_url:
+            QMessageBox.warning(
+                self,
+                "master_url not configured",
+                "Set 'master_url' in config.json to the master DAPManager's base URL "
+                "(e.g. http://jellyfin.local:5001).",
+            )
+            return
+
+        from src.catalog_sync import main_run_catalog_pull
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_catalog_pull(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Pull Catalog", task)
+
+    def _pull_playlists(self):
+        if not self.config.master_url:
+            QMessageBox.warning(
+                self,
+                "master_url not configured",
+                "Set 'master_url' in config.json to the master DAPManager's base URL.",
+            )
+            return
+
+        from src.catalog_sync import main_run_playlist_pull
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_playlist_pull(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Pull Playlists", task)
+
+    def _push_playlists(self):
+        if not self.config.master_url:
+            QMessageBox.warning(
+                self,
+                "master_url not configured",
+                "Set 'master_url' in config.json to the master DAPManager's base URL.",
+            )
+            return
+
+        from src.catalog_sync import main_run_playlist_push
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_playlist_push(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Push Playlists", task)
+
+    def _report_inventory(self):
+        if not self.config.report_inventory_to_host and not self.config.is_master:
+            QMessageBox.warning(
+                self,
+                "Inventory reporting disabled",
+                "Set 'report_inventory_to_host' to true in config.json to report "
+                "this device's inventory to the master.",
+            )
+            return
+        if not self.config.is_master and not self.config.master_url:
+            QMessageBox.warning(
+                self,
+                "master_url not configured",
+                "Set 'master_url' in config.json so this satellite can report inventory.",
+            )
+            return
+
+        from src.inventory_sync import main_run_inventory_report
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_inventory_report(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Report Inventory", task)
 
 
 def main():

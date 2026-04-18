@@ -174,6 +174,29 @@
                             Start Jellyfin Pull
                         </button>
                     </div>
+
+                    <div class="sync-group" style="margin-top: 15px;">
+                        <h3>Multi-Device Sync</h3>
+                        <div class="help-text" style="font-size:12px; color:#888; margin-bottom:8px;">
+                            Keep this device's catalog in sync with the master DAPManager. Pull the
+                            catalog first so playlist membership resolves. Requires <code>master_url</code> in config.
+                        </div>
+                        <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                            <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...')">
+                                Pull Catalog
+                            </button>
+                            <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...')">
+                                Pull Playlists
+                            </button>
+                            <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...')">
+                                Push Playlists
+                            </button>
+                            <button onclick="triggerAction('/api/inventory/report', 'Reporting inventory...')"
+                                title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
+                                Report Inventory
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </section>
 
