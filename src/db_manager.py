@@ -596,6 +596,61 @@ class DatabaseManager:
         cursor.close()
         return "updated" if existed else "inserted"
 
+    def apply_playlist_row(self, row: dict) -> str:
+        """Upsert a playlist (with its membership) pulled from the master.
+
+        The incoming ``tracks`` list is treated as the authoritative current
+        membership — existing rows for this playlist are cleared and
+        replaced. ``updated_at`` is taken from the payload so the satellite's
+        copy matches the master's timestamp.
+
+        Returns 'inserted', 'updated', or 'skipped' (no playlist_id).
+        """
+        pid = (row or {}).get("playlist_id")
+        if not pid:
+            return "skipped"
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT 1 FROM playlists WHERE playlist_id = ?", (pid,))
+        existed = cursor.fetchone() is not None
+
+        cursor.execute(
+            """
+            INSERT INTO playlists (playlist_id, name, spotify_url, updated_at)
+            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            ON CONFLICT(playlist_id) DO UPDATE SET
+                name = excluded.name,
+                spotify_url = excluded.spotify_url,
+                updated_at = excluded.updated_at
+            """,
+            (
+                pid,
+                row.get("name") or "Untitled Playlist",
+                row.get("spotify_url") or "",
+                row.get("updated_at"),
+            ),
+        )
+
+        # Replace membership atomically. Tracks the satellite hasn't synced
+        # yet are silently dropped — WHERE EXISTS guards the FK so we don't
+        # raise on rows referencing unknown MBIDs. They'll appear on a
+        # subsequent playlist sync once the track delta has caught up.
+        cursor.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (pid,))
+        for entry in row.get("tracks") or []:
+            mbid = entry.get("track_mbid") if isinstance(entry, dict) else None
+            if not mbid:
+                continue
+            order = entry.get("track_order", 0) if isinstance(entry, dict) else 0
+            cursor.execute(
+                "INSERT OR IGNORE INTO playlist_tracks "
+                "(playlist_id, track_mbid, track_order) "
+                "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM tracks WHERE mbid = ?)",
+                (pid, mbid, order, mbid),
+            )
+        self.conn.commit()
+        cursor.close()
+        return "updated" if existed else "inserted"
+
     def get_sync_state(self, key: str) -> Optional[str]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT value FROM sync_state WHERE key = ?", (key,))

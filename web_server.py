@@ -400,6 +400,36 @@ def get_catalog():
     })
 
 
+@app.route("/api/playlists", methods=["GET"])
+def get_playlists_delta():
+    """Return playlists (with full track membership) for replica sync.
+
+    Query params:
+      since: optional ISO-ish timestamp. Only playlists with
+             updated_at > since are returned.
+
+    Response shape mirrors /api/catalog:
+      { success, as_of, count, playlists: [...] }
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    since = request.args.get("since") or None
+    try:
+        with DatabaseManager(config.db_path) as db:
+            as_of = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+            rows = db.get_playlists_since(since)
+    except Exception as e:
+        logger.error(f"Playlist delta query failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "as_of": as_of,
+        "count": len(rows),
+        "playlists": rows,
+    })
+
+
 @app.route("/api/suggestions", methods=["POST"])
 def post_suggestions():
     """Accept track suggestions from a satellite device and queue them for download.

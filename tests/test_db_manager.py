@@ -349,6 +349,69 @@ def test_playlists_updated_at_migration_on_legacy_db():
             mgr.close()
 
 
+def test_apply_playlist_row_inserts_with_membership(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="A"))
+    action = db.apply_playlist_row({
+        "playlist_id": "p1",
+        "name": "Remote",
+        "spotify_url": "http://x",
+        "updated_at": "2026-04-18 12:00:00",
+        "tracks": [
+            {"track_mbid": "t1", "track_order": 0},
+            {"track_mbid": "t2", "track_order": 1},
+        ],
+    })
+    assert action == "inserted"
+    ts = db.get_playlist_tracks("p1")
+    assert [t.mbid for t in ts] == ["t1", "t2"]
+    # Master's updated_at should land on the row verbatim.
+    assert _playlist_updated_at(db, "p1") == "2026-04-18 12:00:00"
+
+
+def test_apply_playlist_row_replaces_membership_on_update(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="A"))
+    db.add_or_update_track(Track(mbid="t3", title="T3", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Local", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    db.link_track_to_playlist("p1", "t2", 1)
+
+    # Master says the playlist now only has t3 in it.
+    action = db.apply_playlist_row({
+        "playlist_id": "p1",
+        "name": "Local",
+        "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00",
+        "tracks": [{"track_mbid": "t3", "track_order": 0}],
+    })
+    assert action == "updated"
+    assert [t.mbid for t in db.get_playlist_tracks("p1")] == ["t3"]
+
+
+def test_apply_playlist_row_skips_unknown_track_mbids(db):
+    # Known track present, unknown one referenced.
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    action = db.apply_playlist_row({
+        "playlist_id": "p1",
+        "name": "X",
+        "spotify_url": "",
+        "updated_at": "2026-04-18 12:00:00",
+        "tracks": [
+            {"track_mbid": "t1", "track_order": 0},
+            {"track_mbid": "nonexistent", "track_order": 1},
+        ],
+    })
+    assert action == "inserted"
+    # FK constraint drops the unknown one (INSERT OR IGNORE falls through).
+    assert [t.mbid for t in db.get_playlist_tracks("p1")] == ["t1"]
+
+
+def test_apply_playlist_row_skips_missing_playlist_id(db):
+    assert db.apply_playlist_row({"name": "x"}) == "skipped"
+    assert db.apply_playlist_row({}) == "skipped"
+
+
 def test_sync_state_roundtrip(db):
     assert db.get_sync_state("last_catalog_sync") is None
     db.set_sync_state("last_catalog_sync", "2026-04-17 12:00:00")

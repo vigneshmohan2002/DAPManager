@@ -201,6 +201,45 @@ def test_catalog_pull_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_get_playlists_delta_returns_rows(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-18 12:00:00"}
+        mock_db.get_playlists_since.return_value = [
+            {
+                "playlist_id": "p1",
+                "name": "Mix",
+                "spotify_url": "",
+                "updated_at": "2026-04-18 11:00:00",
+                "tracks": [{"track_mbid": "m1", "track_order": 0}],
+            },
+        ]
+
+        res = client.get('/api/playlists?since=2026-04-18+10:00:00')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["as_of"] == "2026-04-18 12:00:00"
+    assert data["count"] == 1
+    assert data["playlists"][0]["name"] == "Mix"
+    mock_db.get_playlists_since.assert_called_once_with("2026-04-18 10:00:00")
+
+
+def test_get_playlists_delta_without_since(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-18 12:00:00"}
+        mock_db.get_playlists_since.return_value = []
+
+        res = client.get('/api/playlists')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["count"] == 0
+    mock_db.get_playlists_since.assert_called_once_with(None)
+
+
 def test_post_suggestions_dedupes_within_payload(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
