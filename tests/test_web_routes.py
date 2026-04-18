@@ -201,6 +201,26 @@ def test_catalog_pull_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_playlists_pull_rejects_when_master_url_missing(client, mock_config):
+    mock_config.master_url = ""
+    res = client.post('/api/playlists/pull')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is False
+    assert "master_url" in data["message"]
+
+
+def test_playlists_pull_starts_task_when_configured(client, mock_config):
+    mock_config.master_url = "http://host.local:5001"
+    with patch('web_server.run_playlist_pull') as mock_run:
+        res = client.post('/api/playlists/pull')
+        mock_run.return_value = None
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+
+
 def test_get_playlists_delta_returns_rows(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

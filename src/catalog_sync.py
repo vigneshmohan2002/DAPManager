@@ -25,6 +25,7 @@ from .db_manager import DatabaseManager
 logger = logging.getLogger(__name__)
 
 SYNC_STATE_KEY = "last_catalog_sync"
+PLAYLIST_SYNC_STATE_KEY = "last_playlist_sync"
 
 
 class CatalogClient:
@@ -138,6 +139,70 @@ class CatalogClient:
         return summary
 
 
+    def pull_playlists(self) -> dict:
+        """Pull the playlist delta and apply each one (full-membership replace).
+
+        Tracks must be pulled first — unknown track MBIDs on the satellite
+        get silently dropped from membership until a later pass picks them
+        up. Returns {received, inserted, updated, skipped, since, as_of}.
+        """
+        since = self.db.get_sync_state(PLAYLIST_SYNC_STATE_KEY)
+        self._report(
+            "Fetching playlist delta"
+            + (f" since {since}" if since else " (initial)")
+        )
+
+        params = {"since": since} if since else {}
+        resp = self.session.get(
+            f"{self.master_url}/api/playlists", params=params, timeout=self.timeout
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+        if not data.get("success"):
+            raise RuntimeError(
+                f"Master responded with failure: {data.get('message', 'unknown error')}"
+            )
+
+        playlists = data.get("playlists") or []
+        as_of = data.get("as_of")
+
+        inserted = 0
+        updated = 0
+        skipped = 0
+        total = len(playlists)
+        for i, pl in enumerate(playlists, 1):
+            action = self.db.apply_playlist_row(pl)
+            if action == "inserted":
+                inserted += 1
+            elif action == "updated":
+                updated += 1
+            else:
+                skipped += 1
+            if total and (i == total or i % 25 == 0):
+                self._report(
+                    f"Applying playlists ({i}/{total})",
+                    current=i,
+                    total=total,
+                )
+
+        if as_of:
+            self.db.set_sync_state(PLAYLIST_SYNC_STATE_KEY, as_of)
+
+        summary = {
+            "received": total,
+            "inserted": inserted,
+            "updated": updated,
+            "skipped": skipped,
+            "since": since,
+            "as_of": as_of,
+        }
+        self._report(
+            f"Playlist pull done: {inserted} new, {updated} updated, "
+            f"{skipped} skipped"
+        )
+        return summary
+
+
 def main_run_catalog_pull(
     db: DatabaseManager,
     config: dict,
@@ -151,3 +216,18 @@ def main_run_catalog_pull(
         progress_callback=progress_callback,
     )
     return client.pull()
+
+
+def main_run_playlist_pull(
+    db: DatabaseManager,
+    config: dict,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Pull only the playlist delta. Tracks should be pulled first."""
+    master_url = (config.get("master_url") or "").rstrip("/")
+    client = CatalogClient(
+        db=db,
+        master_url=master_url,
+        progress_callback=progress_callback,
+    )
+    return client.pull_playlists()

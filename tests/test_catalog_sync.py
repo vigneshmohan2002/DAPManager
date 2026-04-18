@@ -3,8 +3,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.catalog_sync import CatalogClient, SYNC_STATE_KEY, main_run_catalog_pull
-from src.db_manager import DatabaseManager, Track
+from src.catalog_sync import (
+    CatalogClient,
+    PLAYLIST_SYNC_STATE_KEY,
+    SYNC_STATE_KEY,
+    main_run_catalog_pull,
+    main_run_playlist_pull,
+)
+from src.db_manager import DatabaseManager, Playlist, Track
 
 
 @pytest.fixture
@@ -144,3 +150,63 @@ def test_main_run_catalog_pull_reads_master_url_from_config(db):
 def test_catalog_client_requires_master_url(db):
     with pytest.raises(ValueError):
         CatalogClient(db=db, master_url="")
+
+
+# ---------------------------------------------------------------------------
+# Playlist pull
+# ---------------------------------------------------------------------------
+
+def test_pull_playlists_applies_rows_and_advances_cursor(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True,
+        "as_of": "2026-04-18 12:00:00",
+        "count": 1,
+        "playlists": [{
+            "playlist_id": "p1",
+            "name": "Remote",
+            "spotify_url": "",
+            "updated_at": "2026-04-18 11:00:00",
+            "tracks": [{"track_mbid": "t1", "track_order": 0}],
+        }],
+    }
+    with patch.object(client.session, "get", return_value=_mock_response(payload)) as mock_get:
+        summary = client.pull_playlists()
+
+    assert mock_get.call_args.args[0] == "http://host.local:5001/api/playlists"
+    assert mock_get.call_args.kwargs["params"] == {}
+    assert summary["inserted"] == 1
+    assert summary["as_of"] == "2026-04-18 12:00:00"
+    assert db.get_sync_state(PLAYLIST_SYNC_STATE_KEY) == "2026-04-18 12:00:00"
+    assert [t.mbid for t in db.get_playlist_tracks("p1")] == ["t1"]
+
+
+def test_pull_playlists_uses_stored_cursor(db):
+    db.set_sync_state(PLAYLIST_SYNC_STATE_KEY, "2026-04-18 12:00:00")
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {"success": True, "as_of": "2026-04-18 13:00:00", "count": 0, "playlists": []}
+    with patch.object(client.session, "get", return_value=_mock_response(payload)) as mock_get:
+        client.pull_playlists()
+
+    assert mock_get.call_args.kwargs["params"] == {"since": "2026-04-18 12:00:00"}
+    assert db.get_sync_state(PLAYLIST_SYNC_STATE_KEY) == "2026-04-18 13:00:00"
+
+
+def test_pull_playlists_raises_on_failure_and_keeps_cursor(db):
+    db.set_sync_state(PLAYLIST_SYNC_STATE_KEY, "2026-04-18 12:00:00")
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {"success": False, "message": "boom"}
+    with patch.object(client.session, "get", return_value=_mock_response(payload)):
+        with pytest.raises(RuntimeError, match="boom"):
+            client.pull_playlists()
+    assert db.get_sync_state(PLAYLIST_SYNC_STATE_KEY) == "2026-04-18 12:00:00"
+
+
+def test_main_run_playlist_pull_uses_config_master_url(db):
+    config = {"master_url": "http://host.local:5001/"}
+    payload = {"success": True, "as_of": "2026-04-18 12:00:00", "count": 0, "playlists": []}
+    with patch("src.catalog_sync.requests.Session.get",
+               return_value=_mock_response(payload)) as mock_get:
+        main_run_playlist_pull(db, config)
+    assert mock_get.call_args.args[0] == "http://host.local:5001/api/playlists"
