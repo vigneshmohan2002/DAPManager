@@ -135,6 +135,12 @@ def run_playlist_pull(db_path, conf, progress_callback=None):
         main_run_playlist_pull(db, conf._config, progress_callback=progress_callback)
 
 
+def run_playlist_push(db_path, conf, progress_callback=None):
+    from src.catalog_sync import main_run_playlist_push
+    with DatabaseManager(db_path) as db:
+        main_run_playlist_push(db, conf._config, progress_callback=progress_callback)
+
+
 def run_inventory_report(db_path, conf, progress_callback=None):
     from src.inventory_sync import main_run_inventory_report
     with DatabaseManager(db_path) as db:
@@ -380,6 +386,22 @@ def inventory_report():
         })
     success, msg = task_manager.start_task(
         run_inventory_report, (config.db_path, config), "Inventory Report"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/playlists/push", methods=["POST"])
+def playlists_push():
+    """Push locally-edited playlists to the master."""
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    if not config.master_url:
+        return jsonify({
+            "success": False,
+            "message": "master_url not configured. Set master_url in config.json to the master DAPManager's base URL.",
+        })
+    success, msg = task_manager.start_task(
+        run_playlist_push, (config.db_path, config), "Playlist Push"
     )
     return jsonify({"success": success, "message": msg})
 

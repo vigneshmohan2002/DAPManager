@@ -5,10 +5,12 @@ import requests
 
 from src.catalog_sync import (
     CatalogClient,
+    PLAYLIST_PUSH_STATE_KEY,
     PLAYLIST_SYNC_STATE_KEY,
     SYNC_STATE_KEY,
     main_run_catalog_pull,
     main_run_playlist_pull,
+    main_run_playlist_push,
 )
 from src.db_manager import DatabaseManager, Playlist, Track
 
@@ -210,3 +212,89 @@ def test_main_run_playlist_pull_uses_config_master_url(db):
                return_value=_mock_response(payload)) as mock_get:
         main_run_playlist_pull(db, config)
     assert mock_get.call_args.args[0] == "http://host.local:5001/api/playlists"
+
+
+# ---------------------------------------------------------------------------
+# Playlist push
+# ---------------------------------------------------------------------------
+
+def test_push_playlists_sends_only_rows_after_cursor(db):
+    import time
+
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="old", name="Old", spotify_url=""))
+    db.link_track_to_playlist("old", "t1", 0)
+
+    cutoff = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+    db.set_sync_state(PLAYLIST_PUSH_STATE_KEY, cutoff)
+    time.sleep(1.1)
+
+    db.add_or_update_playlist(Playlist(playlist_id="new", name="New", spotify_url=""))
+    db.link_track_to_playlist("new", "t1", 0)
+
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True, "received": 1, "accepted": 1, "stale": 0, "skipped": 0,
+        "results": [{"playlist_id": "new", "result": "inserted"}],
+    }
+    with patch.object(client.session, "post", return_value=_mock_response(payload)) as mock_post:
+        summary = client.push_playlists()
+
+    sent = mock_post.call_args.kwargs["json"]["playlists"]
+    assert [p["playlist_id"] for p in sent] == ["new"]
+    assert summary["sent"] == 1
+    assert summary["accepted"] == 1
+    # Cursor advances
+    assert db.get_sync_state(PLAYLIST_PUSH_STATE_KEY) != cutoff
+
+
+def test_push_playlists_empty_advances_cursor_without_post(db):
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    with patch.object(client.session, "post") as mock_post:
+        summary = client.push_playlists()
+
+    mock_post.assert_not_called()
+    assert summary["sent"] == 0
+    assert db.get_sync_state(PLAYLIST_PUSH_STATE_KEY) is not None
+
+
+def test_push_playlists_raises_on_master_failure_keeps_cursor(db):
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="A", spotify_url=""))
+
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {"success": False, "message": "bad data"}
+    with patch.object(client.session, "post", return_value=_mock_response(payload)):
+        with pytest.raises(RuntimeError, match="bad data"):
+            client.push_playlists()
+    assert db.get_sync_state(PLAYLIST_PUSH_STATE_KEY) is None
+
+
+def test_push_playlists_sends_full_playlist_with_tracks(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="B"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    db.link_track_to_playlist("p1", "t2", 1)
+
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True, "received": 1, "accepted": 1, "stale": 0, "skipped": 0,
+        "results": [],
+    }
+    with patch.object(client.session, "post", return_value=_mock_response(payload)) as mock_post:
+        client.push_playlists()
+
+    sent = mock_post.call_args.kwargs["json"]["playlists"]
+    assert len(sent) == 1
+    assert sent[0]["playlist_id"] == "p1"
+    assert [t["track_mbid"] for t in sent[0]["tracks"]] == ["t1", "t2"]
+
+
+def test_main_run_playlist_push_uses_config_master_url(db):
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="A", spotify_url=""))
+    config = {"master_url": "http://host.local:5001/"}
+    payload = {"success": True, "received": 1, "accepted": 1, "stale": 0, "skipped": 0, "results": []}
+    with patch("src.catalog_sync.requests.Session.post",
+               return_value=_mock_response(payload)) as mock_post:
+        main_run_playlist_push(db, config)
+    assert mock_post.call_args.args[0] == "http://host.local:5001/api/playlists"

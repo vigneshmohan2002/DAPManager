@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 SYNC_STATE_KEY = "last_catalog_sync"
 PLAYLIST_SYNC_STATE_KEY = "last_playlist_sync"
+PLAYLIST_PUSH_STATE_KEY = "last_playlist_push"
 
 
 class CatalogClient:
@@ -48,11 +49,13 @@ class CatalogClient:
 
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
+        # POST retries are safe: the push endpoint is idempotent under
+        # last-writer-wins, so a retried duplicate is a no-op.
         retries = Retry(
             total=3,
             backoff_factor=1.0,
             status_forcelist=[500, 502, 503, 504],
-            allowed_methods=frozenset(["GET"]),
+            allowed_methods=frozenset(["GET", "POST"]),
         )
         self.session.mount("http://", HTTPAdapter(max_retries=retries))
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
@@ -203,6 +206,70 @@ class CatalogClient:
         return summary
 
 
+    def push_playlists(self) -> dict:
+        """Push locally-edited playlists to the master.
+
+        Selects playlists with updated_at > last_playlist_push, POSTs them
+        in one batch, and on success advances the cursor to the snapshot
+        time taken at the start of the push. Edits that landed mid-push
+        keep an updated_at > snapshot so they get picked up next round.
+
+        The master applies last-writer-wins, so retrying a push after a
+        network blip is safe — stale duplicates just come back as 'stale'.
+
+        Returns {sent, accepted, stale, skipped, since, as_of}.
+        """
+        last_push = self.db.get_sync_state(PLAYLIST_PUSH_STATE_KEY)
+        snapshot = self.db.conn.execute(
+            "SELECT CURRENT_TIMESTAMP AS t"
+        ).fetchone()["t"]
+        rows = self.db.get_playlists_since(last_push)
+
+        if not rows:
+            # Still advance the cursor so we don't keep re-scanning the
+            # same (empty) window.
+            self.db.set_sync_state(PLAYLIST_PUSH_STATE_KEY, snapshot)
+            self._report("No locally-edited playlists to push")
+            return {
+                "sent": 0,
+                "accepted": 0,
+                "stale": 0,
+                "skipped": 0,
+                "since": last_push,
+                "as_of": snapshot,
+            }
+
+        self._report(f"Pushing {len(rows)} playlist(s) to master")
+        resp = self.session.post(
+            f"{self.master_url}/api/playlists",
+            json={"playlists": rows},
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+        if not data.get("success"):
+            raise RuntimeError(
+                f"Master rejected playlist push: "
+                f"{data.get('message', 'unknown error')}"
+            )
+
+        self.db.set_sync_state(PLAYLIST_PUSH_STATE_KEY, snapshot)
+
+        summary = {
+            "sent": len(rows),
+            "accepted": int(data.get("accepted", 0)),
+            "stale": int(data.get("stale", 0)),
+            "skipped": int(data.get("skipped", 0)),
+            "since": last_push,
+            "as_of": snapshot,
+        }
+        self._report(
+            f"Playlist push done: {summary['accepted']} accepted, "
+            f"{summary['stale']} stale, {summary['skipped']} skipped"
+        )
+        return summary
+
+
 def main_run_catalog_pull(
     db: DatabaseManager,
     config: dict,
@@ -231,3 +298,18 @@ def main_run_playlist_pull(
         progress_callback=progress_callback,
     )
     return client.pull_playlists()
+
+
+def main_run_playlist_push(
+    db: DatabaseManager,
+    config: dict,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Push locally-edited playlists to the master."""
+    master_url = (config.get("master_url") or "").rstrip("/")
+    client = CatalogClient(
+        db=db,
+        master_url=master_url,
+        progress_callback=progress_callback,
+    )
+    return client.push_playlists()
