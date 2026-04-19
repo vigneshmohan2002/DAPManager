@@ -22,6 +22,7 @@ def config_exists():
 # Defer loading of modules that require config until we are sure it exists
 task_manager = None
 config = None
+sync_scheduler = None
 
 
 class TaskManager:
@@ -97,6 +98,25 @@ def init_app_logic():
     musicbrainz_client.configure(config.contact_email)
 
     task_manager = TaskManager()
+
+    _start_sync_scheduler()
+
+
+def _start_sync_scheduler():
+    """Kick off the periodic Sync All loop if configured."""
+    global sync_scheduler
+    from src.sync_scheduler import SyncScheduler
+
+    interval = int(config._config.get("sync_interval_seconds") or 0)
+    on_startup = bool(config._config.get("sync_on_startup") or False)
+
+    def _trigger():
+        task_manager.start_task(
+            run_sync_all, (config.db_path, config), "Sync All (scheduled)"
+        )
+
+    sync_scheduler = SyncScheduler(interval, _trigger, run_on_startup=on_startup)
+    sync_scheduler.start()
 
 
 # Helper wrappers (need to be defined or redefined after init)
@@ -276,6 +296,8 @@ CONFIG_EDITABLE_KEYS = {
     "device_role",
     "report_inventory_to_host",
     "is_master",
+    "sync_interval_seconds",
+    "sync_on_startup",
 }
 
 
