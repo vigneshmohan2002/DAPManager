@@ -45,6 +45,13 @@
         .close:hover {
             color: #fff;
         }
+
+        .sync-cursor {
+            font-size: 11px;
+            color: #9ad;
+            margin-left: 4px;
+            font-weight: normal;
+        }
     </style>
 </head>
 
@@ -181,19 +188,23 @@
                             Keep this device's catalog in sync with the master DAPManager. Pull the
                             catalog first so playlist membership resolves. Requires <code>master_url</code> in config.
                         </div>
-                        <div style="display:flex; flex-wrap:wrap; gap:8px;">
-                            <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...')">
-                                Pull Catalog
+                        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                            <button onclick="triggerAction('/api/sync/all', 'Running full sync...'); setTimeout(loadSyncState, 2000);"
+                                style="background:#2a6; color:#fff; font-weight:bold;">
+                                Sync All
                             </button>
-                            <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...')">
-                                Pull Playlists
+                            <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...'); setTimeout(loadSyncState, 2000);">
+                                Pull Catalog <span class="sync-cursor" data-step="catalog_pull"></span>
                             </button>
-                            <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...')">
-                                Push Playlists
+                            <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...'); setTimeout(loadSyncState, 2000);">
+                                Pull Playlists <span class="sync-cursor" data-step="playlist_pull"></span>
                             </button>
-                            <button onclick="triggerAction('/api/inventory/report', 'Reporting inventory...')"
+                            <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...'); setTimeout(loadSyncState, 2000);">
+                                Push Playlists <span class="sync-cursor" data-step="playlist_push"></span>
+                            </button>
+                            <button onclick="triggerAction('/api/inventory/report', 'Reporting inventory...'); setTimeout(loadSyncState, 2000);"
                                 title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
-                                Report Inventory
+                                Report Inventory <span class="sync-cursor" data-step="inventory_report"></span>
                             </button>
                             <a href="/fleet" style="align-self:center; color:#8bd; margin-left:8px;">Fleet view →</a>
                         </div>
@@ -363,6 +374,41 @@
         }
 
         document.addEventListener('DOMContentLoaded', loadSettings);
+
+        async function loadSyncState() {
+            try {
+                const resp = await fetch('/api/sync/state');
+                const data = await resp.json();
+                if (!data.success) return;
+                for (const [step, ts] of Object.entries(data.state || {})) {
+                    const el = document.querySelector(`.sync-cursor[data-step="${step}"]`);
+                    if (!el) continue;
+                    el.textContent = ts ? `(${relativeTime(ts)})` : '(never)';
+                    el.title = ts || 'Never synced';
+                }
+            } catch (e) {
+                console.warn('sync state load failed', e);
+            }
+        }
+
+        function relativeTime(isoLike) {
+            // SQLite CURRENT_TIMESTAMP uses "YYYY-MM-DD HH:MM:SS" in UTC.
+            const iso = isoLike.replace(' ', 'T') + 'Z';
+            const then = Date.parse(iso);
+            if (isNaN(then)) return isoLike;
+            const diffSec = Math.round((Date.now() - then) / 1000);
+            if (diffSec < 5) return 'just now';
+            if (diffSec < 60) return `${diffSec}s ago`;
+            const diffMin = Math.round(diffSec / 60);
+            if (diffMin < 60) return `${diffMin}m ago`;
+            const diffHr = Math.round(diffMin / 60);
+            if (diffHr < 24) return `${diffHr}h ago`;
+            const diffDay = Math.round(diffHr / 24);
+            return `${diffDay}d ago`;
+        }
+
+        document.addEventListener('DOMContentLoaded', loadSyncState);
+        setInterval(loadSyncState, 30000);
 
         function updateStatus() {
             fetch('/api/status')

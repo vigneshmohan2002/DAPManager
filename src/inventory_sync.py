@@ -21,6 +21,8 @@ from .db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
+INVENTORY_REPORT_STATE_KEY = "last_inventory_report"
+
 
 def _build_items(db: DatabaseManager) -> list:
     return [
@@ -70,6 +72,7 @@ def main_run_inventory_report(
     if role == "master":
         _report(f"Recording own inventory ({len(items)} items)")
         written = db.replace_device_inventory(device_id, items)
+        _stamp_cursor(db)
         return {
             "mode": "local",
             "device_id": device_id,
@@ -95,9 +98,22 @@ def main_run_inventory_report(
             f"Master rejected inventory: {data.get('message', 'unknown error')}"
         )
 
+    _stamp_cursor(db)
     return {
         "mode": "remote",
         "device_id": device_id,
         "items": len(items),
         "written": int(data.get("written", 0)),
     }
+
+
+def _stamp_cursor(db: DatabaseManager) -> None:
+    """Persist the successful-report timestamp for the sync status widget."""
+    cursor = db.conn.cursor()
+    try:
+        row = cursor.execute("SELECT CURRENT_TIMESTAMP AS ts").fetchone()
+        ts = row["ts"] if row is not None else None
+    finally:
+        cursor.close()
+    if ts:
+        db.set_sync_state(INVENTORY_REPORT_STATE_KEY, ts)

@@ -469,6 +469,31 @@ def test_soft_delete_track_route_reports_no_op(client, mock_config):
     assert data["deleted"] is False
 
 
+def test_sync_all_starts_task(client, mock_config):
+    res = client.post('/api/sync/all')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+
+
+def test_sync_state_returns_four_cursors(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_sync_state.side_effect = lambda key: {
+            "last_catalog_sync": "2026-04-19 10:00:00",
+            "last_playlist_sync": "2026-04-19 10:01:00",
+            "last_playlist_push": None,
+            "last_inventory_report": "2026-04-19 10:02:00",
+        }[key]
+        res = client.get('/api/sync/state')
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["state"]["catalog_pull"] == "2026-04-19 10:00:00"
+    assert data["state"]["playlist_pull"] == "2026-04-19 10:01:00"
+    assert data["state"]["playlist_push"] is None
+    assert data["state"]["inventory_report"] == "2026-04-19 10:02:00"
+
+
 def test_soft_delete_playlist_route(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value

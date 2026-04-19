@@ -147,6 +147,12 @@ def run_inventory_report(db_path, conf, progress_callback=None):
         main_run_inventory_report(db, conf._config, progress_callback=progress_callback)
 
 
+def run_sync_all(db_path, conf, progress_callback=None):
+    from src.sync_all import main_run_sync_all
+    with DatabaseManager(db_path) as db:
+        main_run_sync_all(db, conf._config, progress_callback=progress_callback)
+
+
 def run_batch():
     from manager import batch_sync
     batch_sync()
@@ -527,6 +533,42 @@ def playlists_pull():
         run_playlist_pull, (config.db_path, config), "Playlist Pull"
     )
     return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/sync/all", methods=["POST"])
+def sync_all():
+    """Run pull catalog → pull playlists → push playlists → report inventory.
+
+    Steps that aren't applicable (master_url missing, inventory disabled)
+    are skipped rather than failing the run. Individual step errors are
+    captured per-step and don't stop the rest from running.
+    """
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    success, msg = task_manager.start_task(
+        run_sync_all, (config.db_path, config), "Sync All"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/sync/state", methods=["GET"])
+def sync_state():
+    """Return the four sync-cursor timestamps for the status widget."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    keys = {
+        "last_catalog_sync": "catalog_pull",
+        "last_playlist_sync": "playlist_pull",
+        "last_playlist_push": "playlist_push",
+        "last_inventory_report": "inventory_report",
+    }
+    try:
+        with DatabaseManager(config.db_path) as db:
+            state = {label: db.get_sync_state(k) for k, label in keys.items()}
+    except Exception as e:
+        logger.error(f"sync_state fetch failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "state": state})
 
 
 @app.route("/api/playlists/queue", methods=["POST"])

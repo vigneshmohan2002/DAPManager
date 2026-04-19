@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(QAction("Suggest to Jellyfin", self, triggered=self._suggest_to_jellyfin))
         toolbar.addSeparator()
         for label, handler in (
+            ("Sync All", self._sync_all),
             ("Pull Catalog", self._pull_catalog),
             ("Pull Playlists", self._pull_playlists),
             ("Push Playlists", self._push_playlists),
@@ -820,6 +821,18 @@ class MainWindow(QMainWindow):
                 main_run_jellyfin_pull(db, cfg, progress_callback=progress_callback)
 
         self._run_worker("Pull from Jellyfin", task)
+
+    def _sync_all(self):
+        from src.sync_all import main_run_sync_all
+
+        db_path = self.db_path
+        cfg = self.config._config
+
+        def task(progress_callback=None):
+            with DatabaseManager(db_path) as db:
+                main_run_sync_all(db, cfg, progress_callback=progress_callback)
+
+        self._run_worker("Sync All", task)
 
     def _pull_catalog(self):
         if not self.config.master_url:
