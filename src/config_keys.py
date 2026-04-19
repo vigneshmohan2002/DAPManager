@@ -17,6 +17,7 @@ SECRET_KEYS = frozenset({
     "jellyfin_api_key",
     "api_token",
     "acoustid_api_key",
+    "lidarr_api_key",
 })
 
 EDITABLE_KEYS = frozenset({
@@ -45,6 +46,11 @@ EDITABLE_KEYS = frozenset({
     "api_token",
     "acoustid_api_key",
     "contact_email",
+    "lidarr_enabled",
+    "lidarr_url",
+    "lidarr_api_key",
+    "lidarr_quality_profile_id",
+    "lidarr_root_folder_path",
 })
 
 BOOL_KEYS = frozenset({
@@ -55,6 +61,7 @@ BOOL_KEYS = frozenset({
     "report_inventory_to_host",
     "is_master",
     "sync_on_startup",
+    "lidarr_enabled",
 })
 
 # Ordered groups for UI rendering. Each entry: (label, [keys...]).
@@ -96,5 +103,12 @@ GROUPS = [
     ("Tagging (AcoustID / MusicBrainz)", [
         "acoustid_api_key",
         "contact_email",
+    ]),
+    ("Lidarr Sidecar (master only)", [
+        "lidarr_enabled",
+        "lidarr_url",
+        "lidarr_api_key",
+        "lidarr_quality_profile_id",
+        "lidarr_root_folder_path",
     ]),
 ]
