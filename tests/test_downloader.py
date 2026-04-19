@@ -155,11 +155,10 @@ def test_process_success_no_files(mock_walk, downloader, db):
     assert len(items) == 0
 
 
-@patch('src.downloader.AutoTagger')
 @patch('mutagen.File')
 @patch('shutil.move')
 @patch('os.walk')
-def test_process_success_with_files(mock_walk, mock_move, mock_mutagen, mock_autotagger, downloader, db):
+def test_process_success_with_files(mock_walk, mock_move, mock_mutagen, downloader, db):
     """Test processing success with files found."""
     # Setup mocks
     mock_walk.return_value = [("/tmp", [], ["test.flac"])]
@@ -167,22 +166,19 @@ def test_process_success_with_files(mock_walk, mock_move, mock_mutagen, mock_aut
     mock_audio.get.return_value = ['Test Artist']
     mock_mutagen.return_value = mock_audio
 
-    # Mock autotagger
-    mock_tagger = MagicMock()
-    mock_tagger.identify_and_tag.return_value = {
-        'artist': 'Test Artist',
-        'title': 'Test Song',
-        'album': 'Test Album',
-        'track_number': 1
-    }
-    downloader.auto_tagger = mock_tagger
-
-    # Create track-like object for path generation
-    track = MagicMock()
-    track.artist = "Test Artist"
-    track.album = "Test Album"
-    track.title = "Test Song"
-    track.track_number = 1
+    # Stub the auto-tag step so we don't hit AcoustID/MusicBrainz from tests.
+    downloader._auto_tag_file = MagicMock(
+        return_value=(
+            {
+                'artist': 'Test Artist',
+                'title': 'Test Song',
+                'album': 'Test Album',
+                'track_number': 1,
+            },
+            "green",
+            0.95,
+        )
+    )
 
     # Create download item
     item = DownloadItem(
@@ -197,6 +193,105 @@ def test_process_success_with_files(mock_walk, mock_move, mock_mutagen, mock_aut
     # Verify item was removed from queue
     items = db.get_all_downloads()
     assert len(items) == 0
+
+
+def _downloader_with_key(db, temp_dirs, scanner=None):
+    return Downloader(
+        db=db,
+        scanner=scanner or MagicMock(),
+        slsk_cmd_base=["slsk-batchdl"],
+        downloads_dir=temp_dirs["downloads"],
+        music_library_dir=temp_dirs["music_library"],
+        slsk_username="u",
+        slsk_password="p",
+        slsk_config={"acoustid_api_key": "KEY", "contact_email": "me@x"},
+    )
+
+
+def test_auto_tag_embedded_mbid_short_circuits_to_green(db, temp_dirs):
+    """A file that already carries an MBID must be treated as green
+    without hitting AcoustID at all."""
+    dl = _downloader_with_key(db, temp_dirs)
+    with patch.object(dl, "_file_has_embedded_mbid", return_value=True), \
+         patch("src.downloader.tag_service.identify_file") as mock_identify:
+        meta, tier, score = dl._auto_tag_file("/whatever.flac")
+    assert tier == "green"
+    assert meta is None    # caller falls back to the file's own tags
+    assert score is None
+    mock_identify.assert_not_called()
+
+
+def test_auto_tag_green_match_writes_tags(db, temp_dirs):
+    dl = _downloader_with_key(db, temp_dirs)
+    candidate = {
+        "score": 0.97,
+        "tier": "green",
+        "meta": {"artist": "A", "title": "T", "album": "Al"},
+    }
+    with patch.object(dl, "_file_has_embedded_mbid", return_value=False), \
+         patch("src.downloader.tag_service.identify_file", return_value=candidate), \
+         patch("src.downloader.tag_service.write_tags") as mock_write:
+        meta, tier, score = dl._auto_tag_file("/some.flac")
+    mock_write.assert_called_once_with("/some.flac", candidate["meta"])
+    assert tier == "green"
+    assert meta == candidate["meta"]
+    assert score == 0.97
+
+
+def test_auto_tag_yellow_match_does_not_write_and_flags(db, temp_dirs):
+    """Yellow must NOT auto-apply — the whole point of the flag."""
+    dl = _downloader_with_key(db, temp_dirs)
+    candidate = {
+        "score": 0.72,
+        "tier": "yellow",
+        "meta": {"artist": "A", "title": "T"},
+    }
+    with patch.object(dl, "_file_has_embedded_mbid", return_value=False), \
+         patch("src.downloader.tag_service.identify_file", return_value=candidate), \
+         patch("src.downloader.tag_service.write_tags") as mock_write:
+        meta, tier, score = dl._auto_tag_file("/some.flac")
+    mock_write.assert_not_called()
+    assert tier == "yellow"
+    assert meta is None
+    assert score == 0.72
+
+
+def test_auto_tag_red_match_does_not_write_and_flags(db, temp_dirs):
+    dl = _downloader_with_key(db, temp_dirs)
+    candidate = {
+        "score": 0.3, "tier": "red",
+        "meta": {"artist": "?", "title": "?"},
+    }
+    with patch.object(dl, "_file_has_embedded_mbid", return_value=False), \
+         patch("src.downloader.tag_service.identify_file", return_value=candidate), \
+         patch("src.downloader.tag_service.write_tags") as mock_write:
+        _, tier, _ = dl._auto_tag_file("/some.flac")
+    mock_write.assert_not_called()
+    assert tier == "red"
+
+
+def test_auto_tag_no_match_flags_red(db, temp_dirs):
+    dl = _downloader_with_key(db, temp_dirs)
+    with patch.object(dl, "_file_has_embedded_mbid", return_value=False), \
+         patch("src.downloader.tag_service.identify_file", return_value=None):
+        _, tier, score = dl._auto_tag_file("/some.flac")
+    assert tier == "red"
+    assert score is None
+
+
+def test_auto_tag_without_api_key_is_noop(db, temp_dirs):
+    dl = Downloader(
+        db=db, scanner=MagicMock(), slsk_cmd_base=["slsk-batchdl"],
+        downloads_dir=temp_dirs["downloads"],
+        music_library_dir=temp_dirs["music_library"],
+        slsk_username="u", slsk_password="p",
+        slsk_config={"acoustid_api_key": ""},
+    )
+    with patch.object(dl, "_file_has_embedded_mbid", return_value=False), \
+         patch("src.downloader.tag_service.identify_file") as mock_id:
+        meta, tier, score = dl._auto_tag_file("/some.flac")
+    assert (meta, tier, score) == (None, None, None)
+    mock_id.assert_not_called()
 
 
 def test_main_run_downloader(db, temp_dirs):

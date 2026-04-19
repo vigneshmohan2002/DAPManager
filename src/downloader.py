@@ -11,9 +11,7 @@ from typing import List
 from .db_manager import DatabaseManager, DownloadItem, Track
 from .library_scanner import LibraryScanner
 from .utils import write_mbid_to_file
-from .auto_tagger import AutoTagger
-
-# import mutagen # No longer needed, Picard lib handles tagging
+from . import tag_service
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +44,9 @@ class Downloader:
         self.slsk_username = slsk_username
         self.slsk_password = slsk_password
         self.slsk_config = slsk_config or {}
-        
-        # Initialize AutoTagger
-        self.auto_tagger = AutoTagger(
-            self.slsk_config.get("acoustid_api_key", ""),
-            contact=self.slsk_config.get("contact_email", ""),
-        )
+
+        self.acoustid_api_key = self.slsk_config.get("acoustid_api_key", "") or ""
+        self.contact_email = self.slsk_config.get("contact_email", "") or ""
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)
@@ -199,6 +194,92 @@ class Downloader:
             process.kill()
             raise
 
+    def _auto_tag_file(self, file_path: str):
+        """Picard-style auto-tag for a freshly-downloaded file.
+
+        Returns ``(meta, tier, score)`` where ``meta`` is the candidate
+        metadata dict (used downstream for the library sort path) or
+        None, ``tier`` is "green"/"yellow"/"red"/None, and ``score`` is
+        the AcoustID match score or None.
+
+        Policy:
+        * If the file already carries an MBID in its tags, trust it and
+          return tier="green" with no metadata dict — caller should fall
+          back to the file's on-disk tags for the sort path. No AcoustID
+          call.
+        * Otherwise fingerprint + lookup via ``tag_service``.
+          - green: apply tags, return tier="green".
+          - yellow/red: do NOT write tags; return tier so caller can flag
+            the track for manual review. Yellow is "probably right but
+            not confident" and still requires user confirmation.
+        * Any failure (no API key, API error, unreadable file) returns
+          ``(None, None, None)`` — the track proceeds with whatever tags
+          the downloader source provided.
+        """
+        if self._file_has_embedded_mbid(file_path):
+            logger.info(
+                "Embedded MBID found, treating as green: %s",
+                os.path.basename(file_path),
+            )
+            return None, "green", None
+
+        if not self.acoustid_api_key:
+            logger.debug("No AcoustID key configured; skipping auto-tag.")
+            return None, None, None
+
+        try:
+            candidate = tag_service.identify_file(
+                file_path, self.acoustid_api_key, self.contact_email
+            )
+        except Exception as e:
+            logger.error(f"Auto-tag identify failed: {e}")
+            return None, None, None
+
+        if not candidate:
+            logger.warning(
+                "No AcoustID match for %s — flagging red.",
+                os.path.basename(file_path),
+            )
+            return None, "red", None
+
+        tier = candidate.get("tier")
+        score = candidate.get("score")
+        meta = candidate.get("meta") or {}
+
+        if tier == "green":
+            try:
+                tag_service.write_tags(file_path, meta)
+                logger.info(
+                    "Auto-tagged (green, %.2f): %s — %s",
+                    score or 0.0, meta.get("artist", "?"), meta.get("title", "?"),
+                )
+                return meta, "green", score
+            except ValueError as e:
+                logger.info(f"Skipping tag write ({e})")
+                return None, "green", score
+            except Exception as e:
+                logger.error(f"Tag write failed: {e}")
+                return None, "green", score
+
+        logger.warning(
+            "Low-confidence match (%s, score=%.2f) for %s — not writing tags, "
+            "flagging for review.",
+            tier, score or 0.0, os.path.basename(file_path),
+        )
+        return None, tier, score
+
+    def _file_has_embedded_mbid(self, file_path: str) -> bool:
+        """Return True iff the audio file already has a MusicBrainz track ID."""
+        try:
+            from mediafile import MediaFile, UnreadableFileError
+            try:
+                f = MediaFile(file_path)
+            except (UnreadableFileError, OSError):
+                return False
+            return bool(f.mb_trackid)
+        except Exception:
+            return False
+
     def _process_failure(self, item: DownloadItem, error_msg: str):
         """Updates the database for a failed download attempt."""
         self.db.update_download_status(item.id, "failed")
@@ -278,20 +359,7 @@ class Downloader:
 
         for file_path in found_files:
             try:
-                # --- AUTO-TAGGING START ---
-                tagged_meta = None
-                try:
-                    logger.info(f"Auto-tagging: {os.path.basename(file_path)}")
-                    tagged_meta = self.auto_tagger.identify_and_tag(file_path)
-                    
-                    if tagged_meta:
-                        logger.info(f"Identified: {tagged_meta['artist']} - {tagged_meta['title']}")
-                    else:
-                        logger.warning(f"Could not identify {os.path.basename(file_path)}. Using fallback.")
-
-                except Exception as e:
-                    logger.error(f"Auto-tagging error: {e}")
-                # --- AUTO-TAGGING END ---
+                tagged_meta, tag_tier, tag_score = self._auto_tag_file(file_path)
 
                 # Fallback: Write MBID if we have it and tagging failed/skipped
                 # In Album Mode, we can't apply one Track MBID to all files.
@@ -359,9 +427,22 @@ class Downloader:
                      
                 shutil.move(file_path, dest_path)
                 logger.debug(f"Moved to: {dest_path}")
-                
-                # Final Scan
+
+                # Final Scan — this is what inserts the track row into the DB
+                # via read-from-file tags. We stamp the tier afterwards.
                 self.scanner._process_file(dest_path)
+
+                if tag_tier:
+                    scanned = self.db.get_track_by_path(dest_path)
+                    if scanned and scanned.mbid:
+                        self.db.set_track_tag_tier(
+                            scanned.mbid, tag_tier, tag_score
+                        )
+                        if tag_tier != "green":
+                            logger.warning(
+                                "Flagged for tag review (%s, score=%s): %s",
+                                tag_tier, tag_score, dest_path,
+                            )
 
             except Exception as e:
                 logger.error(f"Error processing file {file_path}: {e}")

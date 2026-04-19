@@ -124,6 +124,10 @@ class LibraryScanner:
                 self.db.update_album_metadata(f.mb_albumid, f.album, f.tracktotal)
                 self.resolved_albums.add(f.mb_albumid)
 
+            # An embedded MBID means the file has already been identified by
+            # MusicBrainz (Picard or a prior auto-tag run), so treat it as a
+            # green match without re-fingerprinting. Score stays None to
+            # distinguish "trust the tag" from "scored by AcoustID".
             track = Track(
                 mbid=mbid,
                 title=f.title or "Unknown",
@@ -133,6 +137,7 @@ class LibraryScanner:
                 release_mbid=f.mb_albumid,
                 track_number=f.track or 0,
                 disc_number=f.disc or 1,
+                tag_tier="green",
             )
 
             ext = self.db.get_track_by_mbid(mbid)
