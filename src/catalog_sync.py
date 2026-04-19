@@ -38,6 +38,7 @@ class CatalogClient:
         master_url: str,
         progress_callback: Optional[Callable[[dict], None]] = None,
         timeout: int = 30,
+        api_token: Optional[str] = None,
     ):
         if not master_url:
             raise ValueError("master_url is required to pull the catalog")
@@ -49,6 +50,8 @@ class CatalogClient:
 
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
+        if api_token:
+            self.session.headers["Authorization"] = f"Bearer {api_token}"
         # POST retries are safe: the push endpoint is idempotent under
         # last-writer-wins, so a retried duplicate is a no-op.
         retries = Retry(
@@ -281,6 +284,7 @@ def main_run_catalog_pull(
         db=db,
         master_url=master_url,
         progress_callback=progress_callback,
+        api_token=(config.get("api_token") or "").strip() or None,
     )
     return client.pull()
 
@@ -296,6 +300,7 @@ def main_run_playlist_pull(
         db=db,
         master_url=master_url,
         progress_callback=progress_callback,
+        api_token=(config.get("api_token") or "").strip() or None,
     )
     return client.pull_playlists()
 
@@ -311,5 +316,6 @@ def main_run_playlist_push(
         db=db,
         master_url=master_url,
         progress_callback=progress_callback,
+        api_token=(config.get("api_token") or "").strip() or None,
     )
     return client.push_playlists()

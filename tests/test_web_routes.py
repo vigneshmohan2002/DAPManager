@@ -2,7 +2,7 @@ import pytest
 import json
 from unittest.mock import patch, MagicMock
 from src.db_manager import DatabaseManager
-from web_server import build_suggestion_items
+from web_server import build_suggestion_items, TaskManager
 
 def test_api_status(client, mock_config):
     """Test the status endpoint returns correct structure."""
@@ -560,3 +560,63 @@ def test_post_suggestions_dedupes_within_payload(client, mock_config):
     assert data["received"] == 2
     assert data["queued"] == 1
     assert mock_db.queue_download.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# /api/* bearer-token auth (opt-in via api_token in config)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _token_config(monkeypatch):
+    """Install a config object with a real _config dict carrying api_token."""
+    import web_server
+    mock = MagicMock()
+    mock.db_path = ":memory:"
+    mock._config = {"api_token": "secret-xyz"}
+    monkeypatch.setattr(web_server, "config", mock)
+    monkeypatch.setattr(web_server, "task_manager", TaskManager())
+    return mock
+
+
+def test_api_requires_token_when_configured(client, _token_config):
+    res = client.get('/api/stats')
+    assert res.status_code == 401
+    data = res.get_json()
+    assert data["success"] is False
+    assert "bearer" in data["message"].lower()
+
+
+def test_api_rejects_wrong_token(client, _token_config):
+    res = client.get('/api/stats', headers={"Authorization": "Bearer nope"})
+    assert res.status_code == 401
+    assert "invalid" in res.get_json()["message"].lower()
+
+
+def test_api_accepts_correct_token(client, _token_config):
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('shutil.disk_usage') as mock_du:
+        mock_instance = MockDB.return_value.__enter__.return_value
+        mock_instance.get_library_stats.return_value = {
+            'tracks': 1, 'artists': 1, 'albums': 1, 'playlists': 0, 'incomplete_albums': 0
+        }
+        mock_du.return_value = (100*1024**3, 50*1024**3, 50*1024**3)
+        res = client.get('/api/stats', headers={"Authorization": "Bearer secret-xyz"})
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+
+
+def test_api_status_is_exempt_from_token(client, _token_config):
+    """Health checks must not require the token."""
+    res = client.get('/api/status')
+    assert res.status_code == 200
+
+
+def test_api_open_mode_when_token_empty(client, mock_config):
+    """Existing behavior: no token set => no auth enforced."""
+    res = client.get('/api/status')
+    assert res.status_code == 200
+
+
+def test_api_token_blocks_post_routes_too(client, _token_config):
+    res = client.post('/api/suggestions', json={"items": []})
+    assert res.status_code == 401

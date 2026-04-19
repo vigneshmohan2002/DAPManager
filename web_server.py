@@ -99,6 +99,13 @@ def init_app_logic():
 
     task_manager = TaskManager()
 
+    if not (config._config.get("api_token") or "").strip():
+        logger.warning(
+            "API running in open mode: no api_token set in config.json. "
+            "Any device on the network can hit /api/* endpoints. "
+            "Set api_token in the Settings card to lock this down."
+        )
+
     _start_sync_scheduler()
 
 
@@ -274,7 +281,7 @@ def setup():
     return render_template("setup.html")
 
 
-CONFIG_SECRET_KEYS = {"slsk_password", "jellyfin_api_key"}
+CONFIG_SECRET_KEYS = {"slsk_password", "jellyfin_api_key", "api_token"}
 CONFIG_EDITABLE_KEYS = {
     "music_library_path",
     "downloads_path",
@@ -298,7 +305,42 @@ CONFIG_EDITABLE_KEYS = {
     "is_master",
     "sync_interval_seconds",
     "sync_on_startup",
+    "api_token",
 }
+
+API_AUTH_EXEMPT_PATHS = {"/api/status"}
+
+
+@app.before_request
+def _check_api_token():
+    """Enforce Authorization: Bearer <token> on /api/* when api_token is set.
+
+    Open mode (no token in config) keeps current behavior for LAN-only setups;
+    a warning is logged at init time so the operator knows it's unauthenticated.
+    /api/status is exempt so health checks don't need the header.
+    """
+    import hmac
+
+    if not request.path.startswith("/api/"):
+        return None
+    if request.path in API_AUTH_EXEMPT_PATHS:
+        return None
+    if config is None:
+        return None
+    cfg_dict = getattr(config, "_config", None)
+    if not isinstance(cfg_dict, dict):
+        return None
+    token = (cfg_dict.get("api_token") or "").strip()
+    if not token:
+        return None
+
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return jsonify({"success": False, "message": "missing bearer token"}), 401
+    provided = header[len("Bearer "):].strip()
+    if not hmac.compare_digest(provided, token):
+        return jsonify({"success": False, "message": "invalid api token"}), 401
+    return None
 
 
 @app.route("/api/config", methods=["GET"])

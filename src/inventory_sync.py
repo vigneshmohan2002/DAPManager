@@ -31,9 +31,11 @@ def _build_items(db: DatabaseManager) -> list:
     ]
 
 
-def _session() -> requests.Session:
+def _session(api_token: Optional[str] = None) -> requests.Session:
     s = requests.Session()
     s.headers.update({"Accept": "application/json", "Content-Type": "application/json"})
+    if api_token:
+        s.headers["Authorization"] = f"Bearer {api_token}"
     retries = Retry(
         total=3,
         backoff_factor=1.0,
@@ -85,7 +87,8 @@ def main_run_inventory_report(
         raise ValueError("master_url is required to report inventory from a satellite")
 
     _report(f"Reporting inventory to {master_url} ({len(items)} items)")
-    session = _session()
+    api_token = (config.get("api_token") or "").strip() or None
+    session = _session(api_token=api_token)
     resp = session.post(
         f"{master_url}/api/inventory",
         json={"device_id": device_id, "items": items},

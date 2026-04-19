@@ -298,3 +298,15 @@ def test_main_run_playlist_push_uses_config_master_url(db):
                return_value=_mock_response(payload)) as mock_post:
         main_run_playlist_push(db, config)
     assert mock_post.call_args.args[0] == "http://host.local:5001/api/playlists"
+
+
+def test_catalog_client_sets_bearer_header_when_token_given(db):
+    client = CatalogClient(
+        db=db, master_url="http://host.local:5001", api_token="t0k3n"
+    )
+    assert client.session.headers.get("Authorization") == "Bearer t0k3n"
+
+
+def test_catalog_client_no_auth_header_without_token(db):
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    assert "Authorization" not in client.session.headers

@@ -92,6 +92,18 @@ def test_master_rejection_raises(db):
             main_run_inventory_report(db, config)
 
 
+def test_session_includes_bearer_header_when_token_given():
+    from src.inventory_sync import _session
+    s = _session(api_token="shared-secret")
+    assert s.headers.get("Authorization") == "Bearer shared-secret"
+
+
+def test_session_without_token_has_no_auth_header():
+    from src.inventory_sync import _session
+    s = _session(api_token=None)
+    assert "Authorization" not in s.headers
+
+
 def test_only_tracks_with_local_path_are_reported(db):
     # Track present locally
     db.add_or_update_track(Track(mbid="m1", title="T", artist="A", local_path="/a"))

@@ -27,7 +27,16 @@
       "Bash(xargs -I {} git show {} -- config.json)",
       "Bash(git remote *)",
       "Bash(git fetch *)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(rm -rf .venv)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/pip --version)",
+      "Bash(.venv/bin/python -c \"from PySide6.QtWidgets import QApplication; print\\('PySide6 OK'\\)\")",
+      "Bash(.venv/bin/python -m pytest tests/ -x --tb=short)",
+      "Bash(.venv/bin/python *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.gnu.org)"
     ]
   }
 }
