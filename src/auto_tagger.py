@@ -114,20 +114,11 @@ class AutoTagger:
             return None
 
     def _apply_tags(self, filepath: str, meta: dict):
-        """Applies metadata to FLAC/MP3 files."""
+        """Applies metadata across all supported containers via tag_service."""
+        from . import tag_service
         try:
-            if filepath.lower().endswith('.flac'):
-                audio = FLAC(filepath)
-                audio['title'] = meta['title']
-                audio['artist'] = meta['artist']
-                audio['album'] = meta['album']
-                audio['albumartist'] = meta['album_artist']
-                audio['date'] = meta['date']
-                audio['tracknumber'] = str(meta['track_number'])
-                audio['discnumber'] = str(meta['disc_number'])
-                audio['musicbrainz_recordingid'] = meta['mbid']
-                audio['musicbrainz_albumid'] = meta['release_mbid']
-                audio.save()
-            # Add MP3 support if needed (EasyID3)
+            tag_service.write_tags(filepath, meta)
+        except ValueError as e:
+            logger.info(f"Skipping tag write ({e})")
         except Exception as e:
             logger.error(f"Failed to write tags: {e}")

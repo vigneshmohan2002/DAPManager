@@ -23,13 +23,16 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QGroupBox,
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -301,6 +304,8 @@ class MainWindow(QMainWindow):
         self.track_view.setSelectionMode(QTableView.ExtendedSelection)
         self.track_view.setAlternatingRowColors(True)
         self.track_view.verticalHeader().setVisible(False)
+        self.track_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.track_view.customContextMenuRequested.connect(self._show_track_menu)
         header = self.track_view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
@@ -661,6 +666,98 @@ class MainWindow(QMainWindow):
                 tracks.append(self.track_model._tracks[row])
         return tracks
 
+    def _show_track_menu(self, pos):
+        selected = self._selected_tracks()
+        if not selected:
+            return
+        menu = QMenu(self.track_view)
+        menu.addAction(
+            QAction("Identify && Tag", self, triggered=self._identify_and_tag_selected)
+        )
+        menu.exec(self.track_view.viewport().mapToGlobal(pos))
+
+    def _identify_and_tag_selected(self):
+        """Picard-style identify+review+apply on each selected track.
+
+        Runs sequentially — AcoustID/MusicBrainz are rate-limited so
+        batching multi-threaded would be pointless. Green-tier matches
+        can be auto-applied via a checkbox in the dialog; yellow/red
+        require explicit Apply.
+        """
+        api_key = (self.config._config.get("acoustid_api_key") or "").strip()
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "Missing AcoustID key",
+                "Set acoustid_api_key in config (Settings → Tagging).",
+            )
+            return
+
+        contact = (self.config._config.get("contact_email") or "").strip()
+        tracks = [t for t in self._selected_tracks() if t.local_path]
+        if not tracks:
+            QMessageBox.information(
+                self,
+                "Nothing to identify",
+                "Select tracks that have a local file.",
+            )
+            return
+
+        from src import tag_service
+
+        for track in tracks:
+            try:
+                candidate = tag_service.identify_file(
+                    track.local_path, api_key, contact
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Identify failed", f"{track.title}: {e}"
+                )
+                continue
+            if candidate is None:
+                QMessageBox.information(
+                    self,
+                    "No match",
+                    f"AcoustID returned no match for\n{track.artist} — {track.title}",
+                )
+                continue
+
+            dlg = TagReviewDialog(self, track, candidate)
+            if dlg.exec() != QDialog.Accepted:
+                continue
+
+            meta = dlg.meta()
+            try:
+                container = tag_service.write_tags(track.local_path, meta)
+            except Exception as e:
+                QMessageBox.warning(self, "Write failed", str(e))
+                continue
+
+            try:
+                new_mbid = (meta.get("mbid") or "").strip() or track.mbid
+                with DatabaseManager(self.db_path) as db:
+                    if new_mbid != track.mbid:
+                        db.soft_delete_track(track.mbid)
+                    db.add_or_update_track(
+                        Track(
+                            mbid=new_mbid,
+                            title=meta.get("title") or track.title,
+                            artist=meta.get("artist") or track.artist,
+                            album=meta.get("album") or track.album,
+                            local_path=track.local_path,
+                        )
+                    )
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "DB update failed",
+                    f"Tags written to {container} file but DB update failed: {e}",
+                )
+                continue
+
+        self._refresh()
+
     def _resolve_duplicates(self):
         from src.clear_dupes import get_duplicates_for_ui, resolve_duplicates
 
@@ -922,6 +1019,89 @@ class MainWindow(QMainWindow):
                 main_run_inventory_report(db, cfg, progress_callback=progress_callback)
 
         self._run_worker("Report Inventory", task)
+
+
+TAG_TIER_COLORS = {"green": "#3fa34d", "yellow": "#d6a01d", "red": "#c0392b"}
+
+
+class TagReviewDialog(QDialog):
+    """Picard-style review: diff current vs candidate, colour the tier, Apply.
+
+    Caller fetches the candidate via ``tag_service.identify_file`` and
+    passes it here. On Accept, ``meta()`` returns the dict that should
+    be written (edited fields + the candidate's MBIDs). Green matches
+    default to the Apply button being focused so a single Enter press
+    commits them.
+    """
+
+    FIELDS = [
+        ("artist", "Artist"),
+        ("title", "Title"),
+        ("album", "Album"),
+        ("album_artist", "Album artist"),
+        ("date", "Date"),
+        ("track_number", "Track #"),
+        ("disc_number", "Disc #"),
+    ]
+
+    def __init__(self, parent, track, candidate: dict):
+        super().__init__(parent)
+        self.setWindowTitle(f"Identify: {track.artist} — {track.title}")
+        self._candidate = candidate
+
+        layout = QVBoxLayout(self)
+
+        tier = candidate.get("tier", "red")
+        score_pct = int(round(candidate.get("score", 0.0) * 100))
+        badge = QLabel(f"Match confidence: {score_pct}%  ({tier.upper()})")
+        badge.setStyleSheet(
+            f"background:{TAG_TIER_COLORS.get(tier, '#555')};"
+            "color:white;padding:6px 10px;border-radius:4px;font-weight:bold;"
+        )
+        layout.addWidget(badge)
+
+        current = candidate.get("current") or {}
+        meta = candidate.get("meta") or {}
+
+        form = QFormLayout()
+        self._inputs = {}
+        for key, label in self.FIELDS:
+            now = str(current.get(key, "") or "")
+            new = str(meta.get(key, "") or "")
+            changed = now and new and now != new
+            edit = QLineEdit(new)
+            if changed:
+                edit.setStyleSheet("background:#fff8d6;")
+            row_label = QLabel(f"{label}")
+            if now and now != new:
+                row_label.setToolTip(f"Currently: {now}")
+            form.addRow(row_label, edit)
+            self._inputs[key] = edit
+
+        layout.addLayout(form)
+
+        mbid_row = QLabel(
+            f"MBID: {meta.get('mbid', '')}\nRelease MBID: {meta.get('release_mbid', '')}"
+        )
+        mbid_row.setStyleSheet("color:#888;font-family:monospace;font-size:11px;")
+        layout.addWidget(mbid_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Apply | QDialogButtonBox.Cancel
+        )
+        apply_btn = buttons.button(QDialogButtonBox.Apply)
+        apply_btn.setText("Apply")
+        apply_btn.clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        if tier == "green":
+            apply_btn.setDefault(True)
+        layout.addWidget(buttons)
+
+    def meta(self) -> dict:
+        out = dict(self._candidate.get("meta") or {})
+        for key, _ in self.FIELDS:
+            out[key] = self._inputs[key].text()
+        return out
 
 
 def main():

@@ -281,7 +281,7 @@ def setup():
     return render_template("setup.html")
 
 
-CONFIG_SECRET_KEYS = {"slsk_password", "jellyfin_api_key", "api_token"}
+CONFIG_SECRET_KEYS = {"slsk_password", "jellyfin_api_key", "api_token", "acoustid_api_key"}
 CONFIG_EDITABLE_KEYS = {
     "music_library_path",
     "downloads_path",
@@ -306,6 +306,8 @@ CONFIG_EDITABLE_KEYS = {
     "sync_interval_seconds",
     "sync_on_startup",
     "api_token",
+    "acoustid_api_key",
+    "contact_email",
 }
 
 API_AUTH_EXEMPT_PATHS = {"/api/status"}
@@ -798,6 +800,109 @@ def post_inventory():
         "device_id": device_id,
         "received": len(items),
         "written": written,
+    })
+
+
+@app.route("/api/tag/identify/<mbid>", methods=["POST"])
+def tag_identify(mbid):
+    """Picard-style identify: fingerprint the local file, return a candidate.
+
+    Does not write anything. Response includes a colour tier
+    (green/yellow/red) so the UI can mirror Picard's confidence cues.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    api_key = (config._config.get("acoustid_api_key") or "").strip()
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "message": "acoustid_api_key not set in config.",
+        }), 400
+
+    from src import tag_service
+    with DatabaseManager(config.db_path) as db:
+        track = db.get_track_by_mbid(mbid)
+    if not track or not track.local_path:
+        return jsonify({
+            "success": False,
+            "message": "Track has no local_path — cannot fingerprint.",
+        }), 404
+
+    contact = (config._config.get("contact_email") or "").strip()
+    try:
+        candidate = tag_service.identify_file(track.local_path, api_key, contact)
+    except Exception as e:
+        logger.error(f"tag_identify failed for {mbid}: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    if not candidate:
+        return jsonify({
+            "success": True,
+            "candidate": None,
+            "message": "no match",
+            "current": tag_service.read_current_tags(track.local_path),
+        })
+
+    return jsonify({
+        "success": True,
+        "candidate": candidate,
+        "mbid": mbid,
+        "local_path": track.local_path,
+    })
+
+
+@app.route("/api/tag/apply/<mbid>", methods=["POST"])
+def tag_apply(mbid):
+    """Write tags to the local file and update the tracks row.
+
+    Request JSON: the ``meta`` dict from an earlier /identify call
+    (caller may have edited fields). On success the tracks row's
+    artist/title/album and mbid are updated so the catalog reflects
+    the corrected identity.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+
+    body = request.json or {}
+    meta = body.get("meta") or {}
+    if not isinstance(meta, dict) or not meta.get("title"):
+        return jsonify({"success": False, "message": "meta.title is required"}), 400
+
+    from src import tag_service
+    from src.db_manager import Track
+    with DatabaseManager(config.db_path) as db:
+        track = db.get_track_by_mbid(mbid)
+        if not track or not track.local_path:
+            return jsonify({
+                "success": False,
+                "message": "Track has no local_path — cannot tag.",
+            }), 404
+
+        try:
+            container = tag_service.write_tags(track.local_path, meta)
+        except ValueError as e:
+            return jsonify({"success": False, "message": str(e)}), 400
+        except Exception as e:
+            logger.error(f"tag_apply write failed for {mbid}: {e}", exc_info=True)
+            return jsonify({"success": False, "message": str(e)}), 500
+
+        new_mbid = (meta.get("mbid") or "").strip() or track.mbid
+        updated = Track(
+            mbid=new_mbid,
+            title=meta.get("title") or track.title,
+            artist=meta.get("artist") or track.artist,
+            album=meta.get("album") or track.album,
+            local_path=track.local_path,
+        )
+        if new_mbid != track.mbid:
+            db.soft_delete_track(track.mbid)
+        db.add_or_update_track(updated)
+
+    return jsonify({
+        "success": True,
+        "container": container,
+        "mbid": new_mbid,
+        "previous_mbid": track.mbid,
     })
 
 

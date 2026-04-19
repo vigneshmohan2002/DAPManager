@@ -337,17 +337,51 @@ already exists, just needs the new key added to
 
 ---
 
+### 9. Picard-style identify & tag
+
+**Problem.** Existing `auto_tagger` runs post-download only, writes FLAC
+tags only, and never surfaces match confidence. Users can't select
+library rows and say "identify these" the way Picard lets you.
+
+**Surface.**
+- Desktop: right-click a track row → "Identify & Tag". Fingerprints the
+  local file via AcoustID, looks up MusicBrainz, shows a review dialog
+  with before/after diff, colour-coded confidence (green ≥0.9, yellow
+  0.5–0.9, red <0.5), Apply or Cancel.
+- Web: `POST /api/tag/identify/<mbid>` returns candidate + current tags
+  + tier; `POST /api/tag/apply/<mbid>` writes tags and updates the row.
+
+**Implementation.**
+- New module `src/tag_service.py` with `identify_file` (no writes) and
+  `write_tags` (cross-format: FLAC, MP3, Ogg Vorbis, M4A). `auto_tagger`
+  now delegates its `_apply_tags` to it so the downloader path gains
+  cross-format support for free.
+- On apply, if the returned MBID differs from the row's current MBID,
+  the old row is soft-deleted before the new row is upserted (so the
+  delta carries the corrected identity to satellites).
+
+**Schema.** None.
+
+**Effort delivered.** ~4 hours: tag_service + web routes + desktop
+context menu + review dialog + 20 tests.
+
+**Shipped.**
+
+---
+
 ## Suggested sequencing
 
-1. **#1 Sync All + status widget** — smallest, unlocks #2.
-2. **#2 Scheduled background sync** — trivial on top of #1.
+1. **#1 Sync All + status widget** — smallest, unlocks #2. _Done._
+2. **#2 Scheduled background sync** — trivial on top of #1. _Done._
 3. **#8 API auth tokens** — do before anyone runs DAPManager past the
-   LAN. Cheap and blocks nothing.
-4. **#3 Orphan cleanup page** — closes the soft-delete loop.
-5. **#4 Auto-link local files** — solves the "my pre-existing library
+   LAN. Cheap and blocks nothing. _Done._
+4. **#9 Picard-style identify & tag** — shipped out-of-band (user
+   request). _Done._
+5. **#3 Orphan cleanup page** — closes the soft-delete loop.
+6. **#4 Auto-link local files** — solves the "my pre-existing library
    doesn't show up" complaint.
-6. **#5 Download-from-catalog** — converts catalog-only view into a
+7. **#5 Download-from-catalog** — converts catalog-only view into a
    useful wishlist.
-7. **#6 Web track browser** — bigger project, do once the small stuff
+8. **#6 Web track browser** — bigger project, do once the small stuff
    is out of the way.
-8. **#7 Playlist editor** — needs #6 for the web half.
+9. **#7 Playlist editor** — needs #6 for the web half.

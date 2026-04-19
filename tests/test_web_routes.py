@@ -620,3 +620,139 @@ def test_api_open_mode_when_token_empty(client, mock_config):
 def test_api_token_blocks_post_routes_too(client, _token_config):
     res = client.post('/api/suggestions', json={"items": []})
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/tag/identify + /api/tag/apply (Picard-style tagging)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _tag_config(monkeypatch):
+    """Config with AcoustID key set, so the tag identify route can proceed."""
+    import web_server
+    mock = MagicMock()
+    mock.db_path = ":memory:"
+    mock._config = {"acoustid_api_key": "key-123", "contact_email": "t@t"}
+    monkeypatch.setattr(web_server, "config", mock)
+    monkeypatch.setattr(web_server, "task_manager", TaskManager())
+    return mock
+
+
+def test_tag_identify_requires_acoustid_key(client, mock_config):
+    mock_config._config = {}
+    res = client.post('/api/tag/identify/m1')
+    assert res.status_code == 400
+    assert "acoustid_api_key" in res.get_json()["message"]
+
+
+def test_tag_identify_404_when_track_has_no_local_path(client, _tag_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.local_path = None
+        mock_db.get_track_by_mbid.return_value = mock_track
+        res = client.post('/api/tag/identify/m1')
+    assert res.status_code == 404
+
+
+def test_tag_identify_returns_candidate(client, _tag_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.local_path = "/music/song.flac"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        candidate = {
+            "score": 0.95,
+            "tier": "green",
+            "meta": {"artist": "A", "title": "T", "album": "Alb", "mbid": "rec1"},
+            "current": {"title": "old"},
+        }
+        with patch('src.tag_service.identify_file', return_value=candidate):
+            res = client.post('/api/tag/identify/m1')
+
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["candidate"]["tier"] == "green"
+    assert data["candidate"]["meta"]["mbid"] == "rec1"
+
+
+def test_tag_identify_reports_no_match_gracefully(client, _tag_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.local_path = "/music/song.flac"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch('src.tag_service.identify_file', return_value=None):
+            with patch('src.tag_service.read_current_tags', return_value={"title": "old"}):
+                res = client.post('/api/tag/identify/m1')
+
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["candidate"] is None
+
+
+def test_tag_apply_writes_tags_and_updates_db(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.mbid = "m1"
+        mock_track.local_path = "/music/song.flac"
+        mock_track.title = "old title"
+        mock_track.artist = "old artist"
+        mock_track.album = "old album"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch('src.tag_service.write_tags', return_value="flac") as mock_write:
+            res = client.post('/api/tag/apply/m1', json={
+                "meta": {
+                    "title": "New", "artist": "Na",
+                    "album": "Nb", "mbid": "m1"
+                }
+            })
+
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["container"] == "flac"
+    mock_write.assert_called_once()
+    mock_db.add_or_update_track.assert_called_once()
+    mock_db.soft_delete_track.assert_not_called()  # same mbid
+
+
+def test_tag_apply_soft_deletes_old_row_when_mbid_changes(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.mbid = "old-m"
+        mock_track.local_path = "/music/song.flac"
+        mock_track.title = "t"
+        mock_track.artist = "a"
+        mock_track.album = "b"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch('src.tag_service.write_tags', return_value="flac"):
+            res = client.post('/api/tag/apply/old-m', json={
+                "meta": {"title": "T", "artist": "A", "mbid": "new-m"}
+            })
+
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["mbid"] == "new-m"
+    assert data["previous_mbid"] == "old-m"
+    mock_db.soft_delete_track.assert_called_once_with("old-m")
+
+
+def test_tag_apply_rejects_missing_title(client, mock_config):
+    res = client.post('/api/tag/apply/m1', json={"meta": {"artist": "A"}})
+    assert res.status_code == 400
+
+
+def test_tag_apply_404_when_no_local_path(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.local_path = None
+        mock_db.get_track_by_mbid.return_value = mock_track
+        res = client.post('/api/tag/apply/m1', json={"meta": {"title": "T"}})
+    assert res.status_code == 404
