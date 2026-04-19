@@ -709,7 +709,8 @@ def test_tag_apply_writes_tags_and_updates_db(client, mock_config):
                 "meta": {
                     "title": "New", "artist": "Na",
                     "album": "Nb", "mbid": "m1"
-                }
+                },
+                "score": 0.72,
             })
 
     data = res.get_json()
@@ -718,6 +719,27 @@ def test_tag_apply_writes_tags_and_updates_db(client, mock_config):
     mock_write.assert_called_once()
     mock_db.add_or_update_track.assert_called_once()
     mock_db.soft_delete_track.assert_not_called()  # same mbid
+    # Apply = user confirmation: clear the flag by stamping green.
+    mock_db.set_track_tag_tier.assert_called_once_with("m1", "green", 0.72)
+
+
+def test_tag_apply_stamps_green_without_score(client, mock_config):
+    """Score is optional in the apply body — tier should still go green."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.mbid = "m1"
+        mock_track.local_path = "/music/song.flac"
+        mock_track.title = "t"; mock_track.artist = "a"; mock_track.album = "b"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch('src.tag_service.write_tags', return_value="flac"):
+            res = client.post('/api/tag/apply/m1', json={
+                "meta": {"title": "T", "artist": "A", "mbid": "m1"}
+            })
+
+    assert res.get_json()["success"] is True
+    mock_db.set_track_tag_tier.assert_called_once_with("m1", "green", None)
 
 
 def test_tag_apply_soft_deletes_old_row_when_mbid_changes(client, mock_config):
@@ -756,3 +778,45 @@ def test_tag_apply_404_when_no_local_path(client, mock_config):
         mock_db.get_track_by_mbid.return_value = mock_track
         res = client.post('/api/tag/apply/m1', json={"meta": {"title": "T"}})
     assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/tracks/needs-review
+# ---------------------------------------------------------------------------
+
+def test_tracks_needs_review_returns_flagged_only(client, mock_config):
+    from src.db_manager import Track
+    flagged = [
+        Track(mbid="y", title="Y", artist="Ya", album="Ab",
+              local_path="/y.flac", tag_tier="yellow", tag_score=0.72),
+        Track(mbid="r", title="R", artist="Ra", album="Rb",
+              local_path="/r.flac", tag_tier="red", tag_score=0.3),
+    ]
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_tracks_needing_tag_review.return_value = flagged
+        res = client.get('/api/tracks/needs-review')
+
+    data = res.get_json()
+    assert res.status_code == 200
+    assert data["success"] is True
+    assert data["count"] == 2
+    mbids = {t["mbid"] for t in data["tracks"]}
+    assert mbids == {"y", "r"}
+    assert data["tracks"][0]["tag_tier"] == "yellow"
+    assert data["tracks"][0]["tag_score"] == 0.72
+
+
+def test_tracks_needs_review_empty_backlog(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_tracks_needing_tag_review.return_value = []
+        res = client.get('/api/tracks/needs-review')
+    data = res.get_json()
+    assert data == {"success": True, "count": 0, "tracks": []}
+
+
+def test_tracks_needs_review_401_when_token_set_and_missing(client, _token_config):
+    # /api/status is the only exempt path — this one should be gated.
+    res = client.get('/api/tracks/needs-review')
+    assert res.status_code == 401

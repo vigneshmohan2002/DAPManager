@@ -829,13 +829,12 @@ class MainWindow(QMainWindow):
                             local_path=track.local_path,
                         )
                     )
-                    # User just confirmed this match — clear the flag by
-                    # stamping the candidate's tier (typically green, but
-                    # honour whatever the user reviewed).
+                    # User hitting Apply *is* the confirmation, so stamp
+                    # green regardless of the auto-match tier. Keep the
+                    # AcoustID score around for context on why it was
+                    # originally flagged.
                     db.set_track_tag_tier(
-                        new_mbid,
-                        candidate.get("tier"),
-                        candidate.get("score"),
+                        new_mbid, "green", candidate.get("score")
                     )
             except Exception as e:
                 QMessageBox.warning(

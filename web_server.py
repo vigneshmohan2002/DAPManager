@@ -779,6 +779,37 @@ def post_inventory():
     })
 
 
+@app.route("/api/tracks/needs-review", methods=["GET"])
+def tracks_needs_review():
+    """Tracks whose last auto-tag was yellow or red — the user's review queue.
+
+    Response: { success, count, tracks: [{mbid, artist, album, title,
+                                          path, tag_tier, tag_score}] }
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            tracks = db.get_tracks_needing_tag_review()
+    except Exception as e:
+        logger.error(f"needs-review query failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    data = [
+        {
+            "mbid": t.mbid,
+            "artist": t.artist,
+            "album": t.album,
+            "title": t.title,
+            "path": t.local_path,
+            "tag_tier": t.tag_tier,
+            "tag_score": t.tag_score,
+        }
+        for t in tracks
+    ]
+    return jsonify({"success": True, "count": len(data), "tracks": data})
+
+
 @app.route("/api/tag/identify/<mbid>", methods=["POST"])
 def tag_identify(mbid):
     """Picard-style identify: fingerprint the local file, return a candidate.
@@ -873,6 +904,15 @@ def tag_apply(mbid):
         if new_mbid != track.mbid:
             db.soft_delete_track(track.mbid)
         db.add_or_update_track(updated)
+        # Apply == user confirmation, so clear the review flag. Optional
+        # `score` from the client (the original AcoustID score) is kept
+        # for context; absence just leaves it NULL.
+        score = body.get("score")
+        try:
+            score = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score = None
+        db.set_track_tag_tier(new_mbid, "green", score)
 
     return jsonify({
         "success": True,

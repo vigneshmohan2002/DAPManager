@@ -141,6 +141,19 @@
                         <div id="dupe-list"></div>
                     </div>
                 </div>
+
+                <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 15px;">
+                    <h3>Tag Review Queue</h3>
+                    <p style="color:#aaa; font-size:12px; margin:4px 0 8px;">
+                        Tracks the auto-tagger flagged as yellow or red. Identify to see
+                        the MusicBrainz candidate, then Apply to confirm.
+                    </p>
+                    <button onclick="loadTagReview()">Load Flagged Tracks</button>
+                    <div id="tag-review-container" style="margin-top:10px; display:none;">
+                        <p id="tag-review-status">Loading...</p>
+                        <div id="tag-review-list"></div>
+                    </div>
+                </div>
             </section>
 
             <section class="card">
@@ -590,6 +603,138 @@
                         alert('Error: ' + data.message);
                     }
                 });
+        }
+
+        // --- Tag Review Queue ---
+        const TAG_TIER_COLOURS = { green: '#3fa34d', yellow: '#d6a01d', red: '#c0392b' };
+
+        function loadTagReview() {
+            const container = document.getElementById('tag-review-container');
+            const list = document.getElementById('tag-review-list');
+            const status = document.getElementById('tag-review-status');
+            container.style.display = 'block';
+            status.textContent = 'Loading flagged tracks...';
+            list.innerHTML = '';
+
+            fetch('/api/tracks/needs-review')
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        status.textContent = 'Error: ' + (data.message || 'unknown');
+                        return;
+                    }
+                    if (!data.count) {
+                        status.textContent = 'Nothing flagged. All auto-tags are green.';
+                        return;
+                    }
+                    status.textContent = `${data.count} track(s) need review.`;
+                    data.tracks.forEach(t => list.appendChild(renderTagReviewRow(t)));
+                })
+                .catch(err => status.textContent = 'Network error: ' + err);
+        }
+
+        function renderTagReviewRow(t) {
+            const row = document.createElement('div');
+            row.className = 'tag-review-row';
+            row.dataset.mbid = t.mbid;
+            row.style.cssText = 'margin-bottom:10px; padding:10px; background:#2a2a2a; border:1px solid #444; border-radius:5px;';
+            const colour = TAG_TIER_COLOURS[t.tag_tier] || '#888';
+            const scoreTxt = t.tag_score != null ? ` (score ${Number(t.tag_score).toFixed(2)})` : '';
+            row.innerHTML = `
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="color:${colour}; font-size:18px;" title="${t.tag_tier}${scoreTxt}">●</span>
+                    <div style="flex:1;">
+                        <strong>${escapeHtml(t.artist || '?')} — ${escapeHtml(t.title || '?')}</strong>
+                        <div style="font-size:12px; color:#aaa;">${escapeHtml(t.album || '')}</div>
+                    </div>
+                    <button onclick="identifyTagRow('${t.mbid}')">Identify</button>
+                </div>
+                <div class="tag-review-candidate" style="display:none; margin-top:8px;"></div>
+            `;
+            return row;
+        }
+
+        function escapeHtml(s) {
+            return String(s || '').replace(/[&<>"']/g, c => ({
+                '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+            }[c]));
+        }
+
+        function identifyTagRow(mbid) {
+            const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
+            if (!row) return;
+            const panel = row.querySelector('.tag-review-candidate');
+            panel.style.display = 'block';
+            panel.innerHTML = '<em>Fingerprinting & looking up…</em>';
+
+            fetch(`/api/tag/identify/${encodeURIComponent(mbid)}`, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        panel.innerHTML = `<span style="color:#ff5252;">${escapeHtml(data.message)}</span>`;
+                        return;
+                    }
+                    if (!data.candidate) {
+                        panel.innerHTML = '<em>No AcoustID match. Fix manually on desktop or via a tag editor.</em>';
+                        return;
+                    }
+                    const c = data.candidate;
+                    const colour = TAG_TIER_COLOURS[c.tier] || '#888';
+                    const pct = Math.round((c.score || 0) * 100);
+                    const cur = c.current || {};
+                    const meta = c.meta || {};
+                    panel.innerHTML = `
+                        <div style="background:${colour}; color:white; padding:4px 8px; border-radius:3px; display:inline-block; font-weight:bold;">
+                            ${pct}% — ${c.tier.toUpperCase()}
+                        </div>
+                        <table style="width:100%; margin-top:8px; font-size:13px;">
+                            <tr><th style="text-align:left;">Field</th><th style="text-align:left;">Current</th><th style="text-align:left;">Candidate</th></tr>
+                            ${tagDiffRow('title', cur, meta)}
+                            ${tagDiffRow('artist', cur, meta)}
+                            ${tagDiffRow('album', cur, meta)}
+                            ${tagDiffRow('date', cur, meta)}
+                            ${tagDiffRow('track_number', cur, meta)}
+                            ${tagDiffRow('mbid', cur, meta)}
+                        </table>
+                        <div style="margin-top:8px;">
+                            <button onclick='applyTagRow("${mbid}", ${JSON.stringify(meta).replace(/"/g, '&quot;')}, ${c.score || 'null'})'>Apply</button>
+                            <button onclick='this.closest(".tag-review-candidate").style.display="none"'>Cancel</button>
+                        </div>
+                    `;
+                })
+                .catch(err => panel.innerHTML = `<span style="color:#ff5252;">Network error: ${err}</span>`);
+        }
+
+        function tagDiffRow(field, cur, meta) {
+            const c = cur[field] || '';
+            const m = meta[field] || '';
+            const changed = c !== m;
+            const color = changed ? '#d6a01d' : '#888';
+            return `<tr><td style="color:#aaa;">${field}</td><td>${escapeHtml(c)}</td><td style="color:${color};">${escapeHtml(m)}</td></tr>`;
+        }
+
+        function applyTagRow(mbid, meta, score) {
+            fetch(`/api/tag/apply/${encodeURIComponent(mbid)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ meta: meta, score: score }),
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.success) {
+                        alert('Apply failed: ' + data.message);
+                        return;
+                    }
+                    // Clear the row — tag is now green.
+                    const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
+                    if (row) row.remove();
+                    const remaining = document.querySelectorAll('.tag-review-row').length;
+                    const status = document.getElementById('tag-review-status');
+                    status.textContent = remaining
+                        ? `${remaining} track(s) need review.`
+                        : 'Nothing flagged. All auto-tags are green.';
+                })
+                .catch(err => alert('Network error: ' + err));
         }
 
         function triggerSync() {
