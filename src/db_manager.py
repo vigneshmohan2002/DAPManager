@@ -35,6 +35,10 @@ class Track:
     release_mbid: Optional[str] = None
     track_number: int = 0
     disc_number: int = 1
+    # Auto-tag confidence recorded at write time. tier ∈ {green, yellow, red}
+    # or None for tracks that were never auto-tagged (legacy / manual import).
+    tag_tier: Optional[str] = None
+    tag_score: Optional[float] = None
 
     @property
     def safe_artist(self):
@@ -109,7 +113,9 @@ class DatabaseManager:
                     track_number INTEGER,
                     disc_number INTEGER,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    deleted_at TIMESTAMP
+                    deleted_at TIMESTAMP,
+                    tag_tier TEXT,
+                    tag_score REAL
                 );
             """,
             "albums": """
@@ -207,6 +213,12 @@ class DatabaseManager:
             if "deleted_at" not in cols:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN deleted_at TIMESTAMP")
                 logger.info("Added column: tracks.deleted_at")
+            if "tag_tier" not in cols:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN tag_tier TEXT")
+                logger.info("Added column: tracks.tag_tier")
+            if "tag_score" not in cols:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN tag_score REAL")
+                logger.info("Added column: tracks.tag_score")
 
             pl_cols = {
                 row[1]
@@ -233,10 +245,28 @@ class DatabaseManager:
         if track.local_path:
             track.local_path = os.path.normpath(track.local_path).replace("\\", "/")
 
+        # UPSERT (not REPLACE) so we can preserve tag_tier/tag_score when the
+        # caller doesn't know them — e.g. a library re-scan shouldn't wipe
+        # the tier recorded by the downloader.
         sql = """
-        INSERT OR REPLACE INTO tracks
-        (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap, release_mbid, track_number, disc_number, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO tracks
+        (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap,
+         release_mbid, track_number, disc_number, tag_tier, tag_score, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(mbid) DO UPDATE SET
+            title = excluded.title,
+            artist = excluded.artist,
+            album = excluded.album,
+            isrc = excluded.isrc,
+            local_path = excluded.local_path,
+            dap_path = excluded.dap_path,
+            synced_to_dap = excluded.synced_to_dap,
+            release_mbid = excluded.release_mbid,
+            track_number = excluded.track_number,
+            disc_number = excluded.disc_number,
+            tag_tier = COALESCE(excluded.tag_tier, tag_tier),
+            tag_score = COALESCE(excluded.tag_score, tag_score),
+            updated_at = CURRENT_TIMESTAMP
         """
         try:
             cursor = self.conn.cursor()
@@ -254,6 +284,8 @@ class DatabaseManager:
                     track.release_mbid,
                     track.track_number,
                     track.disc_number,
+                    track.tag_tier,
+                    track.tag_score,
                 ),
             )
             self.conn.commit()
@@ -263,6 +295,45 @@ class DatabaseManager:
         finally:
             if cursor:
                 cursor.close()
+
+    def set_track_tag_tier(
+        self, mbid: str, tier: Optional[str], score: Optional[float]
+    ) -> bool:
+        """Record the auto-tag confidence tier/score for an existing track.
+
+        Separate from ``add_or_update_track`` so the downloader can stamp
+        the tier *after* the scanner has inserted the row from the file's
+        on-disk tags. Returns True if a row was updated.
+        """
+        if not mbid:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET tag_tier = ?, tag_score = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
+            (tier, score, mbid),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def get_tracks_needing_tag_review(self) -> List[Track]:
+        """Tracks whose last auto-tag was yellow or red — user must review.
+
+        Excludes soft-deleted rows and tracks with no local file.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM tracks "
+            "WHERE tag_tier IN ('yellow', 'red') "
+            "AND local_path IS NOT NULL "
+            "AND deleted_at IS NULL "
+            "ORDER BY artist, album, track_number"
+        )
+        tracks = [self._row_to_track(row) for row in cursor.fetchall()]
+        cursor.close()
+        return tracks
 
     def get_track_by_mbid(self, mbid: str) -> Optional[Track]:
         sql = "SELECT * FROM tracks WHERE mbid = ?"
@@ -1034,6 +1105,8 @@ class DatabaseManager:
             release_mbid=row["release_mbid"],
             track_number=row["track_number"],
             disc_number=row["disc_number"],
+            tag_tier=row["tag_tier"] if "tag_tier" in row.keys() else None,
+            tag_score=row["tag_score"] if "tag_score" in row.keys() else None,
         )
 
     def _row_to_playlist(self, row):

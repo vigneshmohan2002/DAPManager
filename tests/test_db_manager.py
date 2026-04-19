@@ -669,3 +669,70 @@ def test_sync_state_roundtrip(db):
     # overwrite
     db.set_sync_state("last_catalog_sync", "2026-04-18 09:00:00")
     assert db.get_sync_state("last_catalog_sync") == "2026-04-18 09:00:00"
+
+
+def test_set_track_tag_tier_updates_row(db):
+    db.add_or_update_track(Track(mbid="m1", title="t", artist="a", local_path="/p"))
+    assert db.set_track_tag_tier("m1", "yellow", 0.72) is True
+    got = db.get_track_by_mbid("m1")
+    assert got.tag_tier == "yellow"
+    assert got.tag_score == pytest.approx(0.72)
+
+
+def test_set_track_tag_tier_missing_mbid_returns_false(db):
+    assert db.set_track_tag_tier("nope", "green", 0.99) is False
+
+
+def test_add_or_update_preserves_tag_tier_when_re_upserted(db):
+    # Downloader stamps tier...
+    db.add_or_update_track(Track(mbid="m1", title="t", artist="a", local_path="/p"))
+    db.set_track_tag_tier("m1", "green", 0.95)
+    # ...then a library rescan reinserts the same track without knowing the tier.
+    db.add_or_update_track(Track(mbid="m1", title="t2", artist="a", local_path="/p"))
+    got = db.get_track_by_mbid("m1")
+    assert got.title == "t2"            # other fields do update
+    assert got.tag_tier == "green"      # but the tier survives
+    assert got.tag_score == pytest.approx(0.95)
+
+
+def test_add_or_update_overwrites_tag_tier_when_provided(db):
+    db.add_or_update_track(Track(mbid="m1", title="t", artist="a", local_path="/p"))
+    db.set_track_tag_tier("m1", "yellow", 0.6)
+    # If a caller *does* pass a new tier (e.g. manual review confirms green),
+    # it should take effect.
+    db.add_or_update_track(Track(
+        mbid="m1", title="t", artist="a", local_path="/p",
+        tag_tier="green", tag_score=0.97,
+    ))
+    got = db.get_track_by_mbid("m1")
+    assert got.tag_tier == "green"
+    assert got.tag_score == pytest.approx(0.97)
+
+
+def test_get_tracks_needing_tag_review_filters_to_yellow_and_red(db):
+    db.add_or_update_track(Track(mbid="g", title="g", artist="a", local_path="/g"))
+    db.add_or_update_track(Track(mbid="y", title="y", artist="a", local_path="/y"))
+    db.add_or_update_track(Track(mbid="r", title="r", artist="a", local_path="/r"))
+    db.add_or_update_track(Track(mbid="n", title="n", artist="a", local_path="/n"))
+    db.set_track_tag_tier("g", "green", 0.95)
+    db.set_track_tag_tier("y", "yellow", 0.72)
+    db.set_track_tag_tier("r", "red", 0.3)
+    # 'n' left without a tier
+
+    flagged = db.get_tracks_needing_tag_review()
+    mbids = {t.mbid for t in flagged}
+    assert mbids == {"y", "r"}
+
+
+def test_get_tracks_needing_tag_review_excludes_soft_deleted(db):
+    db.add_or_update_track(Track(mbid="y", title="y", artist="a", local_path="/y"))
+    db.set_track_tag_tier("y", "yellow", 0.6)
+    db.soft_delete_track("y")
+    assert db.get_tracks_needing_tag_review() == []
+
+
+def test_get_tracks_needing_tag_review_excludes_tracks_without_local_file(db):
+    # Catalog-only rows (no local_path) aren't reviewable by the user.
+    db.add_or_update_track(Track(mbid="y", title="y", artist="a"))
+    db.set_track_tag_tier("y", "yellow", 0.6)
+    assert db.get_tracks_needing_tag_review() == []
