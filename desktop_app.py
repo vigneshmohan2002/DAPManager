@@ -191,7 +191,8 @@ class Worker(QObject):
 
 
 class TrackTableModel(QAbstractTableModel):
-    HEADERS = ["Title", "Artist", "Album", "#", "On DAP", "Path"]
+    HEADERS = ["Title", "Artist", "Album", "#", "Tag", "On DAP", "Path"]
+    COL_TAG = 4
 
     def __init__(self, tracks: Optional[List[Track]] = None):
         super().__init__()
@@ -204,22 +205,45 @@ class TrackTableModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.HEADERS)
 
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or role != Qt.DisplayRole:
+        if not index.isValid():
             return None
         t = self._tracks[index.row()]
         col = index.column()
-        if col == 0:
-            return t.title or ""
-        if col == 1:
-            return t.artist or ""
-        if col == 2:
-            return t.album or ""
-        if col == 3:
-            return str(t.track_number) if t.track_number else ""
-        if col == 4:
-            return "✓" if t.synced_to_dap else ""
-        if col == 5:
-            return t.local_path or ""
+
+        if role == Qt.DisplayRole:
+            if col == 0:
+                return t.title or ""
+            if col == 1:
+                return t.artist or ""
+            if col == 2:
+                return t.album or ""
+            if col == 3:
+                return str(t.track_number) if t.track_number else ""
+            if col == self.COL_TAG:
+                # Tier as a dot so the colour does the talking.
+                return "●" if t.tag_tier else ""
+            if col == 5:
+                return "✓" if t.synced_to_dap else ""
+            if col == 6:
+                return t.local_path or ""
+            return None
+
+        if role == Qt.ForegroundRole and col == self.COL_TAG and t.tag_tier:
+            from PySide6.QtGui import QColor
+            return QColor(TAG_TIER_COLORS.get(t.tag_tier, "#888"))
+
+        if role == Qt.ToolTipRole and col == self.COL_TAG and t.tag_tier:
+            score_txt = (
+                f" (score {t.tag_score:.2f})"
+                if isinstance(t.tag_score, (int, float)) else ""
+            )
+            if t.tag_tier == "green":
+                return f"Auto-tagged confidently{score_txt}"
+            return (
+                f"Auto-tag flagged as {t.tag_tier}{score_txt} — run Identify & Tag "
+                "to confirm."
+            )
+
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -295,6 +319,14 @@ class MainWindow(QMainWindow):
         self.show_orphans_checkbox.toggled.connect(lambda _: self._refresh())
         toolbar.addWidget(self.show_orphans_checkbox)
 
+        self.needs_review_checkbox = QCheckBox("Needs tag review")
+        self.needs_review_checkbox.setToolTip(
+            "Show only tracks whose auto-tag match was yellow or red. "
+            "Run Identify & Tag on each to confirm or fix."
+        )
+        self.needs_review_checkbox.toggled.connect(lambda _: self._reload_tracks())
+        toolbar.addWidget(self.needs_review_checkbox)
+
         splitter = QSplitter(Qt.Horizontal)
 
         self.playlist_list = QListWidget()
@@ -338,15 +370,22 @@ class MainWindow(QMainWindow):
         cb = getattr(self, "show_orphans_checkbox", None)
         return bool(cb and cb.isChecked())
 
+    def _needs_review_enabled(self) -> bool:
+        cb = getattr(self, "needs_review_checkbox", None)
+        return bool(cb and cb.isChecked())
+
     def _refresh(self):
         include_orphans = self._show_orphans_enabled()
         try:
             with DatabaseManager(self.db_path) as db:
                 playlists = db.get_all_playlists(include_orphans=include_orphans)
-                tracks = db.get_all_tracks(
-                    local_only=not self._catalog_only_enabled(),
-                    include_orphans=include_orphans,
-                )
+                if self._needs_review_enabled():
+                    tracks = db.get_tracks_needing_tag_review()
+                else:
+                    tracks = db.get_all_tracks(
+                        local_only=not self._catalog_only_enabled(),
+                        include_orphans=include_orphans,
+                    )
         except Exception as e:
             QMessageBox.critical(self, "Database error", str(e))
             return
@@ -381,9 +420,14 @@ class MainWindow(QMainWindow):
         pid = item.data(Qt.UserRole)
         local_only = not self._catalog_only_enabled()
         include_orphans = self._show_orphans_enabled()
+        needs_review = self._needs_review_enabled()
         try:
             with DatabaseManager(self.db_path) as db:
-                if pid == ALL_LIBRARY_ID:
+                if needs_review:
+                    # Review filter is library-wide; ignore the playlist scope
+                    # so the user can burn down the backlog in one list.
+                    tracks = db.get_tracks_needing_tag_review()
+                elif pid == ALL_LIBRARY_ID:
                     tracks = db.get_all_tracks(
                         local_only=local_only, include_orphans=include_orphans
                     )
@@ -784,6 +828,14 @@ class MainWindow(QMainWindow):
                             album=meta.get("album") or track.album,
                             local_path=track.local_path,
                         )
+                    )
+                    # User just confirmed this match — clear the flag by
+                    # stamping the candidate's tier (typically green, but
+                    # honour whatever the user reviewed).
+                    db.set_track_tag_tier(
+                        new_mbid,
+                        candidate.get("tier"),
+                        candidate.get("score"),
                     )
             except Exception as e:
                 QMessageBox.warning(

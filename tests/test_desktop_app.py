@@ -1,6 +1,10 @@
 """Tests for pure helpers in desktop_app (no Qt event loop required)."""
 
+from PySide6.QtCore import QModelIndex, Qt
+
 from desktop_app import (
+    TAG_TIER_COLORS,
+    TrackTableModel,
     compute_delete_paths,
     format_incomplete_album,
     parse_manual_suggestions,
@@ -111,3 +115,36 @@ def test_parse_manual_suggestions_free_form_falls_through_to_query():
 def test_parse_manual_suggestions_ignores_blank_and_comments():
     items = parse_manual_suggestions("\n# comment\nA - B\n   ")
     assert items == [{"artist": "A", "title": "B"}]
+
+
+def _tier_track(tier=None, score=None):
+    return Track(mbid="m", title="t", artist="a", tag_tier=tier, tag_score=score)
+
+
+def test_track_model_tag_column_blank_when_no_tier():
+    model = TrackTableModel([_tier_track()])
+    idx = model.index(0, TrackTableModel.COL_TAG)
+    assert model.data(idx, Qt.DisplayRole) == ""
+
+
+def test_track_model_tag_column_dot_with_tier_colour():
+    model = TrackTableModel([
+        _tier_track(tier="green", score=0.97),
+        _tier_track(tier="yellow", score=0.7),
+        _tier_track(tier="red", score=0.3),
+    ])
+    for row, tier in enumerate(("green", "yellow", "red")):
+        idx = model.index(row, TrackTableModel.COL_TAG)
+        assert model.data(idx, Qt.DisplayRole) == "●"
+        colour = model.data(idx, Qt.ForegroundRole)
+        # QColor.name() gives "#rrggbb"; compare case-insensitively.
+        assert colour is not None
+        assert colour.name().lower() == TAG_TIER_COLORS[tier].lower()
+
+
+def test_track_model_tag_column_tooltip_flags_non_green():
+    model = TrackTableModel([_tier_track(tier="yellow", score=0.72)])
+    idx = model.index(0, TrackTableModel.COL_TAG)
+    tooltip = model.data(idx, Qt.ToolTipRole)
+    assert "yellow" in tooltip.lower()
+    assert "0.72" in tooltip
