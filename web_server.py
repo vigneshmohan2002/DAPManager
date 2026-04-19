@@ -281,34 +281,10 @@ def setup():
     return render_template("setup.html")
 
 
-CONFIG_SECRET_KEYS = {"slsk_password", "jellyfin_api_key", "api_token", "acoustid_api_key"}
-CONFIG_EDITABLE_KEYS = {
-    "music_library_path",
-    "downloads_path",
-    "dap_mount_point",
-    "dap_music_dir_name",
-    "dap_playlist_dir_name",
-    "slsk_username",
-    "slsk_password",
-    "fast_search",
-    "remove_ft",
-    "desperate_mode",
-    "strict_quality",
-    "jellyfin_url",
-    "jellyfin_api_key",
-    "jellyfin_user_id",
-    "dap_manager_host_url",
-    "master_url",
-    "device_id",
-    "device_role",
-    "report_inventory_to_host",
-    "is_master",
-    "sync_interval_seconds",
-    "sync_on_startup",
-    "api_token",
-    "acoustid_api_key",
-    "contact_email",
-}
+from src.config_keys import (
+    EDITABLE_KEYS as CONFIG_EDITABLE_KEYS,
+    SECRET_KEYS as CONFIG_SECRET_KEYS,
+)
 
 API_AUTH_EXEMPT_PATHS = {"/api/status"}
 
