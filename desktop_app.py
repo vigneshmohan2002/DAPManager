@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHeaderView,
@@ -36,11 +37,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QPushButton,
     QRadioButton,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTableView,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -274,6 +278,7 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
             self._task_actions.append(action)
         toolbar.addSeparator()
+        toolbar.addAction(QAction("Settings…", self, triggered=self._open_settings))
         toolbar.addAction(QAction("Refresh", self, triggered=self._refresh))
 
         self.catalog_only_checkbox = QCheckBox("Show catalog-only")
@@ -657,6 +662,35 @@ class MainWindow(QMainWindow):
             f"Skipped (already queued): {result.get('skipped', 0)}",
         )
 
+    def _open_settings(self, focus_key: Optional[str] = None) -> bool:
+        """Open the Settings dialog. Returns True iff the user saved."""
+        dlg = SettingsDialog(self, focus_key=focus_key)
+        if dlg.exec() != QDialog.Accepted:
+            return False
+        # Reload the in-process config so the newly-saved values take effect.
+        from src.config_manager import ConfigManager
+        ConfigManager._instance = None
+        self.config = get_config()
+        self._refresh()
+        return True
+
+    def _prompt_fix_config(self, title: str, body: str, focus_key: str) -> bool:
+        """Ask whether to open Settings for a missing/misconfigured key.
+
+        Returns True if the user saved settings; False if they cancelled
+        out. Callers should re-check the relevant config value after.
+        """
+        resp = QMessageBox.question(
+            self,
+            title,
+            body,
+            QMessageBox.Open | QMessageBox.Cancel,
+            QMessageBox.Open,
+        )
+        if resp != QMessageBox.Open:
+            return False
+        return self._open_settings(focus_key=focus_key)
+
     def _selected_tracks(self) -> List[Track]:
         indexes = self.track_view.selectionModel().selectedRows()
         tracks = []
@@ -686,12 +720,15 @@ class MainWindow(QMainWindow):
         """
         api_key = (self.config._config.get("acoustid_api_key") or "").strip()
         if not api_key:
-            QMessageBox.warning(
-                self,
-                "Missing AcoustID key",
-                "Set acoustid_api_key in config (Settings → Tagging).",
-            )
-            return
+            if not self._prompt_fix_config(
+                title="AcoustID key required",
+                body="Tagging needs an AcoustID API key. Open Settings now to add one?",
+                focus_key="acoustid_api_key",
+            ):
+                return
+            api_key = (self.config._config.get("acoustid_api_key") or "").strip()
+            if not api_key:
+                return
 
         contact = (self.config._config.get("contact_email") or "").strip()
         tracks = [t for t in self._selected_tracks() if t.local_path]
@@ -1019,6 +1056,126 @@ class MainWindow(QMainWindow):
                 main_run_inventory_report(db, cfg, progress_callback=progress_callback)
 
         self._run_worker("Report Inventory", task)
+
+
+CONFIG_FILE = "config.json"
+
+
+class SettingsDialog(QDialog):
+    """Card-style editor for config.json.
+
+    Mirrors the web Settings card: same groups, same editable keys, same
+    blank-means-keep semantics for secret fields. Writes the file
+    directly and reloads ``ConfigManager`` on save so in-process code
+    sees the new values without a restart.
+
+    Pass ``focus_key`` to jump straight to a specific field (e.g. when
+    an action blocks because ``acoustid_api_key`` is missing).
+    """
+
+    def __init__(self, parent, focus_key: Optional[str] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.resize(560, 520)
+        self._inputs = {}
+
+        import json
+        from src.config_keys import GROUPS, SECRET_KEYS, BOOL_KEYS
+
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                current = json.load(f)
+        except FileNotFoundError:
+            current = {}
+        self._current = current
+        self._secret_keys = SECRET_KEYS
+        self._bool_keys = BOOL_KEYS
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(QLabel(
+            "Blank secret fields keep their existing value. "
+            "Unlisted keys are preserved untouched."
+        ))
+
+        tabs = QTabWidget()
+        focus_widget = None
+        for label, keys in GROUPS:
+            page = QWidget()
+            form = QFormLayout(page)
+            for key in keys:
+                widget = self._make_widget(key, current.get(key))
+                self._inputs[key] = widget
+                form.addRow(self._nice_label(key), widget)
+                if key == focus_key:
+                    focus_widget = widget
+            tabs.addTab(page, label)
+            if focus_key in keys:
+                tabs.setCurrentWidget(page)
+        outer.addWidget(tabs, 1)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self._on_save)
+        btns.rejected.connect(self.reject)
+        outer.addWidget(btns)
+
+        if focus_widget is not None:
+            focus_widget.setFocus()
+
+    def _nice_label(self, key: str) -> str:
+        return key.replace("_", " ").replace(" url", " URL").title().replace("Id", "ID")
+
+    def _make_widget(self, key: str, value):
+        if key in self._bool_keys:
+            cb = QCheckBox()
+            cb.setChecked(bool(value))
+            return cb
+        if key == "sync_interval_seconds":
+            sb = QSpinBox()
+            sb.setRange(0, 86400)
+            sb.setSuffix(" sec")
+            sb.setValue(int(value or 0))
+            sb.setSpecialValueText("disabled")
+            return sb
+        if key in self._secret_keys:
+            le = QLineEdit()
+            le.setEchoMode(QLineEdit.Password)
+            le.setPlaceholderText("(leave blank to keep current)")
+            return le
+        le = QLineEdit()
+        le.setText("" if value is None else str(value))
+        return le
+
+    def _collect(self) -> dict:
+        out = {}
+        for key, widget in self._inputs.items():
+            if isinstance(widget, QCheckBox):
+                out[key] = widget.isChecked()
+            elif isinstance(widget, QSpinBox):
+                out[key] = int(widget.value())
+            else:  # QLineEdit
+                out[key] = widget.text()
+        return out
+
+    def _on_save(self):
+        import json
+        from src.config_keys import EDITABLE_KEYS
+
+        proposed = self._collect()
+        merged = dict(self._current)
+        for key, value in proposed.items():
+            if key not in EDITABLE_KEYS:
+                continue
+            if key in self._secret_keys and value == "":
+                continue
+            merged[key] = value
+
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(merged, f, indent=4)
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
+            return
+        self.accept()
 
 
 TAG_TIER_COLORS = {"green": "#3fa34d", "yellow": "#d6a01d", "red": "#c0392b"}
