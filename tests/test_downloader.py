@@ -313,3 +313,153 @@ def test_main_run_downloader(db, temp_dirs):
 
         mock_downloader_class.assert_called_once()
         mock_downloader.run_queue.assert_called_once()
+
+
+# --- Lidarr handoff -------------------------------------------------
+
+def _album_item(release_mbid="rel-mb", query="::ALBUM:: Artist - Album", item_id=1):
+    return DownloadItem(
+        id=item_id,
+        search_query=query,
+        playlist_id="COMPLETER",
+        mbid_guess=release_mbid,
+    )
+
+
+def _lidarr_ready_downloader(db, mock_scanner, temp_dirs):
+    lidarr = MagicMock()
+    return Downloader(
+        db=db,
+        scanner=mock_scanner,
+        slsk_cmd_base=["slsk-batchdl"],
+        downloads_dir=temp_dirs["downloads"],
+        music_library_dir=temp_dirs["music_library"],
+        slsk_username="u",
+        slsk_password="p",
+        lidarr_client=lidarr,
+        lidarr_quality_profile_id=3,
+        lidarr_root_folder_path="/music",
+    ), lidarr
+
+
+def test_try_lidarr_no_client_returns_false(downloader):
+    assert downloader._try_lidarr_album(_album_item(), report=lambda m: None) is False
+
+
+def test_try_lidarr_requires_profile_and_root(db, mock_scanner, temp_dirs):
+    dl, _ = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    dl.lidarr_quality_profile_id = None
+    assert dl._try_lidarr_album(_album_item(), report=lambda m: None) is False
+
+
+def test_try_lidarr_skips_single_track_items(db, mock_scanner, temp_dirs):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    item = _album_item(query="Artist - Track")
+    assert dl._try_lidarr_album(item, report=lambda m: None) is False
+    lidarr.ensure_album_monitored.assert_not_called()
+
+
+def test_try_lidarr_skips_when_no_release_mbid(db, mock_scanner, temp_dirs):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    item = _album_item(release_mbid="")
+    assert dl._try_lidarr_album(item, report=lambda m: None) is False
+    lidarr.ensure_album_monitored.assert_not_called()
+
+
+def test_try_lidarr_success_returns_true(db, mock_scanner, temp_dirs):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    lidarr.ensure_album_monitored.return_value = {"id": 42}
+    assert dl._try_lidarr_album(_album_item(), report=lambda m: None) is True
+    lidarr.ensure_album_monitored.assert_called_once_with(
+        "rel-mb", quality_profile_id=3, root_folder_path="/music"
+    )
+
+
+def test_try_lidarr_lookup_miss_returns_false(db, mock_scanner, temp_dirs):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    lidarr.ensure_album_monitored.return_value = None
+    assert dl._try_lidarr_album(_album_item(), report=lambda m: None) is False
+
+
+def test_try_lidarr_swallows_lidarr_errors(db, mock_scanner, temp_dirs):
+    from src.lidarr_client import LidarrError
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    lidarr.ensure_album_monitored.side_effect = LidarrError("nope")
+    assert dl._try_lidarr_album(_album_item(), report=lambda m: None) is False
+
+
+def test_run_queue_skips_sldl_when_lidarr_accepts(db, mock_scanner, temp_dirs):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="COMPLETER",
+        mbid_guess="rel-mb",
+    ))
+    lidarr.ensure_album_monitored.return_value = {"id": 77}
+
+    with patch.object(dl, "_attempt_download") as attempt:
+        dl.run_queue()
+
+    attempt.assert_not_called()
+    # Item should be gone from the queue after Lidarr handoff
+    assert db.get_downloads(status="pending") == []
+
+
+# --- main_run_downloader / Lidarr client wiring ---------------------
+
+def test_build_lidarr_client_skipped_on_satellite():
+    from src.downloader import _build_lidarr_client
+    config = {
+        "is_master": False,
+        "lidarr_enabled": True,
+        "lidarr_url": "http://x",
+        "lidarr_api_key": "k",
+    }
+    assert _build_lidarr_client(config) is None
+
+
+def test_build_lidarr_client_skipped_when_disabled():
+    from src.downloader import _build_lidarr_client
+    config = {
+        "is_master": True,
+        "lidarr_enabled": False,
+        "lidarr_url": "http://x",
+        "lidarr_api_key": "k",
+    }
+    assert _build_lidarr_client(config) is None
+
+
+def test_build_lidarr_client_skipped_when_creds_missing():
+    from src.downloader import _build_lidarr_client
+    config = {"is_master": True, "lidarr_enabled": True, "lidarr_url": "", "lidarr_api_key": "k"}
+    assert _build_lidarr_client(config) is None
+
+
+def test_build_lidarr_client_skipped_when_ping_fails():
+    from src.downloader import _build_lidarr_client
+    config = {
+        "is_master": True,
+        "lidarr_enabled": True,
+        "lidarr_url": "http://x",
+        "lidarr_api_key": "k",
+    }
+    with patch("src.downloader.LidarrClient") as cls:
+        instance = MagicMock()
+        instance.ping.return_value = False
+        cls.return_value = instance
+        assert _build_lidarr_client(config) is None
+
+
+def test_build_lidarr_client_happy_path():
+    from src.downloader import _build_lidarr_client
+    config = {
+        "is_master": True,
+        "lidarr_enabled": True,
+        "lidarr_url": "http://x",
+        "lidarr_api_key": "k",
+    }
+    with patch("src.downloader.LidarrClient") as cls:
+        instance = MagicMock()
+        instance.ping.return_value = True
+        cls.return_value = instance
+        assert _build_lidarr_client(config) is instance

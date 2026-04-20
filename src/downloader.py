@@ -7,11 +7,12 @@ import os
 import subprocess
 import shutil
 import logging
-from typing import List
+from typing import List, Optional
 from .db_manager import DatabaseManager, DownloadItem, Track
 from .library_scanner import LibraryScanner
 from .utils import write_mbid_to_file
 from . import tag_service
+from .lidarr_client import LidarrClient, LidarrError
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,9 @@ class Downloader:
         slsk_username: str,
         slsk_password: str,
         slsk_config: dict = None,
+        lidarr_client: Optional["LidarrClient"] = None,
+        lidarr_quality_profile_id: Optional[int] = None,
+        lidarr_root_folder_path: Optional[str] = None,
     ):
         """
         Initializes the Downloader.
@@ -47,6 +51,10 @@ class Downloader:
 
         self.acoustid_api_key = self.slsk_config.get("acoustid_api_key", "") or ""
         self.contact_email = self.slsk_config.get("contact_email", "") or ""
+
+        self.lidarr = lidarr_client
+        self.lidarr_quality_profile_id = lidarr_quality_profile_id
+        self.lidarr_root_folder_path = lidarr_root_folder_path
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)
@@ -97,6 +105,13 @@ class Downloader:
                             "message": msg,
                             "detail": line.strip()
                         })
+
+                if self._try_lidarr_album(item, report):
+                    # Lidarr owns this one now; library scanner will pick
+                    # up the imported file on its next pass.
+                    self.db.remove_from_queue(item.id)
+                    success_count += 1
+                    continue
 
                 if not self._attempt_download(item, item_callback):
                     fail_count += 1
@@ -193,6 +208,45 @@ class Downloader:
         except subprocess.TimeoutExpired:
             process.kill()
             raise
+
+    def _try_lidarr_album(self, item: DownloadItem, report) -> bool:
+        """Hand album-mode downloads off to Lidarr when it's configured.
+
+        Only fires on the master — satellites never get a Lidarr client
+        in the first place. Returns True if Lidarr accepted the release
+        and is now monitoring + searching for it; the caller should then
+        clear the queue entry and move on. Returns False for anything we
+        don't want Lidarr to try (single-track items, items with no
+        release MBID, Lidarr not configured), so sldl stays the fallback.
+        """
+        if not self.lidarr:
+            return False
+        if not self.lidarr_quality_profile_id or not self.lidarr_root_folder_path:
+            return False
+        if not item.search_query.startswith("::ALBUM::"):
+            return False
+        release_mbid = (item.mbid_guess or "").strip()
+        if not release_mbid:
+            return False
+
+        try:
+            result = self.lidarr.ensure_album_monitored(
+                release_mbid,
+                quality_profile_id=self.lidarr_quality_profile_id,
+                root_folder_path=self.lidarr_root_folder_path,
+            )
+        except LidarrError as e:
+            logger.warning("Lidarr handoff failed for %s: %s", release_mbid, e)
+            return False
+
+        if not result:
+            return False
+
+        report(
+            f"Handed off to Lidarr: {release_mbid} "
+            f"(album id={result.get('id')}) — upgrade monitor will chase FLAC"
+        )
+        return True
 
     def _auto_tag_file(self, file_path: str):
         """Picard-style auto-tag for a freshly-downloaded file.
@@ -463,6 +517,32 @@ class Downloader:
         logger.info(f"Item {item.id} processing complete.")
 
 
+def _build_lidarr_client(config: dict) -> Optional[LidarrClient]:
+    """Return a Lidarr client only on the master when sidecar is enabled.
+
+    Satellites never get one — they funnel download requests to the
+    master instead (see web_server's master-side request endpoint).
+    """
+    if not config.get("is_master"):
+        return None
+    if not config.get("lidarr_enabled"):
+        return None
+    url = (config.get("lidarr_url") or "").strip()
+    api_key = (config.get("lidarr_api_key") or "").strip()
+    if not url or not api_key:
+        logger.info("Lidarr enabled but url/api_key missing; skipping sidecar.")
+        return None
+    try:
+        client = LidarrClient(base_url=url, api_key=api_key)
+    except ValueError as e:
+        logger.warning("Could not build Lidarr client: %s", e)
+        return None
+    if not client.ping():
+        logger.warning("Lidarr unreachable at %s; falling back to sldl.", url)
+        return None
+    return client
+
+
 def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=None):
     """
     Main entry point for running the downloader from manager.py
@@ -477,6 +557,8 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
         logger.error("Downloader configuration incomplete in config.json")
         return
 
+    lidarr_client = _build_lidarr_client(config)
+
     # Initialize components
     scanner = LibraryScanner(db)  # No longer needs picard_path
     downloader = Downloader(
@@ -488,6 +570,9 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
         slsk_username=config.get("slsk_username"),
         slsk_password=config.get("slsk_password"),
         slsk_config=config,  # Pass entire config dict
+        lidarr_client=lidarr_client,
+        lidarr_quality_profile_id=config.get("lidarr_quality_profile_id"),
+        lidarr_root_folder_path=config.get("lidarr_root_folder_path"),
     )
 
     # Run the queue
