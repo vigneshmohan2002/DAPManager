@@ -472,6 +472,64 @@ def save_config():
         return jsonify({"success": False, "message": str(e)})
 
 
+@app.route("/api/library/albums")
+def api_library_albums():
+    """List distinct albums from the scanned library.
+
+    Feeds the desktop album grid. ``id`` is the release MBID when
+    present, else an ``album|artist`` synthetic — stable enough to use
+    as a React key and to look cover art back up by.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            albums = db.list_albums()
+        # cover_path is a local FS path; strip before sending to the webview.
+        public = [
+            {
+                "id": a["id"],
+                "title": a["title"],
+                "artist": a["artist"],
+                "track_count": a["track_count"],
+            }
+            for a in albums
+        ]
+        return jsonify({"success": True, "albums": public})
+    except Exception as e:
+        logger.exception("api_library_albums failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/albums/<path:album_id>/cover")
+def api_library_album_cover(album_id: str):
+    """Return embedded cover art for an album, or 404 if none."""
+    if not config:
+        return ("", 503)
+    try:
+        from flask import Response
+        from src.cover_art import extract_cover
+
+        with DatabaseManager(config.db_path) as db:
+            path = db.get_album_cover_path(album_id)
+        if not path:
+            return ("", 404)
+
+        result = extract_cover(path)
+        if result is None:
+            return ("", 404)
+
+        data, mime = result
+        return Response(
+            data,
+            mimetype=mime,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception:
+        logger.exception("api_library_album_cover failed for %s", album_id)
+        return ("", 500)
+
+
 @app.route("/api/healthz")
 def healthz():
     """Liveness probe for container orchestrators.

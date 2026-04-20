@@ -378,6 +378,52 @@ def test_fleet_track_lookup_by_query_enriches_with_holders(client, mock_config):
     assert data["results"][0]["holders"][0]["device_id"] == "dev-A"
 
 
+def test_library_albums_lists_albums(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        instance = MockDB.return_value.__enter__.return_value
+        instance.list_albums.return_value = [
+            {"id": "rmb-1", "title": "Album One", "artist": "A", "track_count": 10, "cover_path": "/m/1.flac"},
+            {"id": "Y|X", "title": "Y", "artist": "X", "track_count": 5, "cover_path": "/m/2.flac"},
+        ]
+        res = client.get('/api/library/albums')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert len(data["albums"]) == 2
+    # cover_path must not leak to the webview.
+    assert "cover_path" not in data["albums"][0]
+    assert data["albums"][0]["id"] == "rmb-1"
+    assert data["albums"][0]["track_count"] == 10
+
+
+def test_library_album_cover_returns_bytes(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.cover_art.extract_cover', return_value=(b"JPEG", "image/jpeg")):
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = "/m/1.flac"
+        res = client.get('/api/library/albums/rmb-1/cover')
+
+    assert res.status_code == 200
+    assert res.mimetype == "image/jpeg"
+    assert res.data == b"JPEG"
+    assert "max-age" in res.headers.get("Cache-Control", "")
+
+
+def test_library_album_cover_404_when_no_path(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+        res = client.get('/api/library/albums/nope/cover')
+    assert res.status_code == 404
+
+
+def test_library_album_cover_404_when_no_embedded_art(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.cover_art.extract_cover', return_value=None):
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = "/m/1.flac"
+        res = client.get('/api/library/albums/rmb-1/cover')
+    assert res.status_code == 404
+
+
 def test_fleet_track_lookup_requires_param(client, mock_config):
     res = client.get('/api/fleet/track')
     assert res.status_code == 400

@@ -480,6 +480,55 @@ class DatabaseManager:
             return ""
         return " ".join(s.lower().split())
 
+    def list_albums(self) -> List[dict]:
+        """Distinct albums implied by the tracks table.
+
+        Groups by ``release_mbid`` when present, falling back to an
+        ``album|artist`` synthetic key so tracks without MBIDs still
+        group correctly. The ``cover_path`` is one of the album's track
+        file paths — the web layer uses it to extract embedded art.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS id,
+                COALESCE(album, '') AS title,
+                artist,
+                COUNT(*) AS track_count,
+                MIN(local_path) AS cover_path
+            FROM tracks
+            WHERE deleted_at IS NULL
+              AND album IS NOT NULL AND album != ''
+              AND artist IS NOT NULL AND artist != ''
+            GROUP BY id
+            ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def get_album_cover_path(self, album_id: str) -> Optional[str]:
+        """Return one track file path for an album id — used to extract
+        embedded cover art. ``album_id`` is whatever ``list_albums``
+        returned (a release_mbid or ``album|artist`` synthetic)."""
+        if not album_id:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT local_path FROM tracks
+            WHERE deleted_at IS NULL
+              AND (release_mbid = ? OR (album || '|' || artist) = ?)
+            LIMIT 1
+            """,
+            (album_id, album_id),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row["local_path"] if row else None
+
     def has_queued_mbid(self, mbid: str) -> bool:
         """True if any row in download_queue already targets this MBID,
         regardless of status. Used by the release watcher to avoid

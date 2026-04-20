@@ -74,6 +74,61 @@ def test_download_queue(db):
     assert queue[0].status == "success"
 
 
+def test_list_albums_groups_by_release_mbid(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="Artist A", album="Album One",
+        local_path="/m/A/One/01.flac", release_mbid="rmb-1",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t2", title="S2", artist="Artist A", album="Album One",
+        local_path="/m/A/One/02.flac", release_mbid="rmb-1",
+    ))
+    albums = db.list_albums()
+    assert len(albums) == 1
+    assert albums[0]["id"] == "rmb-1"
+    assert albums[0]["title"] == "Album One"
+    assert albums[0]["artist"] == "Artist A"
+    assert albums[0]["track_count"] == 2
+    assert albums[0]["cover_path"] in ("/m/A/One/01.flac", "/m/A/One/02.flac")
+
+
+def test_list_albums_synthesizes_id_when_no_mbid(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="X", album="Y",
+        local_path="/p/1.flac",  # no release_mbid
+    ))
+    albums = db.list_albums()
+    assert len(albums) == 1
+    assert albums[0]["id"] == "Y|X"
+
+
+def test_list_albums_skips_tracks_without_album(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="X", album="",
+        local_path="/p/1.flac",
+    ))
+    assert db.list_albums() == []
+
+
+def test_get_album_cover_path_by_mbid_and_synthetic(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="Artist A", album="Album One",
+        local_path="/m/A/One/01.flac", release_mbid="rmb-1",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t2", title="S2", artist="Artist B", album="Album Two",
+        local_path="/m/B/Two/01.flac",
+    ))
+    assert db.get_album_cover_path("rmb-1") == "/m/A/One/01.flac"
+    assert db.get_album_cover_path("Album Two|Artist B") == "/m/B/Two/01.flac"
+    assert db.get_album_cover_path("") is None
+    assert db.get_album_cover_path("nope") is None
+
+
 def test_has_queued_mbid(db):
     assert db.has_queued_mbid("mbid-x") is False
     assert db.has_queued_mbid("") is False
