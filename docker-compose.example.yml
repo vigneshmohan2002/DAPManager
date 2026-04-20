@@ -23,15 +23,29 @@ services:
       # Optional: change the app's listening port inside the container.
       # DAPMANAGER_PORT: "5001"
 
-  # Uncomment to run Lidarr alongside as the master's upgrade sidecar.
-  # Point lidarr_url in config.json at http://lidarr:8686.
-  # lidarr:
-  #   image: lscr.io/linuxserver/lidarr:latest
-  #   container_name: lidarr
-  #   restart: unless-stopped
-  #   ports:
-  #     - "8686:8686"
-  #   volumes:
-  #     - ./lidarr-config:/config
-  #     - ./data/music:/music
-  #     - ./data/downloads:/downloads
+  # Lidarr + Prowlarr ride the `arr` profile: they only start when you
+  # opt in, either via `docker compose --profile arr up -d` or with
+  # `./setup-master.sh` (which handles wiring automatically).
+  # Soulseek (sldl) remains the primary downloader inside dapmanager;
+  # these sidecars are for Usenet/torrent indexer searches via Lidarr.
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    restart: unless-stopped
+    profiles: ["arr"]
+    ports:
+      - "8686:8686"
+    volumes:
+      - ./lidarr-config:/config
+      - ./data/music:/music
+      - ./data/downloads:/downloads
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    profiles: ["arr"]
+    ports:
+      - "9696:9696"
+    volumes:
+      - ./prowlarr-config:/config
