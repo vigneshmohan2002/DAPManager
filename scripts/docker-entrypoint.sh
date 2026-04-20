@@ -39,7 +39,7 @@ EOF
 fi
 
 if ! command -v sldl >/dev/null 2>&1; then
-    echo "[entrypoint] WARNING: 'sldl' not on PATH. Provide it via bind-mount (see docker-compose.example.yml) or downloads will fail." >&2
+    echo "[entrypoint] WARNING: 'sldl' not on PATH — downloads will fail. Rebuild the image or reinstall sldl." >&2
 fi
 
 cd "$CONFIG_DIR"

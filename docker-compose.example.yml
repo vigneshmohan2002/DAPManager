@@ -4,10 +4,8 @@
 # defaults. Visit http://localhost:5001/setup (or edit config.json) to
 # fill in Soulseek / Jellyfin / Lidarr credentials.
 #
-# sldl (slsk-batchdl) is NOT baked into the image. Pick one:
-#   (a) Bind-mount a host binary at /usr/local/bin/sldl (shown below).
-#   (b) Build a derived image that downloads the release for your arch.
-#   (c) Use a sidecar and a wrapper — see scripts/sldl.sh for the idea.
+# The image bakes in sldl (slsk-batchdl) from upstream's GitHub release.
+# Bump or pin with --build-arg SLDL_VERSION=vX.Y.Z (amd64 + arm64).
 
 services:
   dapmanager:
@@ -20,8 +18,6 @@ services:
     volumes:
       - ./config:/config
       - ./data:/data
-      # Provide sldl binary from the host. Remove if you baked it in.
-      - ./bin/sldl:/usr/local/bin/sldl:ro
     environment:
       DAPMANAGER_DEBUG: "0"
       # Optional: change the app's listening port inside the container.
