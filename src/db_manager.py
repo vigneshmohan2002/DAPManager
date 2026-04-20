@@ -555,14 +555,16 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
-    def queue_download(self, item: DownloadItem):
+    def queue_download(self, item: DownloadItem) -> int:
         sql = "INSERT OR IGNORE INTO download_queue (search_query, playlist_id, mbid_guess, status) VALUES (?, ?, ?, ?)"
         cursor = self.conn.cursor()
         cursor.execute(
             sql, (item.search_query, item.playlist_id, item.mbid_guess, item.status)
         )
         self.conn.commit()
+        row_id = cursor.lastrowid
         cursor.close()
+        return row_id or 0
 
     def get_downloads(self, status: str) -> List[DownloadItem]:
         cursor = self.conn.cursor()

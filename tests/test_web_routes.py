@@ -820,3 +820,80 @@ def test_tracks_needs_review_401_when_token_set_and_missing(client, _token_confi
     # /api/status is the only exempt path — this one should be gated.
     res = client.get('/api/tracks/needs-review')
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/download/request — satellite → master download handoff
+# ---------------------------------------------------------------------------
+
+def test_request_download_queues_new_item(client, mock_config):
+    mock_config.is_master = True
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.is_download_queued.return_value = False
+        mock_db.queue_download.return_value = 42
+
+        res = client.post('/api/download/request', json={
+            "search_query": "Artist - Track",
+            "mbid_guess": "mb-123",
+            "playlist_id": "SAT-xyz",
+        })
+
+    data = res.get_json()
+    assert res.status_code == 200
+    assert data == {"success": True, "queued": True, "item_id": 42, "message": "queued"}
+    # DownloadItem passed through untouched
+    (item,), _ = mock_db.queue_download.call_args
+    assert item.search_query == "Artist - Track"
+    assert item.mbid_guess == "mb-123"
+    assert item.playlist_id == "SAT-xyz"
+
+
+def test_request_download_dedupes_on_repeat(client, mock_config):
+    mock_config.is_master = True
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.is_download_queued.return_value = True
+
+        res = client.post('/api/download/request', json={"search_query": "Dupe"})
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["queued"] is False
+    assert "item_id" not in data
+    mock_db.queue_download.assert_not_called()
+
+
+def test_request_download_defaults_playlist_id(client, mock_config):
+    mock_config.is_master = True
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.is_download_queued.return_value = False
+        mock_db.queue_download.return_value = 1
+
+        client.post('/api/download/request', json={"search_query": "Just a query"})
+
+    (item,), _ = mock_db.queue_download.call_args
+    assert item.playlist_id == "SATELLITE"
+    assert item.mbid_guess == ""
+
+
+def test_request_download_rejects_non_master(client, mock_config):
+    mock_config.is_master = False
+    res = client.post('/api/download/request', json={"search_query": "x"})
+    assert res.status_code == 400
+    assert res.get_json()["success"] is False
+
+
+def test_request_download_rejects_empty_query(client, mock_config):
+    mock_config.is_master = True
+    res = client.post('/api/download/request', json={"search_query": "   "})
+    assert res.status_code == 400
+    assert "search_query" in res.get_json()["message"]
+
+
+def test_request_download_rejects_missing_body(client, mock_config):
+    mock_config.is_master = True
+    res = client.post('/api/download/request', json={})
+    assert res.status_code == 400

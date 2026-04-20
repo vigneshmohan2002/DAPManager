@@ -475,6 +475,53 @@ def download():
     return jsonify({"success": success, "message": msg})
 
 
+@app.route("/api/download/request", methods=["POST"])
+def request_download():
+    """Satellite → master: enqueue a download on the master's behalf.
+
+    The master runs Lidarr + sldl and owns the canonical library, so
+    satellites forward download requests here instead of queuing them
+    locally. On success the item lands in the master's download_queue
+    and the imported file flows back to satellites via catalog sync.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.is_master:
+        return jsonify({"success": False, "message": "This instance is not a master"}), 400
+
+    data = request.json or {}
+    query = (data.get("search_query") or "").strip()
+    if not query:
+        return jsonify({"success": False, "message": "search_query is required"}), 400
+
+    mbid_guess = (data.get("mbid_guess") or "").strip()
+    playlist_id = (data.get("playlist_id") or "SATELLITE").strip() or "SATELLITE"
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            if db.is_download_queued(query):
+                return jsonify({
+                    "success": True,
+                    "queued": False,
+                    "message": "already queued",
+                })
+            item_id = db.queue_download(DownloadItem(
+                search_query=query,
+                playlist_id=playlist_id,
+                mbid_guess=mbid_guess,
+            ))
+    except Exception as e:
+        logger.error(f"Download request failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "queued": True,
+        "item_id": item_id,
+        "message": "queued",
+    })
+
+
 @app.route("/api/sync", methods=["POST"])
 def sync():
     if not task_manager:
