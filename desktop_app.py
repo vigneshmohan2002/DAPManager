@@ -1111,7 +1111,9 @@ class MainWindow(QMainWindow):
         self._run_worker("Report Inventory", task)
 
 
-CONFIG_FILE = "config.json"
+from src.config_paths import ensure_parent_dir, resolve_config_path
+
+CONFIG_FILE = resolve_config_path()
 
 
 class SettingsDialog(QDialog):
@@ -1223,6 +1225,7 @@ class SettingsDialog(QDialog):
             merged[key] = value
 
         try:
+            ensure_parent_dir(CONFIG_FILE)
             with open(CONFIG_FILE, "w") as f:
                 json.dump(merged, f, indent=4)
         except Exception as e:
@@ -1379,6 +1382,7 @@ class SetupWizard(QWizard):
 
         try:
             cfg = self.build_config()
+            ensure_parent_dir(CONFIG_FILE)
             with open(CONFIG_FILE, "w") as f:
                 json.dump(cfg, f, indent=4)
         except Exception as e:

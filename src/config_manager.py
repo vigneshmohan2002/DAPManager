@@ -10,6 +10,8 @@ import uuid
 from typing import Dict, Any, Optional
 from shutil import which
 
+from src.config_paths import ensure_parent_dir, resolve_config_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +23,7 @@ class ConfigManager:
 
     _instance: Optional["ConfigManager"] = None
 
-    CONFIG_FILE = "config.json"
+    CONFIG_FILE = resolve_config_path()
     REQUIRED_KEYS = [
         "database_file",
         "music_library_path",
@@ -86,6 +88,7 @@ class ConfigManager:
                 migrated = True
         if migrated:
             try:
+                ensure_parent_dir(self.CONFIG_FILE)
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(self._config, f, indent=4)
                 logger.info("Migrated legacy ipod_* config keys to dap_*")
@@ -108,6 +111,7 @@ class ConfigManager:
             changed = True
         if changed:
             try:
+                ensure_parent_dir(self.CONFIG_FILE)
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(self._config, f, indent=4)
                 logger.info(

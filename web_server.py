@@ -4,6 +4,8 @@ import logging
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 import threading
 
+from src.config_paths import ensure_parent_dir, resolve_config_path
+
 logger = logging.getLogger(__name__)
 
 # ... (Previous imports are fine, but imports that depend on config might fail if config is missing)
@@ -12,7 +14,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
 
 # Check if config exists
-CONFIG_FILE = "config.json"
+CONFIG_FILE = resolve_config_path()
 
 
 def config_exists():
@@ -381,6 +383,7 @@ def update_config():
             changed.append(key)
 
     try:
+        ensure_parent_dir(CONFIG_FILE)
         with open(CONFIG_FILE, "w") as f:
             json.dump(current, f, indent=4)
     except Exception as e:
@@ -427,6 +430,7 @@ def save_config():
         }
 
         # Save as config.json
+        ensure_parent_dir(CONFIG_FILE)
         with open(CONFIG_FILE, "w") as f:
             json.dump(new_config, f, indent=4)
 
