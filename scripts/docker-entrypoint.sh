@@ -14,7 +14,6 @@ if [ ! -f "$CONFIG_FILE" ]; then
     "database_file": "${DATA_DIR}/dap_library.db",
     "music_library_path": "${DATA_DIR}/music",
     "downloads_path": "${DATA_DIR}/downloads",
-    "picard_cmd_path": "picard",
     "ffmpeg_path": "ffmpeg",
     "slsk_cmd_base": ["sldl"],
     "dap_mount_point": "",

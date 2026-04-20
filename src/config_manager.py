@@ -24,7 +24,6 @@ class ConfigManager:
     CONFIG_FILE = "config.json"
     REQUIRED_KEYS = [
         "database_file",
-        "picard_cmd_path",
         "music_library_path",
         "downloads_path",
         "ffmpeg_path",
@@ -121,12 +120,6 @@ class ConfigManager:
 
     def _validate_paths(self):
         """Validate that critical paths exist."""
-        # Check Picard
-        if not os.path.exists(self._config["picard_cmd_path"]) and not which(
-            self._config["picard_cmd_path"]
-        ):
-            logger.warning(f"Picard not found at: {self._config['picard_cmd_path']}")
-
         # Check ffmpeg
         if not os.path.exists(self._config["ffmpeg_path"]) and not which(
             self._config["ffmpeg_path"]
@@ -155,7 +148,7 @@ class ConfigManager:
 
     @property
     def picard_path(self) -> str:
-        return self._config["picard_cmd_path"]
+        return self._config.get("picard_cmd_path", "")
 
     @property
     def music_library(self) -> str:

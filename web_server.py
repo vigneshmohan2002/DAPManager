@@ -408,7 +408,6 @@ def save_config():
             "music_library_path": data.get("music_library_path"),
             "downloads_path": data.get("downloads_path"),
             "slsk_cmd_base": ["slsk-batchdl"],  # Default
-            "picard_cmd_path": "picard",  # Default
             "ffmpeg_path": "ffmpeg",  # Default
             "dap_mount_point": data.get("dap_mount_point"),
             "dap_music_dir_name": "Music",
