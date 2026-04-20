@@ -93,20 +93,8 @@
                 <hr style="border-color: #333; margin: 20px 0;">
 
                 <div class="form-group">
-                    <label>Spotify Client ID</label>
-                    <input type="text" id="spotify_client_id">
-                </div>
-
-                <div class="form-group">
-                    <label>Spotify Client Secret</label>
-                    <input type="password" id="spotify_client_secret">
-                </div>
-
-                <div class="form-group">
                     <label>Soulseek Command (or path)</label>
                     <div style="display: flex; gap: 10px;">
-                        <input type="text" id="downloads_path_dummy" style="display:none">
-                        <!-- Hidden dummy to maintain layout if needed -->
                         <input type="text" id="slsk_command" placeholder="slsk-batchdl" value="slsk-batchdl"
                             style="flex-grow: 1;">
                         <button type="button" onclick="installSlsk()" style="width: auto; background: #2196F3;">Install
@@ -178,8 +166,6 @@
                 jellyfin_url: document.getElementById('jellyfin_url').value,
                 jellyfin_api_key: document.getElementById('jellyfin_api_key').value,
                 jellyfin_user_id: document.getElementById('jellyfin_user_id').value,
-                spotify_client_id: document.getElementById('spotify_client_id').value,
-                spotify_client_secret: document.getElementById('spotify_client_secret').value,
                 slsk_command: document.getElementById('slsk_command').value,
                 slsk_username: document.getElementById('slsk_username').value,
                 slsk_password: document.getElementById('slsk_password').value,

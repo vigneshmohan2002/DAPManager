@@ -430,10 +430,6 @@ def save_config():
         with open(CONFIG_FILE, "w") as f:
             json.dump(new_config, f, indent=4)
 
-        # Also set env vars if provided (for immediately usage in this session if we reload env)
-        # But better to just let the user restart or rely on config object
-        # Note: Spotify credentials are usually ENV vars, but we can save them to a .env or just config
-
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
