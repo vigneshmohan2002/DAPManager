@@ -1,0 +1,41 @@
+# Master-mode DAPManager. Copy to docker-compose.yml and edit.
+#
+# On first start the entrypoint seeds ./config/config.json with master
+# defaults. Visit http://localhost:5001/setup (or edit config.json) to
+# fill in Soulseek / Jellyfin / Lidarr credentials.
+#
+# sldl (slsk-batchdl) is NOT baked into the image. Pick one:
+#   (a) Bind-mount a host binary at /usr/local/bin/sldl (shown below).
+#   (b) Build a derived image that downloads the release for your arch.
+#   (c) Use a sidecar and a wrapper — see scripts/sldl.sh for the idea.
+
+services:
+  dapmanager:
+    build: .
+    image: dapmanager:latest
+    container_name: dapmanager
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      # Provide sldl binary from the host. Remove if you baked it in.
+      - ./bin/sldl:/usr/local/bin/sldl:ro
+    environment:
+      DAPMANAGER_DEBUG: "0"
+      # Optional: change the app's listening port inside the container.
+      # DAPMANAGER_PORT: "5001"
+
+  # Uncomment to run Lidarr alongside as the master's upgrade sidecar.
+  # Point lidarr_url in config.json at http://lidarr:8686.
+  # lidarr:
+  #   image: lscr.io/linuxserver/lidarr:latest
+  #   container_name: lidarr
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8686:8686"
+  #   volumes:
+  #     - ./lidarr-config:/config
+  #     - ./data/music:/music
+  #     - ./data/downloads:/downloads

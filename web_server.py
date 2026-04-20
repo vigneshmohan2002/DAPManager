@@ -1308,5 +1308,7 @@ def install_slsk():
 if __name__ == "__main__":
     if config_exists():
         init_app_logic()
-    print("Starting Web Server on port 5001...")
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    debug_mode = os.environ.get("DAPMANAGER_DEBUG", "1").lower() in ("1", "true", "yes", "on")
+    port = int(os.environ.get("DAPMANAGER_PORT", "5001"))
+    print(f"Starting Web Server on port {port} (debug={debug_mode})...")
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)
