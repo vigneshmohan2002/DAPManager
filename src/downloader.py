@@ -520,8 +520,8 @@ class Downloader:
 def _build_lidarr_client(config: dict) -> Optional[LidarrClient]:
     """Return a Lidarr client only on the master when sidecar is enabled.
 
-    Satellites never get one — they funnel download requests to the
-    master instead (see web_server's master-side request endpoint).
+    Satellites never get one: they queue locally and rely on the next
+    catalog sync to pull down whatever the master has imported.
     """
     if not config.get("is_master"):
         return None

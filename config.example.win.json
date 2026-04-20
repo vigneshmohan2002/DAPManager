@@ -18,5 +18,10 @@
     "contact_email": "",
     "jellyfin_url": "",
     "jellyfin_api_key": "",
-    "jellyfin_user_id": ""
+    "jellyfin_user_id": "",
+    "lidarr_enabled": false,
+    "lidarr_url": "",
+    "lidarr_api_key": "",
+    "lidarr_quality_profile_id": null,
+    "lidarr_root_folder_path": ""
 }
