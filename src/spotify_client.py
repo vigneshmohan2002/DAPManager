@@ -5,6 +5,7 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import musicbrainzngs
 from .db_manager import DatabaseManager, Track, Playlist, DownloadItem
 from .config_manager import get_config
+from .download_request import queue_or_forward
 from . import musicbrainz_client as mb
 from typing import Optional, List, Tuple
 import time
@@ -217,7 +218,7 @@ class SpotifyClient:
                 playlist_id=playlist_id,
                 mbid_guess=mbid,
             )
-            self.db.queue_download(download_item)
+            queue_or_forward(self.db, download_item)
 
 
 # --- Main execution block ---

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import musicbrainz_client as mb
 from .db_manager import DatabaseManager, DownloadItem
+from .download_request import queue_or_forward
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ def queue_missing_tracks_for_album(
             _report(f"  Album already queued: {artist} - {album}")
             skipped = 1
         else:
-            db.queue_download(DownloadItem(
+            queue_or_forward(db, DownloadItem(
                 search_query=query,
                 playlist_id="COMPLETER",
                 mbid_guess=release_mbid,
@@ -201,7 +202,7 @@ def queue_missing_tracks_for_album(
             if db.is_download_queued(query):
                 skipped += 1
                 continue
-            db.queue_download(DownloadItem(
+            queue_or_forward(db, DownloadItem(
                 search_query=query,
                 playlist_id="COMPLETER",
                 mbid_guess="",
