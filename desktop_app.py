@@ -48,6 +48,8 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QWizard,
+    QWizardPage,
 )
 
 from src.config_manager import get_config
@@ -1312,11 +1314,274 @@ class TagReviewDialog(QDialog):
         return out
 
 
+class SetupWizard(QWizard):
+    """First-run wizard. Branches by role: master / satellite / standalone.
+
+    Writes a complete config.json so ConfigManager's validator passes on
+    the subsequent boot. The pure payload logic lives in src.first_run
+    so it can be unit-tested without Qt.
+    """
+
+    PAGE_ROLE = 0
+    PAGE_PATHS = 1
+    PAGE_MASTER_CONN = 2
+    PAGE_SOULSEEK = 3
+    PAGE_JELLYFIN = 4
+    PAGE_REVIEW = 5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("DAP Manager — First-Run Setup")
+        self.resize(640, 520)
+        self.setOption(QWizard.NoBackButtonOnStartPage, True)
+
+        self.setPage(self.PAGE_ROLE, _RolePage())
+        self.setPage(self.PAGE_PATHS, _PathsPage())
+        self.setPage(self.PAGE_MASTER_CONN, _MasterConnectionPage())
+        self.setPage(self.PAGE_SOULSEEK, _SoulseekPage())
+        self.setPage(self.PAGE_JELLYFIN, _JellyfinPage())
+        self.setPage(self.PAGE_REVIEW, _ReviewPage())
+
+    def role(self) -> str:
+        return self.field("role") or "satellite"
+
+    def build_config(self) -> dict:
+        from src.first_run import build_initial_config
+
+        role = self.role()
+        kwargs = dict(
+            music_library_path=self.field("music_library_path") or "",
+            downloads_path=self.field("downloads_path") or "",
+            dap_mount_point=self.field("dap_mount_point") or "",
+        )
+        if role == "satellite":
+            kwargs.update(
+                master_url=self.field("master_url") or "",
+                api_token=self.field("api_token") or "",
+                device_name=self.field("device_name") or "",
+                report_inventory_to_host=bool(self.field("report_inventory")),
+            )
+        if role in ("master", "standalone"):
+            kwargs.update(
+                slsk_username=self.field("slsk_username") or "",
+                slsk_password=self.field("slsk_password") or "",
+            )
+        if role == "master":
+            kwargs.update(
+                jellyfin_url=self.field("jellyfin_url") or "",
+                jellyfin_api_key=self.field("jellyfin_api_key") or "",
+                jellyfin_user_id=self.field("jellyfin_user_id") or "",
+            )
+        return build_initial_config(role, **kwargs)
+
+    def accept(self):
+        import json
+
+        try:
+            cfg = self.build_config()
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(cfg, f, indent=4)
+        except Exception as e:
+            QMessageBox.critical(self, "Could not save config", str(e))
+            return
+        super().accept()
+
+
+class _RolePage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Choose a role")
+        self.setSubTitle(
+            "Master runs Jellyfin + sldl + Lidarr. Satellites talk to a master. "
+            "Standalone is a single device with no fleet."
+        )
+        self._master = QRadioButton("Master")
+        self._satellite = QRadioButton("Satellite")
+        self._standalone = QRadioButton("Standalone")
+        self._satellite.setChecked(True)
+
+        group = QVBoxLayout(self)
+        for rb in (self._master, self._satellite, self._standalone):
+            group.addWidget(rb)
+
+        self._hidden = QLineEdit()
+        self._hidden.setVisible(False)
+        group.addWidget(self._hidden)
+        self.registerField("role*", self._hidden)
+        self._master.toggled.connect(lambda: self._sync("master"))
+        self._satellite.toggled.connect(lambda: self._sync("satellite"))
+        self._standalone.toggled.connect(lambda: self._sync("standalone"))
+        self._sync("satellite")
+
+    def _sync(self, value: str):
+        rb = {"master": self._master, "satellite": self._satellite,
+              "standalone": self._standalone}[value]
+        if rb.isChecked():
+            self._hidden.setText(value)
+
+    def nextId(self) -> int:
+        return SetupWizard.PAGE_PATHS
+
+
+class _PathsPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Paths")
+        self.setSubTitle("Where the library lives and where downloads land on this device.")
+        form = QFormLayout(self)
+        self._music = _with_browse(QLineEdit(), self, "Pick music library")
+        self._dl = _with_browse(QLineEdit(), self, "Pick downloads folder")
+        self._dap = _with_browse(QLineEdit(), self, "Pick DAP mount point (optional)")
+        form.addRow("Music library", self._music[1])
+        form.addRow("Downloads", self._dl[1])
+        form.addRow("DAP mount (optional)", self._dap[1])
+        self.registerField("music_library_path*", self._music[0])
+        self.registerField("downloads_path*", self._dl[0])
+        self.registerField("dap_mount_point", self._dap[0])
+
+    def nextId(self) -> int:
+        role = self.wizard().field("role")
+        if role == "satellite":
+            return SetupWizard.PAGE_MASTER_CONN
+        if role == "master":
+            return SetupWizard.PAGE_SOULSEEK
+        return SetupWizard.PAGE_SOULSEEK  # standalone
+
+
+class _MasterConnectionPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Connect to master")
+        self.setSubTitle("Point this satellite at the master DAPManager.")
+        form = QFormLayout(self)
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("http://master.local:5001")
+        self._token = QLineEdit()
+        self._token.setEchoMode(QLineEdit.Password)
+        self._token.setPlaceholderText("(blank if master runs in open mode)")
+        self._device = QLineEdit()
+        from src.first_run import suggest_device_name
+        self._device.setText(suggest_device_name())
+        self._report = QCheckBox("Report this satellite's inventory to the master")
+        self._report.setChecked(True)
+
+        form.addRow("Master URL", self._url)
+        form.addRow("API token", self._token)
+        form.addRow("Device name", self._device)
+        form.addRow("", self._report)
+
+        self.registerField("master_url*", self._url)
+        self.registerField("api_token", self._token)
+        self.registerField("device_name", self._device)
+        self.registerField("report_inventory", self._report)
+
+    def nextId(self) -> int:
+        return SetupWizard.PAGE_REVIEW
+
+
+class _SoulseekPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Soulseek credentials")
+        self.setSubTitle("Used by sldl to actually download tracks. Leave blank to set later.")
+        form = QFormLayout(self)
+        self._user = QLineEdit()
+        self._pw = QLineEdit()
+        self._pw.setEchoMode(QLineEdit.Password)
+        form.addRow("Username", self._user)
+        form.addRow("Password", self._pw)
+        self.registerField("slsk_username", self._user)
+        self.registerField("slsk_password", self._pw)
+
+    def nextId(self) -> int:
+        if self.wizard().field("role") == "master":
+            return SetupWizard.PAGE_JELLYFIN
+        return SetupWizard.PAGE_REVIEW
+
+
+class _JellyfinPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Jellyfin (optional)")
+        self.setSubTitle("Leave blank if you don't use Jellyfin as the authoritative library.")
+        form = QFormLayout(self)
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("http://jellyfin.local:8096")
+        self._key = QLineEdit()
+        self._key.setEchoMode(QLineEdit.Password)
+        self._uid = QLineEdit()
+        form.addRow("URL", self._url)
+        form.addRow("API key", self._key)
+        form.addRow("User ID", self._uid)
+        self.registerField("jellyfin_url", self._url)
+        self.registerField("jellyfin_api_key", self._key)
+        self.registerField("jellyfin_user_id", self._uid)
+
+    def nextId(self) -> int:
+        return SetupWizard.PAGE_REVIEW
+
+
+class _ReviewPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Review")
+        self.setSubTitle("Click Finish to write config.json and start the app.")
+        self._summary = QPlainTextEdit()
+        self._summary.setReadOnly(True)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._summary)
+
+    def initializePage(self):
+        import json
+        try:
+            preview = self.wizard().build_config()
+            safe = {k: ("••••" if k in ("slsk_password", "jellyfin_api_key",
+                                         "api_token") and v else v)
+                    for k, v in preview.items()}
+            self._summary.setPlainText(json.dumps(safe, indent=2))
+        except Exception as e:
+            self._summary.setPlainText(f"Could not build config preview:\n{e}")
+
+    def nextId(self) -> int:
+        return -1
+
+
+def _with_browse(line_edit: QLineEdit, parent, caption: str):
+    """Return (line_edit, row_widget) with a 'Browse…' button beside the input.
+
+    QWizard's registerField needs the QLineEdit itself, so we return it
+    alongside the composed row widget.
+    """
+    from PySide6.QtWidgets import QHBoxLayout
+
+    container = QWidget()
+    hl = QHBoxLayout(container)
+    hl.setContentsMargins(0, 0, 0, 0)
+    btn = QPushButton("Browse…")
+
+    def pick():
+        path = QFileDialog.getExistingDirectory(parent, caption)
+        if path:
+            line_edit.setText(path)
+
+    btn.clicked.connect(pick)
+    hl.addWidget(line_edit, 1)
+    hl.addWidget(btn)
+    return line_edit, container
+
+
 def main():
     setup_logging()
-    config = get_config()
     app = QApplication(sys.argv)
     app.setApplicationName("DAP Manager")
+
+    from src.first_run import is_first_run
+    if is_first_run(CONFIG_FILE):
+        wiz = SetupWizard()
+        if wiz.exec() != QWizard.Accepted:
+            sys.exit(0)
+
+    config = get_config()
     window = MainWindow(config, config.db_path)
     window.show()
     sys.exit(app.exec())
