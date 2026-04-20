@@ -5,9 +5,10 @@ import { albumCoverUrl, backendUrl, fetchAlbums, type Album } from "../lib/api";
 
 type Props = {
   ready: boolean;
+  onOpen: (album: Album) => void;
 };
 
-export default function AlbumsScreen({ ready }: Props) {
+export default function AlbumsScreen({ ready, onOpen }: Props) {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [base, setBase] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +69,7 @@ export default function AlbumsScreen({ ready }: Props) {
                 key={a.id}
                 album={a}
                 coverUrl={albumCoverUrl(base, a.id)}
+                onClick={() => onOpen(a)}
               />
             ))}
           </div>

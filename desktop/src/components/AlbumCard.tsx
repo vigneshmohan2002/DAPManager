@@ -4,13 +4,14 @@ import type { Album } from "../lib/api";
 type Props = {
   album: Album;
   coverUrl: string;
+  onClick?: () => void;
 };
 
-export default function AlbumCard({ album, coverUrl }: Props) {
+export default function AlbumCard({ album, coverUrl, onClick }: Props) {
   const [failed, setFailed] = useState(false);
 
   return (
-    <div className="group cursor-pointer">
+    <div className="group cursor-pointer" onClick={onClick}>
       <div className="aspect-square w-full rounded-md overflow-hidden bg-[var(--color-surface)] shadow-md">
         {failed ? (
           <div className="w-full h-full flex items-center justify-center text-[var(--color-text-muted)] text-xs">

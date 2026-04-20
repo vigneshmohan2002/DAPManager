@@ -7,6 +7,15 @@ export type Album = {
   track_count: number;
 };
 
+export type Track = {
+  mbid: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  track_number: number | null;
+  disc_number: number | null;
+};
+
 let cachedBackend: string | null = null;
 
 export async function backendUrl(): Promise<string> {
@@ -40,4 +49,18 @@ export async function fetchAlbums(): Promise<Album[]> {
 
 export function albumCoverUrl(base: string, albumId: string): string {
   return `${base}/api/library/albums/${encodeURIComponent(albumId)}/cover`;
+}
+
+export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/albums/${encodeURIComponent(albumId)}/tracks`,
+  );
+  if (!r.ok) throw new Error(`tracks: ${r.status}`);
+  const data = await r.json();
+  return (data.tracks ?? []) as Track[];
+}
+
+export function streamUrl(base: string, mbid: string): string {
+  return `${base}/api/stream/${encodeURIComponent(mbid)}`;
 }
