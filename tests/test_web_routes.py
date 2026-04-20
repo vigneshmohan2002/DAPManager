@@ -424,6 +424,62 @@ def test_library_album_cover_404_when_no_embedded_art(client, mock_config):
     assert res.status_code == 404
 
 
+def test_library_album_tracks_returns_ordered_list(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_album_tracks.return_value = [
+            {"mbid": "t-a", "title": "A", "artist": "X", "album": "Y",
+             "track_number": 1, "disc_number": 1, "local_path": "/m/a.flac"},
+            {"mbid": "t-b", "title": "B", "artist": "X", "album": "Y",
+             "track_number": 2, "disc_number": 1, "local_path": "/m/b.flac"},
+        ]
+        res = client.get('/api/library/albums/rmb-1/tracks')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert [t["mbid"] for t in data["tracks"]] == ["t-a", "t-b"]
+    # Local path must not leak to the webview.
+    assert "local_path" not in data["tracks"][0]
+
+
+def test_stream_serves_file_with_audio_mime(client, mock_config, tmp_path):
+    f = tmp_path / "track.flac"
+    f.write_bytes(b"FLACBYTES")
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = str(f)
+        res = client.get('/api/stream/t-a')
+
+    assert res.status_code == 200
+    assert res.mimetype == "audio/flac"
+    assert res.data == b"FLACBYTES"
+
+
+def test_stream_supports_range_request(client, mock_config, tmp_path):
+    f = tmp_path / "track.mp3"
+    f.write_bytes(b"0123456789")
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = str(f)
+        res = client.get('/api/stream/t-a', headers={"Range": "bytes=2-5"})
+
+    assert res.status_code == 206
+    assert res.data == b"2345"
+    assert res.headers.get("Content-Range", "").startswith("bytes 2-5/")
+
+
+def test_stream_404_when_track_missing(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = None
+        res = client.get('/api/stream/nope')
+    assert res.status_code == 404
+
+
+def test_stream_404_when_file_does_not_exist(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = "/nonexistent/file.flac"
+        res = client.get('/api/stream/t-a')
+    assert res.status_code == 404
+
+
 def test_fleet_track_lookup_requires_param(client, mock_config):
     res = client.get('/api/fleet/track')
     assert res.status_code == 400

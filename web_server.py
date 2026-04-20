@@ -530,6 +530,67 @@ def api_library_album_cover(album_id: str):
         return ("", 500)
 
 
+@app.route("/api/library/albums/<path:album_id>/tracks")
+def api_library_album_tracks(album_id: str):
+    """Ordered track list for an album — feeds the detail/playback view."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            rows = db.list_album_tracks(album_id)
+        public = [
+            {
+                "mbid": r["mbid"],
+                "title": r["title"],
+                "artist": r["artist"],
+                "album": r["album"],
+                "track_number": r["track_number"],
+                "disc_number": r["disc_number"],
+            }
+            for r in rows
+        ]
+        return jsonify({"success": True, "tracks": public})
+    except Exception as e:
+        logger.exception("api_library_album_tracks failed for %s", album_id)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/stream/<path:mbid>")
+def api_stream_track(mbid: str):
+    """Stream a track's audio bytes. Uses Flask's conditional send_file
+    so the browser's <audio> element gets Range/206 responses for seeks
+    without us having to parse byte ranges manually."""
+    if not config:
+        return ("", 503)
+    try:
+        from flask import send_file
+
+        with DatabaseManager(config.db_path) as db:
+            path = db.get_track_local_path(mbid)
+        if not path or not os.path.isfile(path):
+            return ("", 404)
+
+        mime = _guess_audio_mime(path)
+        return send_file(path, mimetype=mime, conditional=True)
+    except Exception:
+        logger.exception("api_stream_track failed for %s", mbid)
+        return ("", 500)
+
+
+def _guess_audio_mime(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    return {
+        ".flac": "audio/flac",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".wav": "audio/wav",
+        ".aac": "audio/aac",
+    }.get(ext, "application/octet-stream")
+
+
 @app.route("/api/healthz")
 def healthz():
     """Liveness probe for container orchestrators.

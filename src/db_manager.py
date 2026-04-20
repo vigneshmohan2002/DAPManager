@@ -529,6 +529,47 @@ class DatabaseManager:
         cursor.close()
         return row["local_path"] if row else None
 
+    def list_album_tracks(self, album_id: str) -> List[dict]:
+        """Ordered tracks belonging to the album identified by ``album_id``.
+
+        ``album_id`` matches the id returned by ``list_albums`` — either a
+        release_mbid or an ``album|artist`` synthetic. Ordered by disc
+        then track number, with title as a final tiebreaker so tracks
+        without numbers still sort predictably.
+        """
+        if not album_id:
+            return []
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT mbid, title, artist, album, track_number, disc_number, local_path
+            FROM tracks
+            WHERE deleted_at IS NULL
+              AND local_path IS NOT NULL
+              AND (release_mbid = ? OR (album || '|' || artist) = ?)
+            ORDER BY COALESCE(disc_number, 1),
+                     COALESCE(track_number, 9999),
+                     title COLLATE NOCASE
+            """,
+            (album_id, album_id),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def get_track_local_path(self, mbid: str) -> Optional[str]:
+        """Resolve an mbid to its local file path, or None if missing."""
+        if not mbid:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT local_path FROM tracks WHERE mbid = ? AND deleted_at IS NULL",
+            (mbid,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row["local_path"] if row and row["local_path"] else None
+
     def has_queued_mbid(self, mbid: str) -> bool:
         """True if any row in download_queue already targets this MBID,
         regardless of status. Used by the release watcher to avoid

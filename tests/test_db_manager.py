@@ -129,6 +129,63 @@ def test_get_album_cover_path_by_mbid_and_synthetic(db):
     assert db.get_album_cover_path("nope") is None
 
 
+def test_list_album_tracks_orders_by_disc_then_track(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t-b", title="B side", artist="A", album="Alb",
+        local_path="/p/b.flac", release_mbid="rmb", disc_number=1, track_number=2,
+    ))
+    db.add_or_update_track(Track(
+        mbid="t-a", title="A side", artist="A", album="Alb",
+        local_path="/p/a.flac", release_mbid="rmb", disc_number=1, track_number=1,
+    ))
+    db.add_or_update_track(Track(
+        mbid="t-d", title="D2 first", artist="A", album="Alb",
+        local_path="/p/d.flac", release_mbid="rmb", disc_number=2, track_number=1,
+    ))
+    rows = db.list_album_tracks("rmb")
+    assert [r["mbid"] for r in rows] == ["t-a", "t-b", "t-d"]
+
+
+def test_list_album_tracks_accepts_synthetic_id(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="Art", album="Alb",
+        local_path="/p/1.flac",
+    ))
+    rows = db.list_album_tracks("Alb|Art")
+    assert len(rows) == 1 and rows[0]["mbid"] == "t1"
+
+
+def test_list_album_tracks_skips_missing_local_path(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="Art", album="Alb",
+        local_path="/p/1.flac", release_mbid="rmb",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t2", title="S2", artist="Art", album="Alb",
+        local_path=None, release_mbid="rmb",
+    ))
+    rows = db.list_album_tracks("rmb")
+    assert [r["mbid"] for r in rows] == ["t1"]
+
+
+def test_list_album_tracks_returns_empty_for_blank_id(db):
+    assert db.list_album_tracks("") == []
+
+
+def test_get_track_local_path(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S", artist="A", album="Al",
+        local_path="/music/s.flac",
+    ))
+    assert db.get_track_local_path("t1") == "/music/s.flac"
+    assert db.get_track_local_path("nope") is None
+    assert db.get_track_local_path("") is None
+
+
 def test_has_queued_mbid(db):
     assert db.has_queued_mbid("mbid-x") is False
     assert db.has_queued_mbid("") is False
