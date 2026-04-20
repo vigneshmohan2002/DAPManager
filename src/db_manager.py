@@ -480,6 +480,21 @@ class DatabaseManager:
             return ""
         return " ".join(s.lower().split())
 
+    def has_queued_mbid(self, mbid: str) -> bool:
+        """True if any row in download_queue already targets this MBID,
+        regardless of status. Used by the release watcher to avoid
+        re-queuing the same album on every tick."""
+        if not mbid:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM download_queue WHERE mbid_guess = ? LIMIT 1",
+            (mbid,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row is not None
+
     def is_download_queued(self, search_query: str) -> bool:
         """Return True if a normalized form of ``search_query`` is already
         pending or failed in the queue."""

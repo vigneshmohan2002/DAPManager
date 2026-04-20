@@ -74,6 +74,24 @@ def test_download_queue(db):
     assert queue[0].status == "success"
 
 
+def test_has_queued_mbid(db):
+    assert db.has_queued_mbid("mbid-x") is False
+    assert db.has_queued_mbid("") is False
+
+    db.queue_download(DownloadItem(
+        search_query="A - B", playlist_id="", mbid_guess="mbid-x", status="pending",
+    ))
+    assert db.has_queued_mbid("mbid-x") is True
+
+    # Still True after status flips — release_watcher must not re-queue
+    # an album that's already been attempted.
+    row = db.get_all_downloads()[0]
+    db.update_download_status(row.id, "failed")
+    assert db.has_queued_mbid("mbid-x") is True
+    db.update_download_status(row.id, "success")
+    assert db.has_queued_mbid("mbid-x") is True
+
+
 def test_schema_migration_renames_ipod_columns():
     """Opening an old-schema DB should rename ipod_path/synced_to_ipod → dap_*."""
     with tempfile.TemporaryDirectory() as tmp:

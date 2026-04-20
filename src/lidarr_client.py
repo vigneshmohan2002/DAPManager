@@ -178,6 +178,29 @@ class LidarrClient:
             return data["records"]
         return data or []
 
+    def get_wanted_missing(
+        self, page: int = 1, page_size: int = 50
+    ) -> List[dict]:
+        """Albums Lidarr is tracking but hasn't grabbed yet.
+
+        The release watcher polls this and routes each record through
+        sldl. Returns the ``records`` list from Lidarr's paginated
+        response; sorted newest release first.
+        """
+        data = self._get(
+            "/wanted/missing",
+            params={
+                "page": page,
+                "pageSize": page_size,
+                "sortKey": "releaseDate",
+                "sortDirection": "descending",
+                "includeArtist": True,
+            },
+        )
+        if isinstance(data, dict) and "records" in data:
+            return data["records"]
+        return data or []
+
     # ---------- Monitoring / enqueue ----------
 
     def add_artist(

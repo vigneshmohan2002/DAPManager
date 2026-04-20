@@ -51,6 +51,8 @@ EDITABLE_KEYS = frozenset({
     "lidarr_api_key",
     "lidarr_quality_profile_id",
     "lidarr_root_folder_path",
+    "lidarr_watch_enabled",
+    "lidarr_watch_interval_seconds",
 })
 
 BOOL_KEYS = frozenset({
@@ -62,6 +64,7 @@ BOOL_KEYS = frozenset({
     "is_master",
     "sync_on_startup",
     "lidarr_enabled",
+    "lidarr_watch_enabled",
 })
 
 # Ordered groups for UI rendering. Each entry: (label, [keys...]).
@@ -110,5 +113,7 @@ GROUPS = [
         "lidarr_api_key",
         "lidarr_quality_profile_id",
         "lidarr_root_folder_path",
+        "lidarr_watch_enabled",
+        "lidarr_watch_interval_seconds",
     ]),
 ]

@@ -25,6 +25,7 @@ def config_exists():
 task_manager = None
 config = None
 sync_scheduler = None
+release_watcher_scheduler = None
 
 
 class TaskManager:
@@ -109,6 +110,7 @@ def init_app_logic():
         )
 
     _start_sync_scheduler()
+    _start_release_watcher()
 
 
 def _start_sync_scheduler():
@@ -126,6 +128,37 @@ def _start_sync_scheduler():
 
     sync_scheduler = SyncScheduler(interval, _trigger, run_on_startup=on_startup)
     sync_scheduler.start()
+
+
+def _start_release_watcher():
+    """Poll Lidarr's wanted/missing list and route new releases through sldl.
+
+    Master-only and opt-in (``lidarr_watch_enabled``). Skips silently when
+    Lidarr isn't configured — see ``downloader._build_lidarr_client`` for
+    the full guard chain.
+    """
+    global release_watcher_scheduler
+    from src.sync_scheduler import SyncScheduler
+    from src.downloader import _build_lidarr_client
+    from src.release_watcher import run_watch_tick
+
+    if not bool(config._config.get("lidarr_watch_enabled") or False):
+        logger.info("release_watcher disabled (lidarr_watch_enabled != true).")
+        release_watcher_scheduler = None
+        return
+
+    interval = int(config._config.get("lidarr_watch_interval_seconds") or 3600)
+
+    def _trigger():
+        client = _build_lidarr_client(config._config)
+        if client is None:
+            logger.debug("release_watcher: Lidarr unavailable; skipping tick.")
+            return
+        with DatabaseManager(config.db_path) as db:
+            run_watch_tick(db, client)
+
+    release_watcher_scheduler = SyncScheduler(interval, _trigger, run_on_startup=False)
+    release_watcher_scheduler.start()
 
 
 # Helper wrappers (need to be defined or redefined after init)

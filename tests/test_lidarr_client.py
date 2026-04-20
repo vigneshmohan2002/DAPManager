@@ -108,6 +108,23 @@ def test_get_queue_accepts_bare_list(client):
         assert client.get_queue() == [{"id": 9}]
 
 
+def test_get_wanted_missing_unwraps_records_and_sends_sort_params(client):
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None):
+        captured["params"] = params
+        return _resp(200, {"records": [{"id": 1, "foreignAlbumId": "m1"}], "page": 1})
+
+    with patch.object(client.session, "get", side_effect=fake_get):
+        records = client.get_wanted_missing(page_size=10)
+
+    assert records == [{"id": 1, "foreignAlbumId": "m1"}]
+    assert captured["params"]["sortKey"] == "releaseDate"
+    assert captured["params"]["sortDirection"] == "descending"
+    assert captured["params"]["pageSize"] == 10
+    assert captured["params"]["includeArtist"] is True
+
+
 def test_get_artist_by_mbid_returns_first(client):
     with patch.object(
         client.session,
