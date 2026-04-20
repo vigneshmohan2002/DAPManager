@@ -286,7 +286,7 @@ from src.config_keys import (
     SECRET_KEYS as CONFIG_SECRET_KEYS,
 )
 
-API_AUTH_EXEMPT_PATHS = {"/api/status"}
+API_AUTH_EXEMPT_PATHS = {"/api/status", "/api/healthz"}
 
 
 @app.before_request
@@ -433,6 +433,20 @@ def save_config():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
+
+@app.route("/api/healthz")
+def healthz():
+    """Liveness probe for container orchestrators.
+
+    Unauthenticated and side-effect-free; returns 200 once the Flask
+    app is up and config has loaded. Exempt from the API-token gate.
+    """
+    ok = config is not None
+    return (
+        jsonify({"ok": ok, "initialized": task_manager is not None}),
+        200 if ok else 503,
+    )
 
 
 @app.route("/api/status")

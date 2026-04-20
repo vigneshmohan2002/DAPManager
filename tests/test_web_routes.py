@@ -13,6 +13,19 @@ def test_api_status(client, mock_config):
     assert 'message' in data
     assert 'detail' in data
 
+
+def test_healthz_ok_when_config_loaded(client, mock_config):
+    res = client.get('/api/healthz')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data == {"ok": True, "initialized": True}
+
+
+def test_healthz_unauthenticated_with_token_set(client, _token_config):
+    # /api/healthz is exempt from Bearer-token gate so container probes work.
+    res = client.get('/api/healthz')
+    assert res.status_code == 200
+
 def test_api_stats(client, mock_config):
     """Test stats endpoint. Mocks DB interaction."""
     # We need to mock DatabaseManager within web_server context
