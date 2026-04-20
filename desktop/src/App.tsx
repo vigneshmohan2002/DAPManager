@@ -1,56 +1,57 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import PlayerBar from "./components/PlayerBar";
+import Sidebar from "./components/Sidebar";
+import AlbumsScreen from "./screens/AlbumsScreen";
+import { waitForBackend } from "./lib/api";
 
 type BackendStatus = "booting" | "ready" | "failed";
 
 function App() {
-  const [backend, setBackend] = useState<string>("");
   const [status, setStatus] = useState<BackendStatus>("booting");
+  const [screen, setScreen] = useState<string>("albums");
 
   useEffect(() => {
     let cancelled = false;
-
-    async function wait() {
-      const url = await invoke<string>("backend_url");
-      if (cancelled) return;
-      setBackend(url);
-
-      // Poll /api/healthz until the Flask sidecar answers.
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline && !cancelled) {
-        try {
-          const r = await fetch(`${url}/api/healthz`);
-          if (r.ok) {
-            if (!cancelled) setStatus("ready");
-            return;
-          }
-        } catch {
-          // backend not up yet
-        }
-        await new Promise((res) => setTimeout(res, 500));
-      }
-      if (!cancelled) setStatus("failed");
-    }
-
-    wait();
+    (async () => {
+      const ok = await waitForBackend();
+      if (!cancelled) setStatus(ok ? "ready" : "failed");
+    })();
     return () => {
       cancelled = true;
     };
   }, []);
 
   return (
-    <main className="shell">
-      <header className="shell__titlebar" />
-      <div className="shell__body">
-        <h1>DAPManager</h1>
-        <p className="shell__status" data-status={status}>
-          {status === "booting" && "Starting Python backend…"}
-          {status === "ready" && `Backend ready at ${backend}`}
-          {status === "failed" && "Backend failed to start — check terminal."}
-        </p>
+    <div className="h-screen w-screen flex flex-col">
+      <div className="flex-1 flex min-h-0">
+        <Sidebar activeId={screen} onSelect={setScreen} />
+        <main className="flex-1 flex flex-col min-w-0">
+          {status === "failed" ? (
+            <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
+              Backend failed to start — check the terminal.
+            </div>
+          ) : screen === "albums" ? (
+            <AlbumsScreen ready={status === "ready"} />
+          ) : (
+            <Placeholder name={screen} />
+          )}
+        </main>
       </div>
-    </main>
+      <PlayerBar />
+    </div>
+  );
+}
+
+function Placeholder({ name }: { name: string }) {
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <header className="titlebar-drag h-14 shrink-0 border-b border-[var(--color-border)] flex items-center px-6">
+        <h1 className="text-lg font-semibold capitalize">{name}</h1>
+      </header>
+      <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)] text-sm">
+        Coming soon
+      </div>
+    </div>
   );
 }
 
