@@ -509,6 +509,35 @@ class DatabaseManager:
         cursor.close()
         return rows
 
+    def list_all_tracks(self) -> List[dict]:
+        """Every playable track in the library, flat. Feeds the Songs screen.
+
+        Includes the derived ``album_id`` (release_mbid when present, else
+        the ``album|artist`` synthetic) so the UI can look cover art up
+        and play back without another round-trip. Soft-deleted rows and
+        rows without a local file are excluded — Songs is a "what can I
+        actually play right now" view, not a catalog view.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                mbid, title, artist, album, track_number, disc_number,
+                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
+            FROM tracks
+            WHERE deleted_at IS NULL
+              AND local_path IS NOT NULL
+            ORDER BY artist COLLATE NOCASE,
+                     album COLLATE NOCASE,
+                     COALESCE(disc_number, 1),
+                     COALESCE(track_number, 9999),
+                     title COLLATE NOCASE
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def list_artists(self) -> List[dict]:
         """Distinct artists with album and track counts.
 

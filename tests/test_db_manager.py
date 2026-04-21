@@ -113,6 +113,41 @@ def test_list_albums_skips_tracks_without_album(db):
     assert db.list_albums() == []
 
 
+def test_list_all_tracks_returns_playable_only(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t-playable", title="S", artist="A", album="Al",
+        local_path="/m/1.flac", release_mbid="rmb",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t-catalog-only", title="C", artist="A", album="Al",
+        local_path=None, release_mbid="rmb",
+    ))
+    rows = db.list_all_tracks()
+    mbids = [r["mbid"] for r in rows]
+    assert "t-playable" in mbids
+    assert "t-catalog-only" not in mbids
+    assert rows[0]["album_id"] == "rmb"
+
+
+def test_list_all_tracks_sorts_artist_album_disc_track(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t-bravo", title="X", artist="Bravo", album="B",
+        local_path="/m/b.flac", track_number=1,
+    ))
+    db.add_or_update_track(Track(
+        mbid="t-alpha-2", title="Y", artist="Alpha", album="A",
+        local_path="/m/a2.flac", track_number=2,
+    ))
+    db.add_or_update_track(Track(
+        mbid="t-alpha-1", title="Z", artist="Alpha", album="A",
+        local_path="/m/a1.flac", track_number=1,
+    ))
+    rows = db.list_all_tracks()
+    assert [r["mbid"] for r in rows] == ["t-alpha-1", "t-alpha-2", "t-bravo"]
+
+
 def test_list_artists_groups_and_counts(db):
     from src.db_manager import Track
     db.add_or_update_track(Track(

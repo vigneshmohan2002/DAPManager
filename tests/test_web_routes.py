@@ -397,6 +397,20 @@ def test_library_albums_lists_albums(client, mock_config):
     assert data["albums"][0]["track_count"] == 10
 
 
+def test_library_tracks_returns_flat_list(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_all_tracks.return_value = [
+            {"mbid": "t-1", "title": "Song", "artist": "A", "album": "Alb",
+             "track_number": 1, "disc_number": 1, "album_id": "rmb-1"},
+        ]
+        res = client.get('/api/library/tracks')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["tracks"][0]["album_id"] == "rmb-1"
+
+
 def test_library_artists_lists_artists(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         MockDB.return_value.__enter__.return_value.list_artists.return_value = [

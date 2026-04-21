@@ -501,6 +501,25 @@ def api_library_albums():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/tracks")
+def api_library_tracks():
+    """Flat list of every playable track. Feeds the desktop Songs screen.
+
+    Excludes soft-deleted rows and rows without a local file. Includes
+    ``album_id`` so the UI can render cover art and play without another
+    API call.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            tracks = db.list_all_tracks()
+        return jsonify({"success": True, "tracks": tracks})
+    except Exception as e:
+        logger.exception("api_library_tracks failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/artists")
 def api_library_artists():
     """List distinct artists with album + track counts.
