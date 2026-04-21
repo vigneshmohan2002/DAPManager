@@ -57,6 +57,26 @@ export async function fetchAlbums(): Promise<Album[]> {
   return (data.albums ?? []) as Album[];
 }
 
+export type SearchTrackResult = {
+  mbid: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  path: string | null;
+};
+
+export async function searchTracks(query: string): Promise<SearchTrackResult[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/search?q=${encodeURIComponent(q)}`,
+  );
+  if (!r.ok) throw new Error(`search: ${r.status}`);
+  const data = await r.json();
+  return (data.results ?? []) as SearchTrackResult[];
+}
+
 export async function fetchAllTracks(): Promise<LibraryTrack[]> {
   const url = await backendUrl();
   const r = await fetch(`${url}/api/library/tracks`);

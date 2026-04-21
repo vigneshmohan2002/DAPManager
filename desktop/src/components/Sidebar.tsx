@@ -11,6 +11,7 @@ type SidebarSection = {
 type Props = {
   activeId: string;
   onSelect: (id: string) => void;
+  onOpenSearch: () => void;
 };
 
 const SECTIONS: SidebarSection[] = [
@@ -39,10 +40,23 @@ const SECTIONS: SidebarSection[] = [
   },
 ];
 
-export default function Sidebar({ activeId, onSelect }: Props) {
+export default function Sidebar({ activeId, onSelect, onOpenSearch }: Props) {
+  const isMac =
+    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
   return (
     <aside className="w-60 shrink-0 bg-[var(--color-bg-sidebar)] border-r border-[var(--color-border)] flex flex-col">
       <div className="titlebar-drag h-10 shrink-0" />
+      <div className="px-3 pb-3 titlebar-nodrag">
+        <button
+          onClick={onOpenSearch}
+          className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md bg-[var(--color-surface)]/70 hover:bg-[var(--color-surface)] text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+        >
+          <span>Search</span>
+          <span className="ml-auto text-xs tracking-wide border border-[var(--color-border)] rounded px-1.5 py-0.5">
+            {isMac ? "⌘K" : "Ctrl K"}
+          </span>
+        </button>
+      </div>
       <nav className="flex-1 overflow-y-auto px-3 pb-4">
         {SECTIONS.map((section) => (
           <div key={section.title} className="mb-6">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import PlayerBar from "./components/PlayerBar";
 import QueuePanel from "./components/QueuePanel";
+import SearchOverlay from "./components/SearchOverlay";
 import Sidebar from "./components/Sidebar";
 import AlbumsScreen from "./screens/AlbumsScreen";
 import AlbumDetailScreen from "./screens/AlbumDetailScreen";
@@ -18,6 +19,18 @@ function App() {
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,6 +47,16 @@ function App() {
     setScreen(id);
     setOpenAlbum(null);
     setOpenArtist(null);
+  };
+
+  const openArtistFromSearch = (a: Artist) => {
+    setScreen("artists");
+    setOpenArtist(a);
+    setOpenAlbum(null);
+  };
+
+  const openAlbumFromSearch = (a: Album) => {
+    setOpenAlbum(a);
   };
 
   const renderScreen = () => {
@@ -74,13 +97,23 @@ function App() {
     <PlayerProvider>
       <div className="h-screen w-screen flex flex-col">
         <div className="flex-1 flex min-h-0">
-          <Sidebar activeId={screen} onSelect={handleSidebarSelect} />
+          <Sidebar
+            activeId={screen}
+            onSelect={handleSidebarSelect}
+            onOpenSearch={() => setSearchOpen(true)}
+          />
           <main className="flex-1 flex flex-col min-w-0">{renderScreen()}</main>
           <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
         </div>
         <PlayerBar
           queueOpen={queueOpen}
           onToggleQueue={() => setQueueOpen((q) => !q)}
+        />
+        <SearchOverlay
+          open={searchOpen}
+          onClose={() => setSearchOpen(false)}
+          onOpenAlbum={openAlbumFromSearch}
+          onOpenArtist={openArtistFromSearch}
         />
       </div>
     </PlayerProvider>
