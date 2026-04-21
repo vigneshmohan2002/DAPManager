@@ -9,7 +9,12 @@ function fmt(secs: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export default function PlayerBar() {
+type Props = {
+  queueOpen: boolean;
+  onToggleQueue: () => void;
+};
+
+export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
   const { current, isPlaying, position, duration, toggle, next, prev, seek } =
     usePlayer();
   const [base, setBase] = useState("");
@@ -89,6 +94,18 @@ export default function PlayerBar() {
           className="w-9 h-9 rounded-full hover:text-[var(--color-text)] disabled:opacity-40"
         >
           ⏭
+        </button>
+        <button
+          onClick={onToggleQueue}
+          aria-label={queueOpen ? "Hide queue" : "Show queue"}
+          aria-pressed={queueOpen}
+          className={`w-9 h-9 rounded-md ml-1 text-sm hover:text-[var(--color-text)] ${
+            queueOpen
+              ? "bg-[var(--color-surface)] text-[var(--color-text)]"
+              : "hover:bg-[var(--color-surface)]/60"
+          }`}
+        >
+          ☰
         </button>
       </div>
     </footer>

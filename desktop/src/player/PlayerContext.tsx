@@ -24,6 +24,9 @@ type PlayerState = {
   next: () => void;
   prev: () => void;
   seek: (seconds: number) => void;
+  jumpTo: (index: number) => void;
+  removeFromQueue: (index: number) => void;
+  clearQueue: () => void;
 };
 
 const Ctx = createContext<PlayerState | null>(null);
@@ -116,6 +119,52 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setIndex((i) => Math.max(0, i - 1));
   }, []);
 
+  const jumpTo = useCallback(
+    (target: number) => {
+      setIndex((i) => {
+        if (target < 0 || target >= queue.length) return i;
+        return target;
+      });
+    },
+    [queue.length],
+  );
+
+  // Removing the currently-playing track jumps to the next one — or
+  // stops playback if it was the last. Removing something earlier in
+  // the queue has to decrement `index` so the current track doesn't
+  // change identity under us.
+  const removeFromQueue = useCallback((target: number) => {
+    setQueue((q) => {
+      if (target < 0 || target >= q.length) return q;
+      return [...q.slice(0, target), ...q.slice(target + 1)];
+    });
+    setIndex((i) => {
+      if (target < i) return i - 1;
+      if (target === i) return i; // keep index; effect below clamps/stops
+      return i;
+    });
+  }, []);
+
+  // If the queue shrank out from under the current index, clamp it.
+  useEffect(() => {
+    if (queue.length === 0) {
+      setIsPlaying(false);
+      const audio = audioRef.current;
+      if (audio) {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      }
+      return;
+    }
+    if (index >= queue.length) setIndex(queue.length - 1);
+  }, [queue.length, index]);
+
+  const clearQueue = useCallback(() => {
+    setQueue([]);
+    setIndex(0);
+  }, []);
+
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -159,8 +208,26 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       next,
       prev,
       seek,
+      jumpTo,
+      removeFromQueue,
+      clearQueue,
     }),
-    [queue, index, current, isPlaying, position, duration, play, toggle, next, prev, seek],
+    [
+      queue,
+      index,
+      current,
+      isPlaying,
+      position,
+      duration,
+      play,
+      toggle,
+      next,
+      prev,
+      seek,
+      jumpTo,
+      removeFromQueue,
+      clearQueue,
+    ],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

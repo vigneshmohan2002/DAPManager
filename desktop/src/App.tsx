@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import PlayerBar from "./components/PlayerBar";
+import QueuePanel from "./components/QueuePanel";
 import Sidebar from "./components/Sidebar";
 import AlbumsScreen from "./screens/AlbumsScreen";
 import AlbumDetailScreen from "./screens/AlbumDetailScreen";
@@ -16,6 +17,7 @@ function App() {
   const [screen, setScreen] = useState<string>("albums");
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
+  const [queueOpen, setQueueOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,8 +76,12 @@ function App() {
         <div className="flex-1 flex min-h-0">
           <Sidebar activeId={screen} onSelect={handleSidebarSelect} />
           <main className="flex-1 flex flex-col min-w-0">{renderScreen()}</main>
+          <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
         </div>
-        <PlayerBar />
+        <PlayerBar
+          queueOpen={queueOpen}
+          onToggleQueue={() => setQueueOpen((q) => !q)}
+        />
       </div>
     </PlayerProvider>
   );
