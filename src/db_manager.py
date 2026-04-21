@@ -509,6 +509,33 @@ class DatabaseManager:
         cursor.close()
         return rows
 
+    def list_artists(self) -> List[dict]:
+        """Distinct artists with album and track counts.
+
+        Mirrors ``list_albums`` in that it ignores soft-deleted rows and
+        only counts tracks that have an album attached (we don't want
+        loose singles inflating album_count). Sort is case-insensitive
+        on the artist name so the UI can render it directly.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                artist AS name,
+                COUNT(DISTINCT COALESCE(NULLIF(release_mbid, ''), album || '|' || artist)) AS album_count,
+                COUNT(*) AS track_count
+            FROM tracks
+            WHERE deleted_at IS NULL
+              AND artist IS NOT NULL AND artist != ''
+              AND album IS NOT NULL AND album != ''
+            GROUP BY artist
+            ORDER BY artist COLLATE NOCASE
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def get_album_cover_path(self, album_id: str) -> Optional[str]:
         """Return one track file path for an album id — used to extract
         embedded cover art. ``album_id`` is whatever ``list_albums``

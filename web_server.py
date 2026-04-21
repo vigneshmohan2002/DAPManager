@@ -501,6 +501,25 @@ def api_library_albums():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/artists")
+def api_library_artists():
+    """List distinct artists with album + track counts.
+
+    Feeds the desktop Artists screen. Artist name is used as the
+    identifier since we don't have a separate artists table — the
+    frontend passes it back URL-encoded to fetch that artist's albums.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            artists = db.list_artists()
+        return jsonify({"success": True, "artists": artists})
+    except Exception as e:
+        logger.exception("api_library_artists failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/albums/<path:album_id>/cover")
 def api_library_album_cover(album_id: str):
     """Return embedded cover art for an album, or 404 if none."""

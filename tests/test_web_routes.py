@@ -397,6 +397,21 @@ def test_library_albums_lists_albums(client, mock_config):
     assert data["albums"][0]["track_count"] == 10
 
 
+def test_library_artists_lists_artists(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_artists.return_value = [
+            {"name": "Alpha", "album_count": 2, "track_count": 20},
+            {"name": "Bravo", "album_count": 1, "track_count": 8},
+        ]
+        res = client.get('/api/library/artists')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert [a["name"] for a in data["artists"]] == ["Alpha", "Bravo"]
+    assert data["artists"][0]["album_count"] == 2
+
+
 def test_library_album_cover_returns_bytes(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB, \
          patch('src.cover_art.extract_cover', return_value=(b"JPEG", "image/jpeg")):

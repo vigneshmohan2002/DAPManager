@@ -113,6 +113,43 @@ def test_list_albums_skips_tracks_without_album(db):
     assert db.list_albums() == []
 
 
+def test_list_artists_groups_and_counts(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S1", artist="Alpha", album="A1",
+        local_path="/m/a/1.flac", release_mbid="rmb-a1",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t2", title="S2", artist="Alpha", album="A1",
+        local_path="/m/a/2.flac", release_mbid="rmb-a1",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t3", title="S3", artist="Alpha", album="A2",
+        local_path="/m/a/3.flac", release_mbid="rmb-a2",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t4", title="S4", artist="Bravo", album="B1",
+        local_path="/m/b/1.flac", release_mbid="rmb-b1",
+    ))
+    artists = db.list_artists()
+    by_name = {a["name"]: a for a in artists}
+    assert by_name["Alpha"]["album_count"] == 2
+    assert by_name["Alpha"]["track_count"] == 3
+    assert by_name["Bravo"]["album_count"] == 1
+    assert by_name["Bravo"]["track_count"] == 1
+    # Sort is case-insensitive alphabetical.
+    assert [a["name"] for a in artists] == ["Alpha", "Bravo"]
+
+
+def test_list_artists_skips_tracks_without_album(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="Single", artist="Loose", album="",
+        local_path="/m/loose.flac",
+    ))
+    assert db.list_artists() == []
+
+
 def test_get_album_cover_path_by_mbid_and_synthetic(db):
     from src.db_manager import Track
     db.add_or_update_track(Track(
