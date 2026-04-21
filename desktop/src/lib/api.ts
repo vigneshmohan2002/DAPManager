@@ -7,6 +7,12 @@ export type Album = {
   track_count: number;
 };
 
+export type Artist = {
+  name: string;
+  album_count: number;
+  track_count: number;
+};
+
 export type Track = {
   mbid: string;
   title: string;
@@ -45,6 +51,14 @@ export async function fetchAlbums(): Promise<Album[]> {
   if (!r.ok) throw new Error(`albums: ${r.status}`);
   const data = await r.json();
   return (data.albums ?? []) as Album[];
+}
+
+export async function fetchArtists(): Promise<Artist[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/artists`);
+  if (!r.ok) throw new Error(`artists: ${r.status}`);
+  const data = await r.json();
+  return (data.artists ?? []) as Artist[];
 }
 
 export function albumCoverUrl(base: string, albumId: string): string {

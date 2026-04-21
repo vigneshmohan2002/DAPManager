@@ -3,7 +3,9 @@ import PlayerBar from "./components/PlayerBar";
 import Sidebar from "./components/Sidebar";
 import AlbumsScreen from "./screens/AlbumsScreen";
 import AlbumDetailScreen from "./screens/AlbumDetailScreen";
-import { waitForBackend, type Album } from "./lib/api";
+import ArtistsScreen from "./screens/ArtistsScreen";
+import ArtistDetailScreen from "./screens/ArtistDetailScreen";
+import { waitForBackend, type Album, type Artist } from "./lib/api";
 import { PlayerProvider } from "./player/PlayerContext";
 
 type BackendStatus = "booting" | "ready" | "failed";
@@ -12,6 +14,7 @@ function App() {
   const [status, setStatus] = useState<BackendStatus>("booting");
   const [screen, setScreen] = useState<string>("albums");
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
+  const [openArtist, setOpenArtist] = useState<Artist | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,6 +30,38 @@ function App() {
   const handleSidebarSelect = (id: string) => {
     setScreen(id);
     setOpenAlbum(null);
+    setOpenArtist(null);
+  };
+
+  const renderScreen = () => {
+    if (status === "failed") {
+      return (
+        <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
+          Backend failed to start — check the terminal.
+        </div>
+      );
+    }
+    if (openAlbum) {
+      return (
+        <AlbumDetailScreen album={openAlbum} onBack={() => setOpenAlbum(null)} />
+      );
+    }
+    if (screen === "albums") {
+      return <AlbumsScreen ready={status === "ready"} onOpen={setOpenAlbum} />;
+    }
+    if (screen === "artists") {
+      if (openArtist) {
+        return (
+          <ArtistDetailScreen
+            artist={openArtist}
+            onBack={() => setOpenArtist(null)}
+            onOpenAlbum={setOpenAlbum}
+          />
+        );
+      }
+      return <ArtistsScreen ready={status === "ready"} onOpen={setOpenArtist} />;
+    }
+    return <Placeholder name={screen} />;
   };
 
   return (
@@ -34,22 +69,7 @@ function App() {
       <div className="h-screen w-screen flex flex-col">
         <div className="flex-1 flex min-h-0">
           <Sidebar activeId={screen} onSelect={handleSidebarSelect} />
-          <main className="flex-1 flex flex-col min-w-0">
-            {status === "failed" ? (
-              <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
-                Backend failed to start — check the terminal.
-              </div>
-            ) : screen === "albums" && openAlbum ? (
-              <AlbumDetailScreen
-                album={openAlbum}
-                onBack={() => setOpenAlbum(null)}
-              />
-            ) : screen === "albums" ? (
-              <AlbumsScreen ready={status === "ready"} onOpen={setOpenAlbum} />
-            ) : (
-              <Placeholder name={screen} />
-            )}
-          </main>
+          <main className="flex-1 flex flex-col min-w-0">{renderScreen()}</main>
         </div>
         <PlayerBar />
       </div>
