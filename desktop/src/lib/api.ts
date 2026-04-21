@@ -22,6 +22,10 @@ export type Track = {
   disc_number: number | null;
 };
 
+export type LibraryTrack = Track & {
+  album_id: string | null;
+};
+
 let cachedBackend: string | null = null;
 
 export async function backendUrl(): Promise<string> {
@@ -51,6 +55,14 @@ export async function fetchAlbums(): Promise<Album[]> {
   if (!r.ok) throw new Error(`albums: ${r.status}`);
   const data = await r.json();
   return (data.albums ?? []) as Album[];
+}
+
+export async function fetchAllTracks(): Promise<LibraryTrack[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/tracks`);
+  if (!r.ok) throw new Error(`tracks: ${r.status}`);
+  const data = await r.json();
+  return (data.tracks ?? []) as LibraryTrack[];
 }
 
 export async function fetchArtists(): Promise<Artist[]> {

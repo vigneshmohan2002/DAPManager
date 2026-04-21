@@ -5,6 +5,7 @@ import AlbumsScreen from "./screens/AlbumsScreen";
 import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
+import SongsScreen from "./screens/SongsScreen";
 import { waitForBackend, type Album, type Artist } from "./lib/api";
 import { PlayerProvider } from "./player/PlayerContext";
 
@@ -48,6 +49,9 @@ function App() {
     }
     if (screen === "albums") {
       return <AlbumsScreen ready={status === "ready"} onOpen={setOpenAlbum} />;
+    }
+    if (screen === "songs") {
+      return <SongsScreen ready={status === "ready"} />;
     }
     if (screen === "artists") {
       if (openArtist) {
