@@ -113,10 +113,13 @@ def test_list_albums_skips_tracks_without_album(db):
     assert db.list_albums() == []
 
 
-def test_list_all_tracks_returns_playable_only(db):
+def test_list_all_tracks_returns_every_non_deleted_row(db):
+    # The API layer decides what's playable; the DB method surfaces all
+    # non-deleted rows so catalog-only tracks can still be streamed via
+    # the master proxy when configured.
     from src.db_manager import Track
     db.add_or_update_track(Track(
-        mbid="t-playable", title="S", artist="A", album="Al",
+        mbid="t-local", title="S", artist="A", album="Al",
         local_path="/m/1.flac", release_mbid="rmb",
     ))
     db.add_or_update_track(Track(
@@ -124,9 +127,8 @@ def test_list_all_tracks_returns_playable_only(db):
         local_path=None, release_mbid="rmb",
     ))
     rows = db.list_all_tracks()
-    mbids = [r["mbid"] for r in rows]
-    assert "t-playable" in mbids
-    assert "t-catalog-only" not in mbids
+    mbids = {r["mbid"] for r in rows}
+    assert {"t-local", "t-catalog-only"} <= mbids
     assert rows[0]["album_id"] == "rmb"
 
 
@@ -229,7 +231,10 @@ def test_list_album_tracks_accepts_synthetic_id(db):
     assert len(rows) == 1 and rows[0]["mbid"] == "t1"
 
 
-def test_list_album_tracks_skips_missing_local_path(db):
+def test_list_album_tracks_returns_all_rows_with_source_columns(db):
+    # Availability resolution happens at the API layer, so the DB method
+    # must surface every non-deleted row (local, drive-only, or catalog-
+    # only) along with both on-disk path columns.
     from src.db_manager import Track
     db.add_or_update_track(Track(
         mbid="t1", title="S1", artist="Art", album="Alb",
@@ -237,14 +242,33 @@ def test_list_album_tracks_skips_missing_local_path(db):
     ))
     db.add_or_update_track(Track(
         mbid="t2", title="S2", artist="Art", album="Alb",
+        local_path=None, dap_path="/dap/2.flac", release_mbid="rmb",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t3", title="S3", artist="Art", album="Alb",
         local_path=None, release_mbid="rmb",
     ))
     rows = db.list_album_tracks("rmb")
-    assert [r["mbid"] for r in rows] == ["t1"]
+    assert [r["mbid"] for r in rows] == ["t1", "t2", "t3"]
+    assert rows[0]["local_path"] == "/p/1.flac"
+    assert rows[1]["dap_path"] == "/dap/2.flac"
+    assert rows[2]["local_path"] is None and rows[2]["dap_path"] is None
 
 
 def test_list_album_tracks_returns_empty_for_blank_id(db):
     assert db.list_album_tracks("") == []
+
+
+def test_get_track_sources_returns_both_paths(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="S", artist="A", album="Al",
+        local_path="/music/s.flac", dap_path="/dap/s.flac",
+    ))
+    sources = db.get_track_sources("t1")
+    assert sources == {"local_path": "/music/s.flac", "dap_path": "/dap/s.flac"}
+    assert db.get_track_sources("nope") is None
+    assert db.get_track_sources("") is None
 
 
 def test_get_track_local_path(db):

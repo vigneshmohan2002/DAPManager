@@ -510,23 +510,22 @@ class DatabaseManager:
         return rows
 
     def list_all_tracks(self) -> List[dict]:
-        """Every playable track in the library, flat. Feeds the Songs screen.
+        """Every non-deleted track in the library, flat.
 
-        Includes the derived ``album_id`` (release_mbid when present, else
-        the ``album|artist`` synthetic) so the UI can look cover art up
-        and play back without another round-trip. Soft-deleted rows and
-        rows without a local file are excluded — Songs is a "what can I
-        actually play right now" view, not a catalog view.
+        Returns ``local_path`` and ``dap_path`` so the caller can compute
+        playback availability (local disk vs connected drive vs remote
+        stream). The API layer does the filtering — the DB method stays
+        purely about what's recorded.
         """
         cursor = self.conn.cursor()
         cursor.execute(
             """
             SELECT
                 mbid, title, artist, album, track_number, disc_number,
+                local_path, dap_path,
                 COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
             FROM tracks
             WHERE deleted_at IS NULL
-              AND local_path IS NOT NULL
             ORDER BY artist COLLATE NOCASE,
                      album COLLATE NOCASE,
                      COALESCE(disc_number, 1),
@@ -537,6 +536,25 @@ class DatabaseManager:
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.close()
         return rows
+
+    def get_track_sources(self, mbid: str) -> Optional[dict]:
+        """Return both candidate on-disk paths for a track, or None if
+        the row doesn't exist / is soft-deleted.
+
+        Stream resolution prefers ``local_path`` then ``dap_path``;
+        anything missing falls through to the master proxy.
+        """
+        if not mbid:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT local_path, dap_path FROM tracks "
+            "WHERE mbid = ? AND deleted_at IS NULL",
+            (mbid,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return dict(row) if row else None
 
     def list_artists(self) -> List[dict]:
         """Distinct artists with album and track counts.
@@ -598,10 +616,10 @@ class DatabaseManager:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT mbid, title, artist, album, track_number, disc_number, local_path
+            SELECT mbid, title, artist, album, track_number, disc_number,
+                   local_path, dap_path
             FROM tracks
             WHERE deleted_at IS NULL
-              AND local_path IS NOT NULL
               AND (release_mbid = ? OR (album || '|' || artist) = ?)
             ORDER BY COALESCE(disc_number, 1),
                      COALESCE(track_number, 9999),
