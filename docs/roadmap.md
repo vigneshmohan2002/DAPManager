@@ -143,6 +143,15 @@ still sit on disk locally.
 
 **Depends on** the soft-delete work already landed.
 
+**Shipped (backend + web).** DB methods: `purge_track`, `purge_playlist`,
+`get_orphan_tracks`, `get_orphan_playlists`. API routes: `GET
+/api/orphans/{tracks,playlists}`, `POST /api/tracks/<mbid>/restore`,
+`POST /api/playlists/<id>/restore`, `?purge=true` on the existing
+DELETE endpoints, `DELETE /api/tracks/<mbid>/file` (409s on live
+rows, idempotent on already-missing files). Web: `/orphans` page with
+two tabs and confirm-gated destructive actions. Desktop wiring
+deferred until the Tauri app reaches its Library stage.
+
 ---
 
 ### 4. Auto-link local files to catalog rows
@@ -427,7 +436,8 @@ context menu + review dialog + 20 tests.
 5. **#10 Playback availability tiers + master proxy streaming** —
    shipped out-of-band; makes catalog-only rows playable via the
    master. _Done._
-6. **#3 Orphan cleanup page** — closes the soft-delete loop.
+6. **#3 Orphan cleanup page** — closes the soft-delete loop. _Done
+   (backend + web); desktop deferred to the Tauri Library stage._
 6. **#4 Auto-link local files** — solves the "my pre-existing library
    doesn't show up" complaint.
 7. **#5 Download-from-catalog** — converts catalog-only view into a
