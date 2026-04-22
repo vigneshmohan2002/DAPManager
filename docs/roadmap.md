@@ -9,6 +9,13 @@ Items are ordered by bang-for-buck: each "high-value" item is cheap relative
 to its payoff; "meaningful polish" items take more work but close obvious
 gaps in the current experience.
 
+A parallel track — the **Tauri desktop rewrite** (`desktop/`) — is not
+scoped here. It is replacing the PySide6 app stage by stage (see the
+`feat(desktop)` commits); feature parity with the PySide6 UI is tracked
+in the `desktop/` README and the musicat reference memory. Items in
+this document describe *library / sync* capabilities and apply to both
+UIs where relevant.
+
 ---
 
 ## High-value, low-effort
@@ -177,6 +184,46 @@ missing.
 
 **Effort.** ~3–5 hours including walking the library, tag-reading, and
 dry-run/apply modes for tests.
+
+---
+
+### 10. Playback availability tiers + master proxy streaming
+
+**Problem.** Satellites that hold a catalog row but no on-disk file
+could not play that track at all — the Songs / album views filtered
+those rows out, and `/api/stream` only knew how to serve a local path.
+This defeats the point of catalog sync for anyone who wants the master
+to act as the fallback jukebox.
+
+**Surface.**
+- Library endpoints (`/api/library/tracks`,
+  `/api/library/album/<id>/tracks`) attach an `availability` tag per
+  row: `"local"` (local file), `"drive"` (only DAP path set),
+  `"remote"` (no on-disk path but `master_url` configured). Rows that
+  resolve to none of the above are dropped.
+- `/api/stream/<mbid>` resolves sources in priority order: local file
+  → DAP drive → proxy to master's `/api/stream`. Range header and
+  bearer token are forwarded upstream so `<audio>` seeks work across
+  the proxy.
+
+**API changes.** No new routes; existing library/stream endpoints get
+richer behavior. The DB now exposes `get_track_sources(mbid)` returning
+both `local_path` and `dap_path` so the stream handler can decide
+without another query.
+
+**Schema.** None. `dap_path` was already in `tracks`.
+
+**Open questions.**
+- Availability is decided at listing time from column values, not by
+  stat'ing disk — a deliberate trade to avoid N stats per page load.
+  Actual file existence is re-checked in the stream handler, and the
+  proxy fallback catches any "row says local_path but the file vanished"
+  case.
+- The 502-on-master-unreachable path gives the UI a distinct signal
+  from 404-missing-row; the desktop player could show a "master
+  offline" hint on top of a "track missing" hint.
+
+**Shipped.**
 
 ---
 
@@ -377,7 +424,10 @@ context menu + review dialog + 20 tests.
    LAN. Cheap and blocks nothing. _Done._
 4. **#9 Picard-style identify & tag** — shipped out-of-band (user
    request). _Done._
-5. **#3 Orphan cleanup page** — closes the soft-delete loop.
+5. **#10 Playback availability tiers + master proxy streaming** —
+   shipped out-of-band; makes catalog-only rows playable via the
+   master. _Done._
+6. **#3 Orphan cleanup page** — closes the soft-delete loop.
 6. **#4 Auto-link local files** — solves the "my pre-existing library
    doesn't show up" complaint.
 7. **#5 Download-from-catalog** — converts catalog-only view into a
