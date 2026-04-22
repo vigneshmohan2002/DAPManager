@@ -219,6 +219,10 @@
                                 title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
                                 Report Inventory <span class="sync-cursor" data-step="inventory_report"></span>
                             </button>
+                            <button onclick="triggerAction('/api/catalog/link-local', 'Scanning library to link catalog rows...');"
+                                title="Scan music_library_path and bind unlinked catalog rows to on-disk files by MBID / ISRC / artist+title. Safe to re-run.">
+                                Link Local Files
+                            </button>
                             <a href="/fleet" style="align-self:center; color:#8bd; margin-left:8px;">Fleet view →</a>
                             <a href="/orphans" style="align-self:center; color:#8bd; margin-left:8px;">Orphans →</a>
                         </div>
