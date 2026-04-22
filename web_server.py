@@ -1554,6 +1554,80 @@ def post_suggestions():
     })
 
 
+@app.route("/api/catalog/queue-download", methods=["POST"])
+def catalog_queue_download():
+    """Queue download jobs for catalog-only rows (the "wishlist" flow).
+
+    Body: ``{"mbids": ["...", "..."]}``. For each mbid:
+      - 404-like: mbid not in the catalog → counted as ``not_found``.
+      - Already has a local file → ``skipped_linked`` (nothing to do).
+      - Already queued (same normalized search_query) → ``skipped_queued``.
+      - Otherwise: enqueue with playlist_id=``"CATALOG"`` and mbid_guess
+        set so the downloader's MusicBrainz verification uses the
+        correct identity out of the gate.
+
+    Returns per-bucket counts plus ``queued_mbids`` so a client can show
+    which rows actually entered the queue.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    mbids = data.get("mbids")
+    if not isinstance(mbids, list):
+        return jsonify({
+            "success": False,
+            "message": "body must be {'mbids': [...]}",
+        }), 400
+
+    queued = 0
+    queued_mbids = []
+    skipped_linked = 0
+    skipped_queued = 0
+    not_found = 0
+    try:
+        with DatabaseManager(config.db_path) as db:
+            for raw in mbids:
+                mbid = (raw or "").strip()
+                if not mbid:
+                    not_found += 1
+                    continue
+                track = db.get_track_by_mbid(mbid)
+                if track is None:
+                    not_found += 1
+                    continue
+                if track.local_path:
+                    skipped_linked += 1
+                    continue
+                query = f"{track.artist or ''} - {track.title or ''}".strip(" -")
+                if not query:
+                    not_found += 1
+                    continue
+                if db.is_download_queued(query):
+                    skipped_queued += 1
+                    continue
+                db.queue_download(DownloadItem(
+                    search_query=query,
+                    playlist_id="CATALOG",
+                    mbid_guess=mbid,
+                    status="pending",
+                ))
+                queued += 1
+                queued_mbids.append(mbid)
+    except Exception as e:
+        logger.error(f"catalog_queue_download failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "received": len(mbids),
+        "queued": queued,
+        "queued_mbids": queued_mbids,
+        "skipped_linked": skipped_linked,
+        "skipped_queued": skipped_queued,
+        "not_found": not_found,
+    })
+
+
 @app.route("/api/audit", methods=["POST"])
 def audit():
     # Legacy audit (runs in background thread, logs to file)

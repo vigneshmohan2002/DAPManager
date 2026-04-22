@@ -236,6 +236,50 @@ def test_catalog_link_local_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_catalog_queue_download_rejects_bad_body(client, mock_config):
+    res = client.post('/api/catalog/queue-download', json={"mbids": "not-a-list"})
+    assert res.status_code == 400
+
+
+def test_catalog_queue_download_buckets_each_mbid(client, mock_config):
+    from src.db_manager import Track
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        # m-queue: live, unlinked → should be enqueued.
+        # m-linked: has local_path → skipped_linked.
+        # m-dup: unlinked but query already queued → skipped_queued.
+        # m-missing: not in catalog → not_found.
+        # "": blank in the input → not_found.
+        tracks = {
+            "m-queue": Track(mbid="m-queue", title="T1", artist="A1"),
+            "m-linked": Track(mbid="m-linked", title="T2", artist="A2", local_path="/a"),
+            "m-dup": Track(mbid="m-dup", title="T3", artist="A3"),
+        }
+        mock_db.get_track_by_mbid.side_effect = lambda m: tracks.get(m)
+        mock_db.is_download_queued.side_effect = lambda q: (q == "A3 - T3")
+
+        res = client.post('/api/catalog/queue-download', json={
+            "mbids": ["m-queue", "m-linked", "m-dup", "m-missing", ""],
+        })
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["received"] == 5
+    assert data["queued"] == 1
+    assert data["queued_mbids"] == ["m-queue"]
+    assert data["skipped_linked"] == 1
+    assert data["skipped_queued"] == 1
+    assert data["not_found"] == 2
+
+    # queue_download called exactly once, with the expected shape.
+    assert mock_db.queue_download.call_count == 1
+    item = mock_db.queue_download.call_args.args[0]
+    assert item.search_query == "A1 - T1"
+    assert item.playlist_id == "CATALOG"
+    assert item.mbid_guess == "m-queue"
+    assert item.status == "pending"
+
+
 def test_inventory_report_rejects_when_disabled(client, mock_config):
     mock_config.report_inventory_to_host = False
     res = client.post('/api/inventory/report')
