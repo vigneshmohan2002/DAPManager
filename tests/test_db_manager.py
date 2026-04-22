@@ -715,6 +715,108 @@ def test_soft_delete_playlist_hidden_by_default(db):
     assert [p.playlist_id for p in db.get_all_playlists(include_orphans=True)] == ["p1"]
 
 
+def test_purge_track_requires_soft_delete_first(db):
+    # A live row must go through soft-delete first; the purge method
+    # refuses to hard-delete rows that the satellites might still
+    # consider authoritative.
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    assert db.purge_track("t1") is False
+    assert [t.mbid for t in db.get_all_tracks(include_orphans=True)] == ["t1"]
+
+    db.soft_delete_track("t1")
+    assert db.purge_track("t1") is True
+    assert db.get_all_tracks(include_orphans=True) == []
+    # Second purge is a no-op.
+    assert db.purge_track("t1") is False
+
+
+def test_purge_track_cascades_playlist_membership(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    db.soft_delete_track("t1")
+    db.purge_track("t1")
+    # Playlist itself survives; membership row cascaded away via FK.
+    assert [p.playlist_id for p in db.get_all_playlists()] == ["p1"]
+    assert db.get_playlist_tracks("p1", include_orphans=True) == []
+
+
+def test_purge_track_ignores_blank_mbid(db):
+    assert db.purge_track("") is False
+    assert db.purge_track(None) is False  # type: ignore[arg-type]
+
+
+def test_purge_playlist_requires_soft_delete_first(db):
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    assert db.purge_playlist("p1") is False
+    assert [p.playlist_id for p in db.get_all_playlists()] == ["p1"]
+
+    db.soft_delete_playlist("p1")
+    assert db.purge_playlist("p1") is True
+    assert db.get_all_playlists(include_orphans=True) == []
+
+
+def test_purge_playlist_cascades_membership(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    db.soft_delete_playlist("p1")
+    db.purge_playlist("p1")
+    # Track itself survives; only membership cascaded.
+    assert [t.mbid for t in db.get_all_tracks(include_orphans=True)] == ["t1"]
+
+
+def test_get_orphan_tracks_returns_soft_deleted_only(db):
+    db.add_or_update_track(Track(
+        mbid="live", title="Live", artist="A", album="Al", local_path="/a"
+    ))
+    db.add_or_update_track(Track(
+        mbid="dead", title="Dead", artist="B", album="Bl", local_path="/b"
+    ))
+    db.soft_delete_track("dead")
+    rows = db.get_orphan_tracks()
+    assert [r["mbid"] for r in rows] == ["dead"]
+    # Shape covers what the /orphans UI renders directly.
+    assert set(rows[0].keys()) == {
+        "mbid", "artist", "title", "album", "deleted_at", "local_path",
+    }
+    assert rows[0]["local_path"] == "/b"
+
+
+def test_get_orphan_tracks_sorted_most_recent_first(db):
+    import time
+    db.add_or_update_track(Track(mbid="old", title="O", artist="A"))
+    db.soft_delete_track("old")
+    time.sleep(1.1)
+    db.add_or_update_track(Track(mbid="new", title="N", artist="A"))
+    db.soft_delete_track("new")
+    rows = db.get_orphan_tracks()
+    assert [r["mbid"] for r in rows] == ["new", "old"]
+
+
+def test_get_orphan_playlists_includes_track_count(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "t1", 0)
+    db.link_track_to_playlist("p1", "t2", 1)
+    db.add_or_update_playlist(Playlist(playlist_id="p2", name="Empty", spotify_url=""))
+    db.soft_delete_playlist("p1")
+    db.soft_delete_playlist("p2")
+    rows = db.get_orphan_playlists()
+    by_id = {r["playlist_id"]: r for r in rows}
+    assert by_id["p1"]["track_count"] == 2
+    assert by_id["p2"]["track_count"] == 0
+
+
+def test_get_orphan_playlists_excludes_live_rows(db):
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Live", spotify_url=""))
+    db.add_or_update_playlist(Playlist(playlist_id="p2", name="Dead", spotify_url=""))
+    db.soft_delete_playlist("p2")
+    rows = db.get_orphan_playlists()
+    assert [r["playlist_id"] for r in rows] == ["p2"]
+
+
 def test_get_playlist_tracks_hides_deleted_tracks_by_default(db):
     db.add_or_update_track(Track(mbid="t1", title="A", artist="X", local_path="/a"))
     db.add_or_update_track(Track(mbid="t2", title="B", artist="X", local_path="/b"))

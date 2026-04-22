@@ -867,6 +867,80 @@ class DatabaseManager:
         cursor.close()
         return changed
 
+    def purge_track(self, mbid: str) -> bool:
+        """Hard-delete a track row. Only permitted on already-soft-deleted
+        rows so the API can't accidentally erase live data.
+
+        Returns True if a row was deleted, False if no matching orphan
+        existed. Membership rows in ``playlist_tracks`` cascade away via
+        the FK declaration (PRAGMA foreign_keys is on).
+        """
+        if not mbid:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM tracks WHERE mbid = ? AND deleted_at IS NOT NULL",
+            (mbid,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def purge_playlist(self, playlist_id: str) -> bool:
+        """Hard-delete a playlist row (and its memberships via FK cascade).
+        Only permitted on already-soft-deleted rows."""
+        if not playlist_id:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM playlists "
+            "WHERE playlist_id = ? AND deleted_at IS NOT NULL",
+            (playlist_id,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def get_orphan_tracks(self) -> List[dict]:
+        """Soft-deleted tracks, for the orphan cleanup UI.
+
+        Shape matches what the /orphans page renders directly: identity
+        fields, the deletion timestamp, and ``local_path`` so the UI can
+        show a "still on disk" badge and offer the file-delete action.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT mbid, artist, title, album, deleted_at, local_path "
+            "FROM tracks WHERE deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC"
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def get_orphan_playlists(self) -> List[dict]:
+        """Soft-deleted playlists with membership counts.
+
+        track_count is the count of playlist_tracks rows still attached
+        — useful because purging the playlist will cascade them away, so
+        the UI can warn when the count is non-zero.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT p.playlist_id, p.name, p.deleted_at, "
+            "       COUNT(pt.track_mbid) AS track_count "
+            "FROM playlists p "
+            "LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id "
+            "WHERE p.deleted_at IS NOT NULL "
+            "GROUP BY p.playlist_id "
+            "ORDER BY p.deleted_at DESC"
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def get_catalog_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Return catalog-shape rows (device-agnostic fields + updated_at).
 
