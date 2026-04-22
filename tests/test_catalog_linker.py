@@ -68,6 +68,21 @@ def _config(music_root):
     return SimpleNamespace(music_library=str(music_root))
 
 
+def test_accepts_raw_config_dict(db, tmp_path):
+    # web_server hands the module ``conf._config`` (a dict), not the
+    # ConfigManager object. Confirm the dict-shape path resolves.
+    root = tmp_path / "music"
+    root.mkdir()
+    _minimal_flac(str(root / "t.flac"))
+    _tag_flac(root / "t.flac", artist=["A"], title=["S"])
+    db.add_or_update_track(Track(mbid="t1", title="S", artist="A"))
+
+    summary = main_run_catalog_linker(
+        db, {"music_library_path": str(root)}
+    )
+    assert summary["linked"] == 1
+
+
 def test_link_by_mbid_wins_over_artist_title(db, library):
     # The file's MBID tag takes precedence over a same-name unlinked row.
     root, make = library

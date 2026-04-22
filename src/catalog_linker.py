@@ -151,9 +151,17 @@ def main_run_catalog_linker(
         {scanned, linked, ambiguous, skipped, errors,
          linked_by_mbid, linked_by_isrc, linked_by_name, message?}
     """
-    root = getattr(config, "music_library", None) or getattr(
-        config, "music_library_path", None
-    ) or ""
+    # Matches how existing background runners invoke library modules:
+    # web_server passes the raw config dict (``conf._config``), while the
+    # desktop app passes the ConfigManager object itself.
+    if isinstance(config, dict):
+        root = config.get("music_library_path") or ""
+    else:
+        root = (
+            getattr(config, "music_library", None)
+            or getattr(config, "music_library_path", None)
+            or ""
+        )
     if not root or not os.path.isdir(root):
         msg = f"music_library_path not set or not a directory: {root!r}"
         logger.warning("catalog_linker: %s", msg)
