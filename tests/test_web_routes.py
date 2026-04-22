@@ -646,6 +646,15 @@ def test_fleet_page_renders(client, mock_config):
     assert b"Fleet View" in res.data
 
 
+def test_orphans_page_renders(client, mock_config):
+    res = client.get('/orphans')
+    assert res.status_code == 200
+    assert b"Orphans" in res.data
+    # Both tabs present in the initial shell.
+    assert b'data-tab="tracks"' in res.data
+    assert b'data-tab="playlists"' in res.data
+
+
 def _config_roundtrip_fixtures(tmp_path, monkeypatch):
     """Point web_server.CONFIG_FILE at a temp file and return its path."""
     cfg_path = tmp_path / "config.json"

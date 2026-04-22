@@ -1439,6 +1439,12 @@ def fleet_page():
     return render_template("fleet.html")
 
 
+@app.route("/orphans")
+def orphans_page():
+    """Soft-deleted tracks and playlists, for review / restore / purge."""
+    return render_template("orphans.html")
+
+
 @app.route("/api/fleet/summary", methods=["GET"])
 def fleet_summary():
     if not config:
