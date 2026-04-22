@@ -278,6 +278,14 @@ when #6 lands.
 
 **Depends on** no other new features; independently shippable.
 
+**Shipped (API only).** `POST /api/catalog/queue-download` with body
+`{"mbids": [...]}` returns `{queued, queued_mbids, skipped_linked,
+skipped_queued, not_found}`. Dedupe via `db.is_download_queued`
+(normalized search_query). `mbid_guess` populated so the downloader's
+MusicBrainz verification uses the correct identity. UI (desktop +
+web) deferred until the Tauri Library stage and the web track
+browser (#6) land.
+
 ---
 
 ### 6. Web track browser
@@ -449,6 +457,8 @@ context menu + review dialog + 20 tests.
    (backend + web); desktop deferred to the Tauri Library stage._
 7. **#4 Auto-link local files** — bridges pre-DAPManager libraries
    with pulled catalogs. _Done (backend + web); desktop deferred._
+8. **#5 Download-from-catalog** — wishlist queue via MBIDs. _API
+   shipped; UI deferred to #6 / Tauri Library stage._
 6. **#4 Auto-link local files** — solves the "my pre-existing library
    doesn't show up" complaint.
 7. **#5 Download-from-catalog** — converts catalog-only view into a
