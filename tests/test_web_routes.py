@@ -397,18 +397,47 @@ def test_library_albums_lists_albums(client, mock_config):
     assert data["albums"][0]["track_count"] == 10
 
 
-def test_library_tracks_returns_flat_list(client, mock_config):
+def test_library_tracks_tags_availability_and_filters_unavailable(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         MockDB.return_value.__enter__.return_value.list_all_tracks.return_value = [
-            {"mbid": "t-1", "title": "Song", "artist": "A", "album": "Alb",
-             "track_number": 1, "disc_number": 1, "album_id": "rmb-1"},
+            {"mbid": "t-local", "title": "L", "artist": "A", "album": "Al",
+             "track_number": 1, "disc_number": 1, "album_id": "rmb",
+             "local_path": "/m/l.flac", "dap_path": None},
+            {"mbid": "t-drive", "title": "D", "artist": "A", "album": "Al",
+             "track_number": 2, "disc_number": 1, "album_id": "rmb",
+             "local_path": None, "dap_path": "/dap/d.flac"},
+            {"mbid": "t-nowhere", "title": "N", "artist": "A", "album": "Al",
+             "track_number": 3, "disc_number": 1, "album_id": "rmb",
+             "local_path": None, "dap_path": None},
         ]
         res = client.get('/api/library/tracks')
 
     assert res.status_code == 200
     data = res.get_json()
     assert data["success"] is True
-    assert data["tracks"][0]["album_id"] == "rmb-1"
+    # No master configured → catalog-only row drops out entirely; the
+    # two rows that resolve on-disk are tagged with their tier.
+    tiers = {t["mbid"]: t["availability"] for t in data["tracks"]}
+    assert tiers == {"t-local": "local", "t-drive": "drive"}
+    # Path columns must never leak to the webview.
+    assert all("local_path" not in t and "dap_path" not in t for t in data["tracks"])
+
+
+def test_library_tracks_tags_remote_when_master_configured(client, mock_config):
+    # Availability is a pre-play decision and doesn't probe the master
+    # at listing time — so a configured master_url flips catalog-only
+    # rows from "unavailable" to "remote" even if the master is down.
+    mock_config._config = {"master_url": "http://master.example"}
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_all_tracks.return_value = [
+            {"mbid": "t-nowhere", "title": "N", "artist": "A", "album": "Al",
+             "track_number": 3, "disc_number": 1, "album_id": "rmb",
+             "local_path": None, "dap_path": None},
+        ]
+        res = client.get('/api/library/tracks')
+
+    data = res.get_json()
+    assert data["tracks"][0]["availability"] == "remote"
 
 
 def test_library_artists_lists_artists(client, mock_config):
@@ -475,7 +504,9 @@ def test_stream_serves_file_with_audio_mime(client, mock_config, tmp_path):
     f = tmp_path / "track.flac"
     f.write_bytes(b"FLACBYTES")
     with patch('web_server.DatabaseManager') as MockDB:
-        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = str(f)
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": str(f), "dap_path": None,
+        }
         res = client.get('/api/stream/t-a')
 
     assert res.status_code == 200
@@ -487,7 +518,9 @@ def test_stream_supports_range_request(client, mock_config, tmp_path):
     f = tmp_path / "track.mp3"
     f.write_bytes(b"0123456789")
     with patch('web_server.DatabaseManager') as MockDB:
-        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = str(f)
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": str(f), "dap_path": None,
+        }
         res = client.get('/api/stream/t-a', headers={"Range": "bytes=2-5"})
 
     assert res.status_code == 206
@@ -495,18 +528,111 @@ def test_stream_supports_range_request(client, mock_config, tmp_path):
     assert res.headers.get("Content-Range", "").startswith("bytes 2-5/")
 
 
+def test_stream_falls_back_to_dap_path(client, mock_config, tmp_path):
+    # local_path missing on disk → resolver should drop through to the
+    # drive path rather than bailing out or hitting the master proxy.
+    f = tmp_path / "drive.flac"
+    f.write_bytes(b"DAPBYTES")
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": "/nonexistent/local.flac", "dap_path": str(f),
+        }
+        res = client.get('/api/stream/t-a')
+
+    assert res.status_code == 200
+    assert res.data == b"DAPBYTES"
+
+
 def test_stream_404_when_track_missing(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
-        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = None
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = None
         res = client.get('/api/stream/nope')
     assert res.status_code == 404
 
 
-def test_stream_404_when_file_does_not_exist(client, mock_config):
+def test_stream_404_when_no_source_resolves(client, mock_config):
+    # Row exists but neither path points at a real file and no master
+    # is configured → 404 rather than a 500.
     with patch('web_server.DatabaseManager') as MockDB:
-        MockDB.return_value.__enter__.return_value.get_track_local_path.return_value = "/nonexistent/file.flac"
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": "/nonexistent/file.flac", "dap_path": None,
+        }
         res = client.get('/api/stream/t-a')
     assert res.status_code == 404
+
+
+def test_stream_proxies_master_when_no_local_source(client, mock_config):
+    # No on-disk source → proxy to the master's /api/stream. The helper
+    # forwards the Range header and relays status + body verbatim. We
+    # leave api_token empty here so the satellite's own auth gate stays
+    # open; a separate test covers bearer forwarding.
+    mock_config._config = {"master_url": "http://master.example/"}
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": None, "dap_path": None,
+        }
+        upstream = MagicMock()
+        upstream.status_code = 206
+        upstream.headers = {
+            "Content-Type": "audio/flac",
+            "Content-Range": "bytes 0-3/10",
+            "Content-Length": "4",
+            "Accept-Ranges": "bytes",
+        }
+        upstream.iter_content.return_value = iter([b"ABCD"])
+        mock_get.return_value = upstream
+
+        res = client.get('/api/stream/t-a', headers={"Range": "bytes=0-3"})
+
+    assert res.status_code == 206
+    assert res.data == b"ABCD"
+    assert res.headers.get("Content-Range") == "bytes 0-3/10"
+    call = mock_get.call_args
+    assert call.args[0] == "http://master.example/api/stream/t-a"
+    assert call.kwargs["headers"]["Range"] == "bytes=0-3"
+    assert "Authorization" not in call.kwargs["headers"]
+
+
+def test_stream_proxy_forwards_bearer_token(client, mock_config):
+    # When api_token is configured, the proxy attaches it upstream so
+    # the master's own auth gate accepts the request. We auth the local
+    # client-side hit too so the satellite's gate passes first.
+    mock_config._config = {
+        "master_url": "http://master.example",
+        "api_token": "tok",
+    }
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": None, "dap_path": None,
+        }
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.headers = {"Content-Type": "audio/flac"}
+        upstream.iter_content.return_value = iter([b"X"])
+        mock_get.return_value = upstream
+
+        res = client.get('/api/stream/t-a', headers={"Authorization": "Bearer tok"})
+
+    assert res.status_code == 200
+    call = mock_get.call_args
+    assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
+
+
+def test_stream_proxy_returns_502_on_upstream_failure(client, mock_config):
+    # Master unreachable → we surface a clean 502 instead of a 500 so
+    # the UI can distinguish "track missing" (404) from "network".
+    mock_config._config = {"master_url": "http://master.example"}
+    import requests as _r
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get', side_effect=_r.ConnectionError("boom")):
+        MockDB.return_value.__enter__.return_value.get_track_sources.return_value = {
+            "local_path": None, "dap_path": None,
+        }
+        res = client.get('/api/stream/t-a')
+
+    assert res.status_code == 502
 
 
 def test_fleet_track_lookup_requires_param(client, mock_config):

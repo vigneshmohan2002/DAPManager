@@ -503,21 +503,72 @@ def api_library_albums():
 
 @app.route("/api/library/tracks")
 def api_library_tracks():
-    """Flat list of every playable track. Feeds the desktop Songs screen.
+    """Flat list of every accessible track. Feeds the desktop Songs screen.
 
-    Excludes soft-deleted rows and rows without a local file. Includes
-    ``album_id`` so the UI can render cover art and play without another
-    API call.
+    Each row carries an ``availability`` string: "local" when the file is
+    on disk here, "drive" when only the DAP path is set, "remote" when
+    neither is set but a master URL is configured (we'll proxy-stream).
+    Unavailable rows are dropped so the UI only shows playable tracks.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     try:
         with DatabaseManager(config.db_path) as db:
-            tracks = db.list_all_tracks()
-        return jsonify({"success": True, "tracks": tracks})
+            rows = db.list_all_tracks()
+        has_master = _master_url_configured()
+        public = [
+            _public_track_row(r, has_master)
+            for r in rows
+            if _availability_for(r, has_master) != "unavailable"
+        ]
+        return jsonify({"success": True, "tracks": public})
     except Exception as e:
         logger.exception("api_library_tracks failed")
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+def _master_url_configured() -> bool:
+    """True when config carries a non-empty ``master_url``.
+
+    Uses the same ``isinstance(_config, dict)`` guard as the auth hook
+    so tests that stub ``config`` with a MagicMock don't trip a falsy
+    ``MagicMock`` into a truthy "master is configured" signal.
+    """
+    cfg = getattr(config, "_config", None)
+    if not isinstance(cfg, dict):
+        return False
+    return bool((cfg.get("master_url") or "").strip())
+
+
+def _availability_for(row: dict, has_master: bool) -> str:
+    """Resolve a track's playback tier from its columns + master config.
+
+    Priority: a real local file > a DAP path that only resolves when the
+    drive is mounted > the master's stream endpoint. Path columns are
+    trusted at listing time; actual file existence is checked at stream
+    time so the UI doesn't pay a stat-per-row tax.
+    """
+    if (row.get("local_path") or "").strip():
+        return "local"
+    if (row.get("dap_path") or "").strip():
+        return "drive"
+    if has_master:
+        return "remote"
+    return "unavailable"
+
+
+def _public_track_row(row: dict, has_master: bool) -> dict:
+    """Shape a DB track row for the webview: strip on-disk paths, add availability."""
+    return {
+        "mbid": row["mbid"],
+        "title": row["title"],
+        "artist": row["artist"],
+        "album": row.get("album"),
+        "track_number": row.get("track_number"),
+        "disc_number": row.get("disc_number"),
+        "album_id": row.get("album_id"),
+        "availability": _availability_for(row, has_master),
+    }
 
 
 @app.route("/api/library/artists")
@@ -576,16 +627,13 @@ def api_library_album_tracks(album_id: str):
     try:
         with DatabaseManager(config.db_path) as db:
             rows = db.list_album_tracks(album_id)
+        has_master = _master_url_configured()
         public = [
             {
-                "mbid": r["mbid"],
-                "title": r["title"],
-                "artist": r["artist"],
-                "album": r["album"],
-                "track_number": r["track_number"],
-                "disc_number": r["disc_number"],
+                **_public_track_row({**r, "album_id": album_id}, has_master),
             }
             for r in rows
+            if _availability_for(r, has_master) != "unavailable"
         ]
         return jsonify({"success": True, "tracks": public})
     except Exception as e:
@@ -595,24 +643,94 @@ def api_library_album_tracks(album_id: str):
 
 @app.route("/api/stream/<path:mbid>")
 def api_stream_track(mbid: str):
-    """Stream a track's audio bytes. Uses Flask's conditional send_file
-    so the browser's <audio> element gets Range/206 responses for seeks
-    without us having to parse byte ranges manually."""
+    """Stream a track's audio bytes, resolving source in priority order.
+
+    1. Local file (``tracks.local_path``) — direct disk read, fastest.
+    2. DAP drive (``tracks.dap_path``) — direct disk read from the
+       mounted external drive.
+    3. Proxy the master server's ``/api/stream/<mbid>`` — so a satellite
+       with only a catalog entry can still play the track.
+
+    send_file(conditional=True) handles Range/206 for the local/drive
+    cases; the proxy helper forwards the Range header to the master and
+    streams the response body through.
+    """
     if not config:
         return ("", 503)
     try:
         from flask import send_file
 
         with DatabaseManager(config.db_path) as db:
-            path = db.get_track_local_path(mbid)
-        if not path or not os.path.isfile(path):
+            sources = db.get_track_sources(mbid)
+        if sources is None:
             return ("", 404)
 
-        mime = _guess_audio_mime(path)
-        return send_file(path, mimetype=mime, conditional=True)
+        local = (sources.get("local_path") or "").strip()
+        if local and os.path.isfile(local):
+            return send_file(local, mimetype=_guess_audio_mime(local), conditional=True)
+
+        dap = (sources.get("dap_path") or "").strip()
+        if dap and os.path.isfile(dap):
+            return send_file(dap, mimetype=_guess_audio_mime(dap), conditional=True)
+
+        cfg = getattr(config, "_config", None)
+        if isinstance(cfg, dict):
+            master_url = (cfg.get("master_url") or "").strip().rstrip("/")
+            if master_url:
+                return _proxy_master_stream(master_url, mbid)
+        return ("", 404)
     except Exception:
         logger.exception("api_stream_track failed for %s", mbid)
         return ("", 500)
+
+
+def _proxy_master_stream(master_url: str, mbid: str):
+    """Forward a stream request to the master server with Range preserved.
+
+    Audio tags issue Range requests mid-playback for seeks; the master's
+    own ``/api/stream`` endpoint already supports 206 via send_file, so
+    we just relay the upstream status, range headers, and body bytes.
+    """
+    import requests
+    from flask import Response, stream_with_context
+
+    headers = {}
+    if "Range" in request.headers:
+        headers["Range"] = request.headers["Range"]
+    token = (config._config.get("api_token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    upstream_url = f"{master_url}/api/stream/{mbid}"
+    try:
+        upstream = requests.get(
+            upstream_url, headers=headers, stream=True, timeout=(5, 30)
+        )
+    except requests.RequestException:
+        logger.exception("master stream proxy failed for %s", mbid)
+        return ("", 502)
+
+    if upstream.status_code >= 400:
+        upstream.close()
+        return ("", upstream.status_code)
+
+    forward = {}
+    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+        if h in upstream.headers:
+            forward[h] = upstream.headers[h]
+
+    def _iter():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return Response(
+        stream_with_context(_iter()),
+        status=upstream.status_code,
+        headers=forward,
+    )
 
 
 def _guess_audio_mime(path: str) -> str:
