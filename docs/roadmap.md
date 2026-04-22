@@ -194,6 +194,15 @@ missing.
 **Effort.** ~3–5 hours including walking the library, tag-reading, and
 dry-run/apply modes for tests.
 
+**Shipped (backend + web).** New module `src/catalog_linker.py` with
+`main_run_catalog_linker`. API: `POST /api/catalog/link-local` runs
+as a TaskManager task and returns a `{scanned, linked, ambiguous,
+skipped, errors, linked_by_mbid/isrc/name}` summary via the progress
+channel. Web: "Link Local Files" button in the Multi-Device Sync
+card. Match order: embedded MBID → ISRC → (artist, title)
+case-insensitive → album-disambiguated. Fuzzy matching deferred as
+noted.
+
 ---
 
 ### 10. Playback availability tiers + master proxy streaming
@@ -438,6 +447,8 @@ context menu + review dialog + 20 tests.
    master. _Done._
 6. **#3 Orphan cleanup page** — closes the soft-delete loop. _Done
    (backend + web); desktop deferred to the Tauri Library stage._
+7. **#4 Auto-link local files** — bridges pre-DAPManager libraries
+   with pulled catalogs. _Done (backend + web); desktop deferred._
 6. **#4 Auto-link local files** — solves the "my pre-existing library
    doesn't show up" complaint.
 7. **#5 Download-from-catalog** — converts catalog-only view into a
