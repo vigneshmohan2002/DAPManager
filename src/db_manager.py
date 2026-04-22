@@ -359,6 +359,64 @@ class DatabaseManager:
             if cursor:
                 cursor.close()
 
+    def find_unlinked_tracks_by_isrc(self, isrc: str) -> List[str]:
+        """MBIDs of non-deleted tracks with this ISRC and no local file yet.
+
+        Multi-row results are left to the caller to treat as ambiguous —
+        the linker skips those rather than guessing.
+        """
+        if not isrc:
+            return []
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT mbid FROM tracks "
+            "WHERE isrc = ? AND local_path IS NULL AND deleted_at IS NULL",
+            (isrc,),
+        )
+        rows = [row["mbid"] for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def find_unlinked_tracks_by_artist_title(
+        self, artist: str, title: str
+    ) -> List[str]:
+        """Case-insensitive exact match on (artist, title) among unlinked
+        non-deleted rows. Used as a fallback when MBID / ISRC aren't
+        available on the file's tags."""
+        if not artist or not title:
+            return []
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT mbid FROM tracks "
+            "WHERE artist = ? COLLATE NOCASE "
+            "  AND title = ? COLLATE NOCASE "
+            "  AND local_path IS NULL AND deleted_at IS NULL",
+            (artist, title),
+        )
+        rows = [row["mbid"] for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def find_unlinked_tracks_by_artist_title_album(
+        self, artist: str, title: str, album: str
+    ) -> List[str]:
+        """Album-aware disambiguation step: only used when (artist, title)
+        alone returned multiple candidates."""
+        if not artist or not title or not album:
+            return []
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT mbid FROM tracks "
+            "WHERE artist = ? COLLATE NOCASE "
+            "  AND title = ? COLLATE NOCASE "
+            "  AND album = ? COLLATE NOCASE "
+            "  AND local_path IS NULL AND deleted_at IS NULL",
+            (artist, title, album),
+        )
+        rows = [row["mbid"] for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     # --- Album Methods ---
     def update_album_metadata(
         self, release_mbid: str, album_title: str, total_tracks: int

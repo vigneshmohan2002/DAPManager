@@ -1064,3 +1064,63 @@ def test_get_tracks_needing_tag_review_excludes_tracks_without_local_file(db):
     db.add_or_update_track(Track(mbid="y", title="y", artist="a"))
     db.set_track_tag_tier("y", "yellow", 0.6)
     assert db.get_tracks_needing_tag_review() == []
+
+
+def test_find_unlinked_by_isrc_only_returns_unlinked(db):
+    # A row with local_path set is already linked — the linker shouldn't
+    # re-bind it to a different on-disk file.
+    db.add_or_update_track(Track(
+        mbid="linked", title="A", artist="X", isrc="ISRC-1", local_path="/a",
+    ))
+    db.add_or_update_track(Track(
+        mbid="unlinked", title="A", artist="X", isrc="ISRC-1",
+    ))
+    assert db.find_unlinked_tracks_by_isrc("ISRC-1") == ["unlinked"]
+
+
+def test_find_unlinked_by_isrc_skips_soft_deleted(db):
+    db.add_or_update_track(Track(
+        mbid="dead", title="A", artist="X", isrc="ISRC-2",
+    ))
+    db.soft_delete_track("dead")
+    assert db.find_unlinked_tracks_by_isrc("ISRC-2") == []
+
+
+def test_find_unlinked_by_isrc_returns_multiple_for_ambiguous(db):
+    # Two live rows share an ISRC — linker must treat this as ambiguous
+    # and skip rather than pick one.
+    db.add_or_update_track(Track(mbid="a", title="T", artist="X", isrc="I"))
+    db.add_or_update_track(Track(mbid="b", title="T", artist="X", isrc="I"))
+    assert set(db.find_unlinked_tracks_by_isrc("I")) == {"a", "b"}
+
+
+def test_find_unlinked_by_isrc_empty_input(db):
+    assert db.find_unlinked_tracks_by_isrc("") == []
+
+
+def test_find_unlinked_by_artist_title_is_case_insensitive(db):
+    db.add_or_update_track(Track(mbid="t1", title="Title", artist="Artist"))
+    assert db.find_unlinked_tracks_by_artist_title("artist", "TITLE") == ["t1"]
+
+
+def test_find_unlinked_by_artist_title_skips_linked_and_deleted(db):
+    db.add_or_update_track(Track(
+        mbid="linked", title="T", artist="A", local_path="/a",
+    ))
+    db.add_or_update_track(Track(mbid="dead", title="T", artist="A"))
+    db.soft_delete_track("dead")
+    db.add_or_update_track(Track(mbid="open", title="T", artist="A"))
+    assert db.find_unlinked_tracks_by_artist_title("A", "T") == ["open"]
+
+
+def test_find_unlinked_by_artist_title_album_disambiguates(db):
+    db.add_or_update_track(Track(mbid="a1", title="T", artist="A", album="Alpha"))
+    db.add_or_update_track(Track(mbid="a2", title="T", artist="A", album="Beta"))
+    assert db.find_unlinked_tracks_by_artist_title("A", "T") == ["a1", "a2"]
+    assert db.find_unlinked_tracks_by_artist_title_album("A", "T", "beta") == ["a2"]
+
+
+def test_find_unlinked_by_artist_title_album_requires_all_three(db):
+    assert db.find_unlinked_tracks_by_artist_title_album("", "t", "al") == []
+    assert db.find_unlinked_tracks_by_artist_title_album("a", "", "al") == []
+    assert db.find_unlinked_tracks_by_artist_title_album("a", "t", "") == []
