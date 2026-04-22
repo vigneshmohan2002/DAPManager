@@ -739,6 +739,123 @@ def test_soft_delete_track_route_reports_no_op(client, mock_config):
     assert data["deleted"] is False
 
 
+def test_delete_track_route_purges_when_flagged(client, mock_config):
+    # ?purge=true routes to purge_track and returns {"purged": ...}
+    # instead of {"deleted": ...} so the UI can tell which happened.
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.purge_track.return_value = True
+        res = client.delete('/api/tracks/abc123?purge=true')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["purged"] is True
+    assert "deleted" not in data
+    mock_db.purge_track.assert_called_once_with("abc123")
+    mock_db.soft_delete_track.assert_not_called()
+
+
+def test_delete_playlist_route_purges_when_flagged(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.purge_playlist.return_value = True
+        res = client.delete('/api/playlists/p1?purge=1')
+    data = res.get_json()
+    assert data["purged"] is True
+    mock_db.purge_playlist.assert_called_once_with("p1")
+
+
+def test_restore_track_route(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.restore_track.return_value = True
+        res = client.post('/api/tracks/abc/restore')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["restored"] is True
+    assert data["mbid"] == "abc"
+
+
+def test_restore_playlist_route(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.restore_playlist.return_value = True
+        res = client.post('/api/playlists/p1/restore')
+    data = res.get_json()
+    assert data["restored"] is True
+
+
+def test_orphan_tracks_lists_soft_deleted(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_orphan_tracks.return_value = [
+            {"mbid": "t1", "artist": "A", "title": "T", "album": "Al",
+             "deleted_at": "2026-04-21 10:00:00", "local_path": "/a.flac"},
+        ]
+        res = client.get('/api/orphans/tracks')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["tracks"][0]["mbid"] == "t1"
+    assert data["tracks"][0]["local_path"] == "/a.flac"
+
+
+def test_orphan_playlists_lists_soft_deleted(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_orphan_playlists.return_value = [
+            {"playlist_id": "p1", "name": "Mix",
+             "deleted_at": "2026-04-21 10:00:00", "track_count": 3},
+        ]
+        res = client.get('/api/orphans/playlists')
+    data = res.get_json()
+    assert data["playlists"][0]["track_count"] == 3
+
+
+def test_delete_track_file_refuses_on_live_row(client, mock_config):
+    # A 409 here means the user tried to delete the file of a track
+    # that isn't soft-deleted yet — the UI should soft-delete first.
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_orphan_tracks.return_value = []  # row not an orphan
+        res = client.delete('/api/tracks/live-mbid/file')
+    assert res.status_code == 409
+    mock_db.update_track_local_path.assert_not_called()
+
+
+def test_delete_track_file_removes_and_clears_path(client, mock_config, tmp_path):
+    f = tmp_path / "to-delete.flac"
+    f.write_bytes(b"X")
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_orphan_tracks.return_value = [
+            {"mbid": "t1", "artist": "A", "title": "T", "album": "Al",
+             "deleted_at": "2026-04-21", "local_path": str(f)},
+        ]
+        res = client.delete('/api/tracks/t1/file')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["removed"] is True
+    assert not f.exists()
+    mock_db.update_track_local_path.assert_called_once_with("t1", None)
+
+
+def test_delete_track_file_idempotent_when_file_already_gone(client, mock_config):
+    # File pointed at by local_path was manually deleted — the API
+    # still clears the column cleanly so the orphan doesn't keep
+    # showing a phantom "on disk" badge.
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.get_orphan_tracks.return_value = [
+            {"mbid": "t1", "artist": "A", "title": "T", "album": "Al",
+             "deleted_at": "2026-04-21", "local_path": "/vanished/x.flac"},
+        ]
+        res = client.delete('/api/tracks/t1/file')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["removed"] is False
+    mock_db.update_track_local_path.assert_called_once_with("t1", None)
+
+
 def test_sync_all_starts_task(client, mock_config):
     res = client.post('/api/sync/all')
     assert res.status_code == 200

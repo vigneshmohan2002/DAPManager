@@ -1292,16 +1292,23 @@ def tag_apply(mbid):
 
 @app.route("/api/tracks/<mbid>", methods=["DELETE"])
 def soft_delete_track(mbid):
-    """Master-side soft-delete of a track by MBID.
+    """Soft-delete a track by default; hard-delete with ``?purge=true``.
 
-    Stamps deleted_at + bumps updated_at so the next catalog delta
-    carries the deletion to satellites. Satellites mark the row as
-    an orphan rather than hard-deleting.
+    Soft-delete stamps deleted_at + bumps updated_at so the next
+    catalog delta carries the signal to satellites. Purge is only
+    allowed on rows already marked deleted — a second step that
+    the /orphans UI invokes after a human has reviewed the row.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    purge = request.args.get("purge", "").lower() in ("1", "true", "yes")
     try:
         with DatabaseManager(config.db_path) as db:
+            if purge:
+                changed = db.purge_track(mbid)
+                return jsonify({
+                    "success": True, "purged": changed, "mbid": mbid,
+                })
             changed = db.soft_delete_track(mbid)
     except Exception as e:
         logger.error(f"soft_delete_track({mbid}) failed: {e}", exc_info=True)
@@ -1313,13 +1320,114 @@ def soft_delete_track(mbid):
 def soft_delete_playlist_route(playlist_id):
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    purge = request.args.get("purge", "").lower() in ("1", "true", "yes")
     try:
         with DatabaseManager(config.db_path) as db:
+            if purge:
+                changed = db.purge_playlist(playlist_id)
+                return jsonify({
+                    "success": True, "purged": changed, "playlist_id": playlist_id,
+                })
             changed = db.soft_delete_playlist(playlist_id)
     except Exception as e:
         logger.error(f"soft_delete_playlist({playlist_id}) failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
     return jsonify({"success": True, "deleted": changed, "playlist_id": playlist_id})
+
+
+@app.route("/api/tracks/<mbid>/restore", methods=["POST"])
+def restore_track_route(mbid):
+    """Clear deleted_at so the row is live again. Bumps updated_at so
+    the restoration propagates through the next catalog delta."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            changed = db.restore_track(mbid)
+    except Exception as e:
+        logger.error(f"restore_track({mbid}) failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "restored": changed, "mbid": mbid})
+
+
+@app.route("/api/playlists/<playlist_id>/restore", methods=["POST"])
+def restore_playlist_route(playlist_id):
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            changed = db.restore_playlist(playlist_id)
+    except Exception as e:
+        logger.error(f"restore_playlist({playlist_id}) failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({
+        "success": True, "restored": changed, "playlist_id": playlist_id,
+    })
+
+
+@app.route("/api/tracks/<mbid>/file", methods=["DELETE"])
+def delete_track_file(mbid):
+    """Delete the on-disk file a soft-deleted track points at, and clear
+    ``local_path``. Does NOT purge the row — that's a separate step.
+
+    Refuses to act on live (non-orphan) tracks to prevent surprise
+    filesystem mutations from the UI. Missing files are treated as
+    success (idempotent) so a re-run after a manual delete still clears
+    the column cleanly.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            orphans = {r["mbid"]: r for r in db.get_orphan_tracks()}
+            row = orphans.get(mbid)
+            if row is None:
+                return jsonify({
+                    "success": False,
+                    "message": "track is not an orphan; soft-delete it first",
+                }), 409
+            path = (row.get("local_path") or "").strip()
+            removed = False
+            if path:
+                try:
+                    os.remove(path)
+                    removed = True
+                except FileNotFoundError:
+                    pass
+                db.update_track_local_path(mbid, None)
+        return jsonify({
+            "success": True, "mbid": mbid, "path": path or None, "removed": removed,
+        })
+    except Exception as e:
+        logger.error(f"delete_track_file({mbid}) failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/orphans/tracks")
+def api_orphan_tracks():
+    """Soft-deleted tracks in deletion-time order (newest first)."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            rows = db.get_orphan_tracks()
+        return jsonify({"success": True, "tracks": rows})
+    except Exception as e:
+        logger.exception("api_orphan_tracks failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/orphans/playlists")
+def api_orphan_playlists():
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            rows = db.get_orphan_playlists()
+        return jsonify({"success": True, "playlists": rows})
+    except Exception as e:
+        logger.exception("api_orphan_playlists failed")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route("/fleet")
