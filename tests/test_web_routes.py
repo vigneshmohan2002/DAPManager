@@ -214,6 +214,28 @@ def test_catalog_pull_starts_task_when_configured(client, mock_config):
     assert data["success"] is True
 
 
+def test_catalog_link_local_rejects_without_library_configured(client, mock_config):
+    # A MagicMock returns truthy for any attribute by default — tests
+    # elsewhere rely on that. Force music_library to empty to exercise
+    # the rejection branch.
+    mock_config.music_library = ""
+    res = client.post('/api/catalog/link-local')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is False
+    assert "music_library_path" in data["message"]
+
+
+def test_catalog_link_local_starts_task_when_configured(client, mock_config):
+    mock_config.music_library = "/music"
+    with patch('web_server.run_catalog_link_local') as mock_run:
+        mock_run.return_value = None
+        res = client.post('/api/catalog/link-local')
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+
+
 def test_inventory_report_rejects_when_disabled(client, mock_config):
     mock_config.report_inventory_to_host = False
     res = client.post('/api/inventory/report')

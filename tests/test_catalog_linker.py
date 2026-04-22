@@ -224,5 +224,6 @@ def test_progress_callback_is_invoked(db, library):
 
     messages = []
     main_run_catalog_linker(db, _config(root), progress_callback=messages.append)
-    # "Done" report always fires at the end.
-    assert any(m.startswith("Done.") for m in messages)
+    # "Done" report always fires at the end; shape matches TaskManager's
+    # {"message": ...} contract so it can flow through unchanged.
+    assert any(m.get("message", "").startswith("Done.") for m in messages)

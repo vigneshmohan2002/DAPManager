@@ -142,7 +142,7 @@ def _mbid_is_eligible(db, mbid: str) -> bool:
 def main_run_catalog_linker(
     db,
     config,
-    progress_callback: Optional[Callable[[str], None]] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     """Walk ``config.music_library_path`` and link unlinked catalog rows.
 
@@ -174,7 +174,8 @@ def main_run_catalog_linker(
     def report(msg: str):
         logger.info("catalog_linker: %s", msg)
         if progress_callback:
-            progress_callback(msg)
+            # TaskManager's update_progress reads {"message": ...} / {"detail": ...}
+            progress_callback({"message": msg})
 
     scanned = linked = ambiguous = skipped = errors = 0
     linked_by_mbid = linked_by_isrc = linked_by_name = 0

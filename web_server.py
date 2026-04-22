@@ -215,6 +215,12 @@ def run_sync_all(db_path, conf, progress_callback=None):
         main_run_sync_all(db, conf._config, progress_callback=progress_callback)
 
 
+def run_catalog_link_local(db_path, conf, progress_callback=None):
+    from src.catalog_linker import main_run_catalog_linker
+    with DatabaseManager(db_path) as db:
+        main_run_catalog_linker(db, conf._config, progress_callback=progress_callback)
+
+
 def run_batch():
     from manager import batch_sync
     batch_sync()
@@ -883,6 +889,29 @@ def catalog_pull():
         })
     success, msg = task_manager.start_task(
         run_catalog_pull, (config.db_path, config), "Catalog Pull"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/catalog/link-local", methods=["POST"])
+def catalog_link_local():
+    """Walk the local music library and bind unlinked catalog rows to
+    on-disk files by MBID / ISRC / (artist, title[, album]).
+
+    Intended for satellites that pulled a catalog with rows they
+    already have on disk from a pre-DAPManager library. Runs as a
+    background task; progress and the final scanned/linked/ambiguous
+    summary flow through the /api/status channel.
+    """
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    if not config or not getattr(config, "music_library", ""):
+        return jsonify({
+            "success": False,
+            "message": "music_library_path not configured.",
+        })
+    success, msg = task_manager.start_task(
+        run_catalog_link_local, (config.db_path, config), "Link Local Files"
     )
     return jsonify({"success": success, "message": msg})
 
