@@ -27,9 +27,10 @@ that don't fit in a commit message.
 | 5a | `626fe1d` | Playlists in sidebar (live from `/api/library/playlists`) + Songs scoping via `?playlist_id=...`. Header reflects the scoped playlist's name. |
 | 5b | `4496daa` | Songs-screen filters: "Show catalog-only" (`local_only=0`) and "Show orphans" (`include_orphans=1`) toggles, plus a Status column with availability badges (`local`/`drive`/`catalog-only`/`missing`) and an orphan chip. Unavailable rows are dimmed and stripped from the play queue with a remapped start index. |
 | 5c | `7f57839` | Sync screen replacing the placeholder. Sync All + per-step buttons (Pull Catalog / Pull Playlists / Push Playlists / Report Inventory / Link Local Files), each with a "Last: Nm ago" cursor from `/api/sync/state`. 2s `/api/status` poll drives a running-state strip and refreshes cursors on running→idle. |
+| 5d | `f26f687` | Fleet screen replacing the placeholder. Devices table from `/api/fleet/summary` + a track-across-fleet search (`/api/fleet/track?q=...`) with per-result holder pills tooltipped to `local_path`. Role-unaware. Also extracts `lib/time.ts` for `relativeTime`. |
 
-Sidebar currently has **Albums / Artists / Songs / Playlists / Sync**
-wired to real screens and **Downloads / New Releases / Fleet /
+Sidebar currently has **Albums / Artists / Songs / Playlists / Sync /
+Fleet** wired to real screens and **Downloads / New Releases /
 Settings** as `<Placeholder>` stubs.
 
 ---
@@ -85,20 +86,35 @@ Decisions worth preserving:
   polling while idle beyond the status tick itself.
 - No scheduler config UI here — that lives in Settings (Stage 7).
 
-### 5d — Fleet screen
+### 5d — Fleet screen — _Shipped (`f26f687`)_
 
-Fills the `fleet` placeholder. Reads `GET /api/fleet/summary` and
-renders one row per device with `{device_id, track_count, last_report}`.
-Clicking a row opens a detail panel listing the tracks that device
-holds (reuse `GET /api/fleet/track?mbid=...` on click). Master-only —
-satellites show an explanatory empty state.
+Decisions worth preserving (scope diverged from the original sketch):
 
-**Stage 5 exit criteria.** A satellite user can open the Tauri app
-and do *every* library-management action the PySide6 app supports
-*except* the Audit / Complete-Albums / Resolve-Duplicates /
-Identify-&-Tag / Settings flows (those are later stages).
+- The original plan had "click a device row to see tracks it holds"
+  but there's no backend endpoint for device→tracks — the fleet API
+  only exposes device→mbid lookups. Matched the web `/fleet` page
+  instead: device summary table + a separate fleet-wide track
+  search. Adding device→tracks would need a new backend query and
+  isn't obviously worth a whole endpoint just for the desktop side.
+- Role-unaware. The web page doesn't gate by `is_master` either —
+  satellites that never see reports just render the empty state.
+  Gating would require a fresh `/api/config` call and only changes
+  copy, not behavior.
+- Search submits on Enter (or button click), not as-you-type. The
+  backend does a triple `LIKE` across tracks; debounced live-search
+  would be fine but the web UI is submit-on-Enter and matching it
+  keeps muscle memory consistent.
+- `relativeTime` moved to `lib/time.ts`. Two callers is the right
+  inflection for extraction; deferring any longer would invite drift
+  when a third caller lands.
 
-**Estimated effort remaining.** 5d ~1–2h (5a + 5b + 5c shipped).
+---
+
+**Stage 5 exit.** All four sub-stages shipped. A satellite user can
+open the Tauri app and do every library-management action the
+PySide6 app supports *except* the Audit / Complete-Albums /
+Resolve-Duplicates / Identify-&-Tag / Settings flows (those are
+Stages 6–8).
 
 ---
 
