@@ -902,6 +902,12 @@ def test_get_config_redacts_secrets(client, mock_config, tmp_path, monkeypatch):
     assert data["config"]["jellyfin_api_key"] == ""
     assert data["config"]["music_library_path"] == "/music"
     assert "slsk_password" in data["secret_keys"]
+    # bool_keys + groups shipped so the desktop Settings dialog reads
+    # them from the single config_keys.py source rather than drifting
+    # like the web dashboard's hardcoded JS copy did.
+    assert "report_inventory_to_host" in data["bool_keys"]
+    assert isinstance(data["groups"], list) and data["groups"]
+    assert {"label", "keys"} <= set(data["groups"][0].keys())
 
 
 def test_post_config_merges_and_ignores_unknown_keys(client, mock_config, tmp_path, monkeypatch):

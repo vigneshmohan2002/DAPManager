@@ -323,7 +323,9 @@ def setup():
 
 
 from src.config_keys import (
+    BOOL_KEYS as CONFIG_BOOL_KEYS,
     EDITABLE_KEYS as CONFIG_EDITABLE_KEYS,
+    GROUPS as CONFIG_GROUPS,
     SECRET_KEYS as CONFIG_SECRET_KEYS,
 )
 
@@ -388,6 +390,8 @@ def get_config_json():
         "config": redacted,
         "editable_keys": sorted(CONFIG_EDITABLE_KEYS),
         "secret_keys": sorted(CONFIG_SECRET_KEYS),
+        "bool_keys": sorted(CONFIG_BOOL_KEYS),
+        "groups": [{"label": label, "keys": keys} for label, keys in CONFIG_GROUPS],
     })
 
 
