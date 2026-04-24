@@ -7,6 +7,7 @@ import AlbumsScreen from "./screens/AlbumsScreen";
 import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
+import FleetScreen from "./screens/FleetScreen";
 import SongsScreen from "./screens/SongsScreen";
 import SyncScreen from "./screens/SyncScreen";
 import { waitForBackend, type Album, type Artist } from "./lib/api";
@@ -111,6 +112,9 @@ function App() {
     }
     if (screen === "sync") {
       return <SyncScreen ready={status === "ready"} />;
+    }
+    if (screen === "fleet") {
+      return <FleetScreen ready={status === "ready"} />;
     }
     return <Placeholder name={screen} />;
   };

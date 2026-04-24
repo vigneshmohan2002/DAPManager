@@ -7,6 +7,7 @@ import {
   type BackendStatus,
   type SyncState,
 } from "../lib/api";
+import { relativeTime } from "../lib/time";
 
 type Props = {
   ready: boolean;
@@ -71,25 +72,6 @@ const STEPS: Step[] = [
     hint: "Walks music_library_path and binds unlinked catalog rows to on-disk files by MBID / ISRC / artist+title. Safe to re-run.",
   },
 ];
-
-// Relative-time formatter matches the web dashboard's helper so the
-// two UIs read the same. Backend stamps use SQLite CURRENT_TIMESTAMP
-// (UTC, space-separated), which we normalize to ISO before parsing.
-function relativeTime(stamp: string | null): string {
-  if (!stamp) return "never";
-  const iso = stamp.includes("T") ? stamp : stamp.replace(" ", "T") + "Z";
-  const then = Date.parse(iso);
-  if (isNaN(then)) return stamp;
-  const diffSec = Math.round((Date.now() - then) / 1000);
-  if (diffSec < 5) return "just now";
-  if (diffSec < 60) return `${diffSec}s ago`;
-  const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.round(diffHr / 24);
-  return `${diffDay}d ago`;
-}
 
 export default function SyncScreen({ ready }: Props) {
   const [state, setState] = useState<SyncState | null>(null);

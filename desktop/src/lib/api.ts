@@ -175,6 +175,49 @@ export async function fetchStatus(): Promise<BackendStatus> {
   return (await r.json()) as BackendStatus;
 }
 
+export type FleetDevice = {
+  device_id: string;
+  track_count: number;
+  last_reported_at: string | null;
+};
+
+export type FleetHolder = {
+  device_id: string;
+  local_path: string | null;
+  reported_at: string;
+};
+
+export type FleetSearchResult = {
+  mbid: string;
+  artist: string;
+  title: string;
+  album: string | null;
+  device_count: number;
+  holders: FleetHolder[];
+};
+
+export async function fetchFleetSummary(): Promise<FleetDevice[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/fleet/summary`);
+  if (!r.ok) throw new Error(`fleet/summary: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "fleet/summary failed");
+  return (data.devices ?? []) as FleetDevice[];
+}
+
+export async function searchFleet(q: string): Promise<FleetSearchResult[]> {
+  const query = q.trim();
+  if (!query) return [];
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/fleet/track?q=${encodeURIComponent(query)}`,
+  );
+  if (!r.ok) throw new Error(`fleet/track: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "fleet/track failed");
+  return (data.results ?? []) as FleetSearchResult[];
+}
+
 export type ActionResult = { success: boolean; message: string };
 
 // POST an empty-body action endpoint (sync triggers, link-local, etc).
