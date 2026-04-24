@@ -509,27 +509,78 @@ def api_library_albums():
 
 @app.route("/api/library/tracks")
 def api_library_tracks():
-    """Flat list of every accessible track. Feeds the desktop Songs screen.
+    """Flat list of tracks for the library browser.
+
+    Default (no params): every accessible track in the live library —
+    backward-compatible with the Tauri Songs screen. Unavailable rows
+    (no local file, no DAP drive, no master) are dropped.
+
+    Query params (all optional):
+      playlist_id:       scope to a playlist's membership (track_order).
+      local_only=1:      drop rows without a local file.
+      include_orphans=1: include soft-deleted rows; each row gets an
+                         ``orphan`` flag the UI can badge. When this flag
+                         is set, unavailable rows are *kept* so the user
+                         can still see and act on (restore/purge) them.
 
     Each row carries an ``availability`` string: "local" when the file is
     on disk here, "drive" when only the DAP path is set, "remote" when
     neither is set but a master URL is configured (we'll proxy-stream).
-    Unavailable rows are dropped so the UI only shows playable tracks.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+
+    playlist_id = (request.args.get("playlist_id") or "").strip() or None
+    local_only = request.args.get("local_only", "").lower() in ("1", "true", "yes")
+    include_orphans = request.args.get("include_orphans", "").lower() in (
+        "1", "true", "yes",
+    )
+    has_filters = bool(playlist_id) or local_only or include_orphans
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            if has_filters:
+                rows = db.list_tracks_filtered(
+                    playlist_id=playlist_id,
+                    local_only=local_only,
+                    include_orphans=include_orphans,
+                )
+            else:
+                rows = db.list_all_tracks()
+        has_master = _master_url_configured()
+        public = []
+        for r in rows:
+            availability = _availability_for(r, has_master)
+            is_orphan = bool(r.get("deleted_at"))
+            # When orphans are requested the UI wants to see them regardless
+            # of whether they're playable — restoring is the point.
+            if availability == "unavailable" and not (include_orphans and is_orphan):
+                continue
+            entry = _public_track_row(r, has_master)
+            if include_orphans:
+                entry["orphan"] = is_orphan
+            public.append(entry)
+        return jsonify({"success": True, "tracks": public})
+    except Exception as e:
+        logger.exception("api_library_tracks failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/playlists")
+def api_library_playlists():
+    """Live playlists with membership counts, for the library sidebar.
+
+    Distinct from ``GET /api/playlists`` (which is the sync delta feed).
+    Orphans are excluded — the /orphans page handles those.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     try:
         with DatabaseManager(config.db_path) as db:
-            rows = db.list_all_tracks()
-        has_master = _master_url_configured()
-        public = [
-            _public_track_row(r, has_master)
-            for r in rows
-            if _availability_for(r, has_master) != "unavailable"
-        ]
-        return jsonify({"success": True, "tracks": public})
+            rows = db.list_playlists_with_counts()
+        return jsonify({"success": True, "playlists": rows})
     except Exception as e:
-        logger.exception("api_library_tracks failed")
+        logger.exception("api_library_playlists failed")
         return jsonify({"success": False, "message": str(e)}), 500
 
 

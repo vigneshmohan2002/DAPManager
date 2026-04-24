@@ -506,6 +506,63 @@ def test_library_tracks_tags_remote_when_master_configured(client, mock_config):
     assert data["tracks"][0]["availability"] == "remote"
 
 
+def test_library_tracks_forwards_filter_params_to_db(client, mock_config):
+    # With any of playlist_id / local_only / include_orphans set, the
+    # route hits list_tracks_filtered (not list_all_tracks) and passes
+    # the params through.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.list_tracks_filtered.return_value = [
+            {"mbid": "t-local", "title": "L", "artist": "A", "album": "Al",
+             "track_number": 1, "disc_number": 1, "album_id": "rmb",
+             "local_path": "/m/l.flac", "dap_path": None, "deleted_at": None},
+        ]
+        res = client.get('/api/library/tracks?playlist_id=pl-1&local_only=1&include_orphans=1')
+
+    assert res.status_code == 200
+    assert res.get_json()["tracks"][0]["mbid"] == "t-local"
+    inst.list_tracks_filtered.assert_called_once_with(
+        playlist_id="pl-1", local_only=True, include_orphans=True,
+    )
+    # list_all_tracks must NOT have been called when filters are in play.
+    assert not inst.list_all_tracks.called
+
+
+def test_library_tracks_include_orphans_keeps_unavailable_rows(client, mock_config):
+    # An orphan row with no playable source stays visible when the UI
+    # asked for orphans — otherwise the /library 'Show orphans' toggle
+    # would silently drop the rows a user is trying to restore.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.list_tracks_filtered.return_value = [
+            {"mbid": "t-dead", "title": "X", "artist": "A", "album": "Al",
+             "track_number": 1, "disc_number": 1, "album_id": "rmb",
+             "local_path": None, "dap_path": None,
+             "deleted_at": "2026-04-20 10:00:00"},
+        ]
+        res = client.get('/api/library/tracks?include_orphans=1')
+
+    data = res.get_json()
+    assert len(data["tracks"]) == 1
+    assert data["tracks"][0]["orphan"] is True
+    assert data["tracks"][0]["availability"] == "unavailable"
+
+
+def test_library_playlists_lists_live_playlists(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_playlists_with_counts.return_value = [
+            {"playlist_id": "pl-1", "name": "Alpha", "track_count": 12, "updated_at": "2026-04-20 10:00:00"},
+            {"playlist_id": "pl-2", "name": "Bravo", "track_count": 0, "updated_at": "2026-04-20 11:00:00"},
+        ]
+        res = client.get('/api/library/playlists')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert [p["name"] for p in data["playlists"]] == ["Alpha", "Bravo"]
+    assert data["playlists"][0]["track_count"] == 12
+
+
 def test_library_artists_lists_artists(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         MockDB.return_value.__enter__.return_value.list_artists.return_value = [
