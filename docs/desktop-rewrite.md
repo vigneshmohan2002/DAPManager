@@ -26,10 +26,11 @@ that don't fit in a commit message.
 | 4d | `f9b289b` | Global search overlay (⌘K). Searches albums + artists + tracks via existing endpoints; keyboard navigation. |
 | 5a | `626fe1d` | Playlists in sidebar (live from `/api/library/playlists`) + Songs scoping via `?playlist_id=...`. Header reflects the scoped playlist's name. |
 | 5b | `4496daa` | Songs-screen filters: "Show catalog-only" (`local_only=0`) and "Show orphans" (`include_orphans=1`) toggles, plus a Status column with availability badges (`local`/`drive`/`catalog-only`/`missing`) and an orphan chip. Unavailable rows are dimmed and stripped from the play queue with a remapped start index. |
+| 5c | `7f57839` | Sync screen replacing the placeholder. Sync All + per-step buttons (Pull Catalog / Pull Playlists / Push Playlists / Report Inventory / Link Local Files), each with a "Last: Nm ago" cursor from `/api/sync/state`. 2s `/api/status` poll drives a running-state strip and refreshes cursors on running→idle. |
 
-Sidebar currently has **Albums / Artists / Songs / Playlists** wired to
-real screens and **Downloads / New Releases / Fleet / Sync / Settings**
-as `<Placeholder>` stubs.
+Sidebar currently has **Albums / Artists / Songs / Playlists / Sync**
+wired to real screens and **Downloads / New Releases / Fleet /
+Settings** as `<Placeholder>` stubs.
 
 ---
 
@@ -62,18 +63,27 @@ Decisions worth preserving (not obvious from the diff):
   in order — a filter-then-clamp approach would mis-target when an
   unavailable row precedes the clicked one.
 
-### 5c — Sync screen
+### 5c — Sync screen — _Shipped (`7f57839`)_
 
-Fills the `sync` sidebar placeholder. Scope mirrors the web dashboard's
-Multi-Device Sync card:
+Decisions worth preserving:
 
-- **Sync All** button, plus individual **Pull Catalog / Pull Playlists
-  / Push Playlists / Report Inventory / Link Local Files** buttons.
-- Last-sync cursor timestamps next to each button
-  (`GET /api/sync/state`), formatted as relative time.
-- A live status strip reading `/api/status` so the user sees which
-  sub-step is currently running when a task is in flight.
-- No scheduler config UI — that lives in Settings (Stage 7).
+- The `TopBar`'s `search` prop is now optional rather than required,
+  so the Sync screen can share the same draggable-titlebar header
+  without a phantom search box. Other non-list screens (Fleet,
+  Settings when they land) will benefit too.
+- `postAction` is a single generic helper over every trigger
+  endpoint instead of per-endpoint wrappers. The five buttons all
+  return `{success, message}` in the same shape; the screen surfaces
+  `message` verbatim on `success: false` so config-gated failures
+  ("`master_url` not configured", "`report_inventory_to_host`
+  disabled") land in the UI without the client needing to know which
+  config keys each step requires.
+- Cursor refresh uses a `wasRunning` ref + the existing 2s `/api/status`
+  poll rather than a dedicated interval. Running→idle edge triggers
+  `fetchSyncState()` once, and the immediately-succeeded case is
+  covered by a `setTimeout(loadState, 2000)` after every POST. No
+  polling while idle beyond the status tick itself.
+- No scheduler config UI here — that lives in Settings (Stage 7).
 
 ### 5d — Fleet screen
 
@@ -88,7 +98,7 @@ and do *every* library-management action the PySide6 app supports
 *except* the Audit / Complete-Albums / Resolve-Duplicates /
 Identify-&-Tag / Settings flows (those are later stages).
 
-**Estimated effort remaining.** 5c ~2–3h · 5d ~1–2h (5a + 5b shipped).
+**Estimated effort remaining.** 5d ~1–2h (5a + 5b + 5c shipped).
 
 ---
 
