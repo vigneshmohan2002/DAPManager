@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import TopBar from "../components/TopBar";
+import { useToast } from "../components/Toast";
 import {
   fetchStatus,
   fetchSyncState,
@@ -76,8 +77,8 @@ const STEPS: Step[] = [
 export default function SyncScreen({ ready }: Props) {
   const [state, setState] = useState<SyncState | null>(null);
   const [status, setStatus] = useState<BackendStatus | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
   const wasRunning = useRef(false);
+  const toast = useToast();
 
   // /api/status poll runs continuously while the screen is mounted
   // (cheap — single row from a mutex-guarded dict). When a run
@@ -112,7 +113,7 @@ export default function SyncScreen({ ready }: Props) {
       const s = await fetchSyncState();
       setState(s);
     } catch (e) {
-      setToast(String(e));
+      toast.show(String(e), "err");
     }
   };
 
@@ -123,14 +124,13 @@ export default function SyncScreen({ ready }: Props) {
   const running = Boolean(status?.running);
 
   const trigger = async (endpoint: string) => {
-    setToast(null);
     const result = await postAction(endpoint);
     // Non-success responses carry a config-gated reason ("master_url
     // not configured", "report_inventory_to_host disabled", etc).
     // Surface them verbatim — the user needs to know exactly which
     // config key to set.
     if (!result.success) {
-      setToast(result.message || "Request failed");
+      toast.show(result.message || "Request failed", "err");
       return;
     }
     // Bump cursors a moment after the task kicks off so the user
@@ -220,12 +220,6 @@ export default function SyncScreen({ ready }: Props) {
               </div>
             ) : null}
           </section>
-        ) : null}
-
-        {toast ? (
-          <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-sm text-[var(--color-text-muted)]">
-            {toast}
-          </div>
         ) : null}
       </div>
     </div>
