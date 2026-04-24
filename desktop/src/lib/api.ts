@@ -22,8 +22,14 @@ export type Track = {
   disc_number: number | null;
 };
 
+export type Availability = "local" | "drive" | "remote" | "unavailable";
+
 export type LibraryTrack = Track & {
   album_id: string | null;
+  availability: Availability;
+  // Only present when the caller passed include_orphans=1; absent
+  // rows are implicitly not orphans.
+  orphan?: boolean;
 };
 
 let cachedBackend: string | null = null;
