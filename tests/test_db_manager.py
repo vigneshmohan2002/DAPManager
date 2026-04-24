@@ -1176,3 +1176,104 @@ def test_list_tracks_filtered_include_orphans_toggles_soft_deleted(db):
     assert {r["mbid"] for r in all_rows} == {"live", "dead"}
     dead_row = next(r for r in all_rows if r["mbid"] == "dead")
     assert dead_row["deleted_at"] is not None
+
+
+def test_create_playlist_returns_uuid_and_inserts_empty_row(db):
+    pid = db.create_playlist("My Mix")
+    assert pid and len(pid) == 32  # uuid4 hex
+    row = db.get_playlist(pid)
+    assert row is not None
+    assert row.name == "My Mix"
+    # Fresh playlist has no membership.
+    assert db.get_playlist_tracks(pid) == []
+
+
+def test_create_playlist_rejects_empty_name(db):
+    import pytest
+
+    with pytest.raises(ValueError):
+        db.create_playlist("")
+    with pytest.raises(ValueError):
+        db.create_playlist("   ")
+
+
+def test_unlink_track_from_playlist_removes_and_bumps_updated_at(db):
+    import time
+
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="U", artist="A"))
+    pid = db.create_playlist("Mix")
+    db.link_track_to_playlist(pid, "t1", 0)
+    db.link_track_to_playlist(pid, "t2", 1)
+    before = _playlist_updated_at(db, pid)
+
+    time.sleep(1.1)
+    assert db.unlink_track_from_playlist(pid, "t1") is True
+    after = _playlist_updated_at(db, pid)
+    assert after > before
+    remaining = [t.mbid for t in db.get_playlist_tracks(pid)]
+    assert remaining == ["t2"]
+
+
+def test_unlink_track_missing_membership_is_noop(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    pid = db.create_playlist("Mix")
+    # No link exists; unlink should return False and not bump updated_at.
+    before = _playlist_updated_at(db, pid)
+    assert db.unlink_track_from_playlist(pid, "t1") is False
+    assert _playlist_updated_at(db, pid) == before
+
+
+def test_replace_playlist_membership_overwrites_and_orders(db):
+    db.add_or_update_track(Track(mbid="t1", title="T1", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="A"))
+    db.add_or_update_track(Track(mbid="t3", title="T3", artist="A"))
+    pid = db.create_playlist("Mix")
+    db.link_track_to_playlist(pid, "t1", 0)
+
+    # Replace with t3, t2 in that order — t1 must be dropped.
+    n = db.replace_playlist_membership(pid, ["t3", "t2"])
+    assert n == 2
+    assert [t.mbid for t in db.get_playlist_tracks(pid)] == ["t3", "t2"]
+
+
+def test_replace_playlist_membership_empty_list_empties_playlist(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    pid = db.create_playlist("Mix")
+    db.link_track_to_playlist(pid, "t1", 0)
+
+    n = db.replace_playlist_membership(pid, [])
+    assert n == 0
+    assert db.get_playlist_tracks(pid) == []
+
+
+def test_replace_playlist_membership_drops_unknown_mbids(db):
+    db.add_or_update_track(Track(mbid="known", title="T", artist="A"))
+    pid = db.create_playlist("Mix")
+
+    # "ghost" doesn't exist — PUT callers get a count of what actually
+    # landed so they can tell the user "you asked for 2, 1 landed".
+    n = db.replace_playlist_membership(pid, ["ghost", "known"])
+    assert n == 1
+    assert [t.mbid for t in db.get_playlist_tracks(pid)] == ["known"]
+
+
+def test_rename_playlist_updates_name_and_preserves_membership(db):
+    """Regression guard: the ON CONFLICT DO UPDATE fix from an earlier
+    commit must keep membership across a rename."""
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    pid = db.create_playlist("Old")
+    db.link_track_to_playlist(pid, "t1", 0)
+
+    assert db.rename_playlist(pid, "New") is True
+    row = db.get_playlist(pid)
+    assert row.name == "New"
+    assert [t.mbid for t in db.get_playlist_tracks(pid)] == ["t1"]
+
+
+def test_rename_playlist_rejects_missing_id_or_empty_name(db):
+    pid = db.create_playlist("Fine")
+    assert db.rename_playlist("", "X") is False
+    assert db.rename_playlist(pid, "") is False
+    assert db.rename_playlist(pid, "   ") is False
+    assert db.rename_playlist("nonexistent-id", "X") is False

@@ -5,6 +5,7 @@ Database management for DAP Manager.
 
 import sqlite3
 import os
+import uuid
 import logging
 from dataclasses import dataclass
 from typing import Optional, List, Dict
@@ -791,6 +792,129 @@ class DatabaseManager:
         )
         self.conn.commit()
         cursor.close()
+
+    def create_playlist(self, name: str) -> str:
+        """Insert a new empty playlist with a generated UUID and return it.
+
+        Name is required but otherwise unconstrained; the UI is expected
+        to trim before sending. The generated id is a plain uuid4 hex so
+        it sorts distinctly from the Spotify-style ids imported via the
+        Spotify client.
+        """
+        if not name or not name.strip():
+            raise ValueError("playlist name is required")
+        pid = uuid.uuid4().hex
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO playlists (playlist_id, name, spotify_url, updated_at) "
+            "VALUES (?, ?, '', CURRENT_TIMESTAMP)",
+            (pid, name.strip()),
+        )
+        self.conn.commit()
+        cursor.close()
+        return pid
+
+    def unlink_track_from_playlist(self, playlist_id: str, track_mbid: str) -> bool:
+        """Remove a track from a playlist's membership.
+
+        Returns True when a row was actually deleted. Bumps the playlist's
+        ``updated_at`` in that case so the delta feed carries the change —
+        matching the ``link_track_to_playlist`` contract.
+        """
+        if not playlist_id or not track_mbid:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM playlist_tracks "
+            "WHERE playlist_id = ? AND track_mbid = ?",
+            (playlist_id, track_mbid),
+        )
+        removed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        if removed:
+            self._bump_playlist_updated_at(playlist_id)
+        return removed
+
+    def replace_playlist_membership(
+        self, playlist_id: str, track_mbids: List[str]
+    ) -> int:
+        """Rewrite a playlist's membership to exactly ``track_mbids``.
+
+        Order in the input list becomes ``track_order`` (0-indexed).
+        Missing/empty mbids are skipped. Unknown mbids are dropped the
+        same way ``apply_playlist_row`` drops them — the caller gets a
+        count of what actually landed so it can surface partial misses.
+
+        The delete + re-insert run in one transaction and the playlist's
+        ``updated_at`` is bumped regardless of whether the set changed,
+        since PUT is an explicit edit action from the user.
+        """
+        if not playlist_id:
+            return 0
+        known = {m.strip() for m in (track_mbids or []) if m and m.strip()}
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT mbid FROM tracks WHERE mbid IN ({})".format(
+                    ",".join("?" for _ in known)
+                ),
+                tuple(known),
+            ) if known else cursor.execute("SELECT mbid FROM tracks WHERE 0")
+            existing = {r["mbid"] for r in cursor.fetchall()}
+            valid_ordered = [
+                m.strip() for m in (track_mbids or [])
+                if m and m.strip() and m.strip() in existing
+            ]
+            cursor.execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?",
+                (playlist_id,),
+            )
+            for order, mbid in enumerate(valid_ordered):
+                cursor.execute(
+                    "INSERT INTO playlist_tracks "
+                    "(playlist_id, track_mbid, track_order) VALUES (?, ?, ?)",
+                    (playlist_id, mbid, order),
+                )
+            cursor.execute(
+                "UPDATE playlists SET updated_at = CURRENT_TIMESTAMP "
+                "WHERE playlist_id = ?",
+                (playlist_id,),
+            )
+            self.conn.commit()
+        finally:
+            cursor.close()
+        return len(valid_ordered)
+
+    def get_playlist(self, playlist_id: str) -> Optional[Playlist]:
+        """Fetch one playlist by id, excluding soft-deleted rows."""
+        if not playlist_id:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM playlists WHERE playlist_id = ? AND deleted_at IS NULL",
+            (playlist_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return self._row_to_playlist(row) if row else None
+
+    def rename_playlist(self, playlist_id: str, name: str) -> bool:
+        """Update a playlist's name and bump updated_at. No-op on missing
+        id; returns True only when a row actually changed.
+        """
+        if not playlist_id or not name or not name.strip():
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE playlist_id = ? AND deleted_at IS NULL",
+            (name.strip(), playlist_id),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
 
     def queue_download(self, item: DownloadItem) -> int:
         sql = "INSERT OR IGNORE INTO download_queue (search_query, playlist_id, mbid_guess, status) VALUES (?, ?, ?, ?)"
