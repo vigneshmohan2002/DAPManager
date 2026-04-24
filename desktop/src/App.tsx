@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import PlayerBar from "./components/PlayerBar";
 import QueuePanel from "./components/QueuePanel";
 import SearchOverlay from "./components/SearchOverlay";
 import Sidebar from "./components/Sidebar";
+import { ToastProvider } from "./components/Toast";
 import AlbumsScreen from "./screens/AlbumsScreen";
 import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
@@ -23,6 +24,36 @@ function App() {
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Bumped by any playlist mutation (create / rename / delete / add-
+  // to-playlist). Sidebar + SongsScreen depend on it so their fetches
+  // re-fire without prop-drilling a `refresh()` callback everywhere.
+  const [playlistsVersion, setPlaylistsVersion] = useState(0);
+  const bumpPlaylists = useCallback(
+    () => setPlaylistsVersion((v) => v + 1),
+    [],
+  );
+
+  // If the scoped playlist was just deleted, drop the scope back to
+  // "all tracks" so the Songs screen doesn't keep filtering on a
+  // soft-deleted id.
+  const handlePlaylistDeleted = useCallback(
+    (pid: string) => {
+      if (scopedPlaylistId === pid) setScopedPlaylistId(null);
+      bumpPlaylists();
+    },
+    [scopedPlaylistId, bumpPlaylists],
+  );
+
+  const handlePlaylistCreated = useCallback(
+    (pid: string) => {
+      setScopedPlaylistId(pid);
+      setScreen("songs");
+      setOpenAlbum(null);
+      setOpenArtist(null);
+      bumpPlaylists();
+    },
+    [bumpPlaylists],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -95,6 +126,8 @@ function App() {
         <SongsScreen
           ready={status === "ready"}
           playlistId={scopedPlaylistId}
+          playlistsVersion={playlistsVersion}
+          onPlaylistsChanged={bumpPlaylists}
         />
       );
     }
@@ -120,30 +153,38 @@ function App() {
   };
 
   return (
-    <PlayerProvider>
-      <div className="h-screen w-screen flex flex-col">
-        <div className="flex-1 flex min-h-0">
-          <Sidebar
-            activeId={activeSidebarId}
-            onSelect={handleSidebarSelect}
-            onOpenSearch={() => setSearchOpen(true)}
-            ready={status === "ready"}
+    <ToastProvider>
+      <PlayerProvider>
+        <div className="h-screen w-screen flex flex-col">
+          <div className="flex-1 flex min-h-0">
+            <Sidebar
+              activeId={activeSidebarId}
+              onSelect={handleSidebarSelect}
+              onOpenSearch={() => setSearchOpen(true)}
+              ready={status === "ready"}
+              playlistsVersion={playlistsVersion}
+              onPlaylistsChanged={bumpPlaylists}
+              onPlaylistCreated={handlePlaylistCreated}
+              onPlaylistDeleted={handlePlaylistDeleted}
+            />
+            <main className="flex-1 flex flex-col min-w-0">
+              {renderScreen()}
+            </main>
+            <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
+          </div>
+          <PlayerBar
+            queueOpen={queueOpen}
+            onToggleQueue={() => setQueueOpen((q) => !q)}
           />
-          <main className="flex-1 flex flex-col min-w-0">{renderScreen()}</main>
-          <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
+          <SearchOverlay
+            open={searchOpen}
+            onClose={() => setSearchOpen(false)}
+            onOpenAlbum={openAlbumFromSearch}
+            onOpenArtist={openArtistFromSearch}
+          />
         </div>
-        <PlayerBar
-          queueOpen={queueOpen}
-          onToggleQueue={() => setQueueOpen((q) => !q)}
-        />
-        <SearchOverlay
-          open={searchOpen}
-          onClose={() => setSearchOpen(false)}
-          onOpenAlbum={openAlbumFromSearch}
-          onOpenArtist={openArtistFromSearch}
-        />
-      </div>
-    </PlayerProvider>
+      </PlayerProvider>
+    </ToastProvider>
   );
 }
 

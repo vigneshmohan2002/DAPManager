@@ -238,3 +238,150 @@ export async function postAction(path: string): Promise<ActionResult> {
     message: String(data.message ?? ""),
   };
 }
+
+export type QueueDownloadResult = {
+  success: boolean;
+  message?: string;
+  queued: number;
+  skipped_linked: number;
+  skipped_queued: number;
+  not_found: number;
+};
+
+export async function queueCatalogDownload(
+  mbids: string[],
+): Promise<QueueDownloadResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/catalog/queue-download`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mbids }),
+  });
+  const data = await r.json();
+  return data as QueueDownloadResult;
+}
+
+export async function softDeleteTrack(mbid: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/tracks/${encodeURIComponent(mbid)}`,
+    { method: "DELETE" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export type CreatePlaylistResult = {
+  success: boolean;
+  message?: string;
+  playlist_id?: string;
+  name?: string;
+};
+
+export async function createPlaylist(
+  name: string,
+): Promise<CreatePlaylistResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/playlists`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return (await r.json()) as CreatePlaylistResult;
+}
+
+export async function renamePlaylist(
+  playlistId: string,
+  name: string,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export async function deletePlaylist(
+  playlistId: string,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
+    { method: "DELETE" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+// Add one track to a playlist by merging into existing membership.
+// The PUT endpoint replaces the full list, so the caller must
+// compose it — mirrors the web /library page's addSelectedToPlaylist.
+export type AddToPlaylistResult = {
+  success: boolean;
+  message: string;
+  added: number;
+  missed: number;
+};
+
+export async function addTrackToPlaylist(
+  playlistId: string,
+  mbid: string,
+): Promise<AddToPlaylistResult> {
+  const url = await backendUrl();
+  const listResp = await fetch(
+    `${url}/api/library/tracks?playlist_id=${encodeURIComponent(playlistId)}`,
+  );
+  const listData = await listResp.json();
+  if (!listData.success) {
+    return {
+      success: false,
+      message: String(listData.message ?? "lookup failed"),
+      added: 0,
+      missed: 0,
+    };
+  }
+  const existing: string[] = (listData.tracks ?? []).map(
+    (t: { mbid: string }) => t.mbid,
+  );
+  if (existing.includes(mbid)) {
+    return { success: true, message: "already in playlist", added: 0, missed: 0 };
+  }
+  const merged = [...existing, mbid];
+  const putResp = await fetch(
+    `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_mbids: merged }),
+    },
+  );
+  const putData = await putResp.json();
+  if (!putData.success) {
+    return {
+      success: false,
+      message: String(putData.message ?? "update failed"),
+      added: 0,
+      missed: 0,
+    };
+  }
+  const missed = Math.max(
+    0,
+    Number(putData.requested ?? merged.length) - Number(putData.landed ?? 0),
+  );
+  return { success: true, message: "", added: 1, missed };
+}

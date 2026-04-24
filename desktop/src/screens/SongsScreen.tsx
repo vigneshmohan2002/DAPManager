@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
+import ContextMenu, {
+  type ContextMenuEntry,
+} from "../components/ContextMenu";
 import TopBar from "../components/TopBar";
+import { useToast } from "../components/Toast";
 import {
+  addTrackToPlaylist,
   fetchAllTracks,
   fetchPlaylists,
+  queueCatalogDownload,
+  softDeleteTrack,
   type Availability,
   type LibraryTrack,
+  type Playlist,
 } from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
 
@@ -15,6 +23,13 @@ type Props = {
   // When set, Songs is scoped to this playlist's membership and the
   // TopBar title reflects the playlist name. null means "all tracks".
   playlistId?: string | null;
+  // Bumped by App when any playlist mutation happens; the Add-to-
+  // Playlist submenu needs to re-fetch so new playlists show up.
+  playlistsVersion: number;
+  // SongsScreen itself mutates playlists (add track to playlist,
+  // soft-delete a track that affects playlist counts). Call this to
+  // tell the rest of the app to refresh.
+  onPlaylistsChanged: () => void;
 };
 
 const AVAILABILITY_LABEL: Record<Availability, string> = {
@@ -31,7 +46,12 @@ const AVAILABILITY_CLASS: Record<Availability, string> = {
   unavailable: "bg-neutral-800 text-neutral-400",
 };
 
-export default function SongsScreen({ ready, playlistId }: Props) {
+export default function SongsScreen({
+  ready,
+  playlistId,
+  playlistsVersion,
+  onPlaylistsChanged,
+}: Props) {
   const [rows, setRows] = useState<LibraryTrack[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +59,13 @@ export default function SongsScreen({ ready, playlistId }: Props) {
   const [sort, setSort] = useState<SortKey>("artist");
   const [dir, setDir] = useState<"asc" | "desc">("asc");
   const [playlistName, setPlaylistName] = useState<string | null>(null);
+  const [allPlaylists, setAllPlaylists] = useState<Playlist[]>([]);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    track: LibraryTrack;
+  } | null>(null);
+  const [tableVersion, setTableVersion] = useState(0);
 
   // Filters: match the web /library page's defaults + semantic.
   //   catalog-only OFF  -> local_only=1 (only rows with a file here)
@@ -49,6 +76,7 @@ export default function SongsScreen({ ready, playlistId }: Props) {
   const [showOrphans, setShowOrphans] = useState(false);
 
   const { play, current, isPlaying, toggle } = usePlayer();
+  const toast = useToast();
 
   useEffect(() => {
     if (!ready) return;
@@ -72,28 +100,35 @@ export default function SongsScreen({ ready, playlistId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [ready, playlistId, catalogOnly, showOrphans]);
+  }, [ready, playlistId, catalogOnly, showOrphans, tableVersion]);
 
+  // Full playlist list drives the "Add to playlist" submenu and the
+  // scoped-title lookup. Re-fetched whenever the app signals a
+  // playlist mutation happened anywhere.
   useEffect(() => {
-    if (!ready || !playlistId) {
-      setPlaylistName(null);
-      return;
-    }
+    if (!ready) return;
     let cancelled = false;
     (async () => {
       try {
         const lists = await fetchPlaylists();
-        if (cancelled) return;
-        const match = lists.find((p) => p.playlist_id === playlistId);
-        setPlaylistName(match?.name ?? null);
+        if (!cancelled) setAllPlaylists(lists);
       } catch {
-        if (!cancelled) setPlaylistName(null);
+        if (!cancelled) setAllPlaylists([]);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [ready, playlistId]);
+  }, [ready, playlistsVersion]);
+
+  useEffect(() => {
+    if (!playlistId) {
+      setPlaylistName(null);
+      return;
+    }
+    const match = allPlaylists.find((p) => p.playlist_id === playlistId);
+    setPlaylistName(match?.name ?? null);
+  }, [playlistId, allPlaylists]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -146,6 +181,96 @@ export default function SongsScreen({ ready, playlistId }: Props) {
 
   const arrow = (key: SortKey) =>
     sort === key ? (dir === "asc" ? " ↑" : " ↓") : "";
+
+  const reloadTable = () => setTableVersion((v) => v + 1);
+
+  const handleQueueDownload = async (mbid: string) => {
+    const result = await queueCatalogDownload([mbid]);
+    if (!result.success) {
+      toast.show(result.message || "Queue failed", "err");
+      return;
+    }
+    if (result.queued > 0) {
+      toast.show("Queued for download.");
+    } else if (result.skipped_linked > 0) {
+      toast.show("Already has a local file — nothing queued.");
+    } else if (result.skipped_queued > 0) {
+      toast.show("Already in the download queue.");
+    } else if (result.not_found > 0) {
+      toast.show("Track not found in catalog.", "err");
+    } else {
+      toast.show("Nothing queued.");
+    }
+  };
+
+  const handleSoftDelete = async (track: LibraryTrack) => {
+    const label = `${track.artist} — ${track.title}`;
+    if (
+      !window.confirm(
+        `Soft-delete "${label}"? It becomes an orphan — restore from the web /orphans page if needed.`,
+      )
+    )
+      return;
+    const result = await softDeleteTrack(track.mbid);
+    if (!result.success) {
+      toast.show(result.message || "Delete failed", "err");
+      return;
+    }
+    toast.show(`Deleted "${label}".`);
+    onPlaylistsChanged();
+    reloadTable();
+  };
+
+  const handleAddToPlaylist = async (pid: string, track: LibraryTrack) => {
+    const pl = allPlaylists.find((p) => p.playlist_id === pid);
+    const name = pl?.name ?? pid;
+    const result = await addTrackToPlaylist(pid, track.mbid);
+    if (!result.success) {
+      toast.show(result.message || "Add failed", "err");
+      return;
+    }
+    if (result.added === 0) {
+      toast.show(`Already in "${name}".`);
+      return;
+    }
+    toast.show(
+      result.missed > 0
+        ? `Added to "${name}" (${result.missed} dropped as unknown).`
+        : `Added to "${name}".`,
+    );
+    onPlaylistsChanged();
+    // If we're currently scoped to that playlist, refresh the table.
+    if (playlistId === pid) reloadTable();
+  };
+
+  const menuEntries: ContextMenuEntry[] | null = menu
+    ? [
+        { kind: "label", text: `${menu.track.artist} — ${menu.track.title}` },
+        { kind: "separator" },
+        {
+          kind: "list",
+          heading: "Add to playlist",
+          emptyText: "(no playlists — create one from the sidebar)",
+          items: allPlaylists.map((p) => ({
+            key: p.playlist_id,
+            label: p.name,
+            onSelect: () => handleAddToPlaylist(p.playlist_id, menu.track),
+          })),
+        },
+        { kind: "separator" },
+        {
+          kind: "item",
+          label: "Queue Download",
+          onSelect: () => handleQueueDownload(menu.track.mbid),
+        },
+        {
+          kind: "item",
+          label: "Soft-Delete",
+          danger: true,
+          onSelect: () => handleSoftDelete(menu.track),
+        },
+      ]
+    : null;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -228,6 +353,10 @@ export default function SongsScreen({ ready, playlistId }: Props) {
                       if (isCurrent) toggle();
                       else playFrom(idx);
                     }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, track: t });
+                    }}
                     className={`border-b border-[var(--color-border)]/40 ${
                       playable
                         ? "cursor-pointer hover:bg-[var(--color-surface)]/60"
@@ -269,6 +398,14 @@ export default function SongsScreen({ ready, playlistId }: Props) {
           </table>
         )}
       </div>
+      {menuEntries && menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={menuEntries}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
