@@ -144,3 +144,54 @@ export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
 export function streamUrl(base: string, mbid: string): string {
   return `${base}/api/stream/${encodeURIComponent(mbid)}`;
 }
+
+export type SyncState = {
+  last_catalog_sync: string | null;
+  last_playlist_sync: string | null;
+  last_playlist_push: string | null;
+  last_inventory_report: string | null;
+};
+
+export async function fetchSyncState(): Promise<SyncState> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/sync/state`);
+  if (!r.ok) throw new Error(`sync/state: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "sync/state failed");
+  return data.state as SyncState;
+}
+
+export type BackendStatus = {
+  running: boolean;
+  task: string | null;
+  message: string | null;
+  detail: string | null;
+};
+
+export async function fetchStatus(): Promise<BackendStatus> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/status`);
+  if (!r.ok) throw new Error(`status: ${r.status}`);
+  return (await r.json()) as BackendStatus;
+}
+
+export type ActionResult = { success: boolean; message: string };
+
+// POST an empty-body action endpoint (sync triggers, link-local, etc).
+// The backend's TaskManager returns {success, message} uniformly;
+// callers surface `message` so config-gated failures (e.g.
+// report_inventory_to_host disabled) land in the UI verbatim.
+export async function postAction(path: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!r.ok) return { success: false, message: `${path}: ${r.status}` };
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}

@@ -8,6 +8,7 @@ import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
 import SongsScreen from "./screens/SongsScreen";
+import SyncScreen from "./screens/SyncScreen";
 import { waitForBackend, type Album, type Artist } from "./lib/api";
 import { PlayerProvider } from "./player/PlayerContext";
 
@@ -107,6 +108,9 @@ function App() {
         );
       }
       return <ArtistsScreen ready={status === "ready"} onOpen={setOpenArtist} />;
+    }
+    if (screen === "sync") {
+      return <SyncScreen ready={status === "ready"} />;
     }
     return <Placeholder name={screen} />;
   };
