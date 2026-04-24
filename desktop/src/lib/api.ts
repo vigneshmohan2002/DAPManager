@@ -77,12 +77,40 @@ export async function searchTracks(query: string): Promise<SearchTrackResult[]> 
   return (data.results ?? []) as SearchTrackResult[];
 }
 
-export async function fetchAllTracks(): Promise<LibraryTrack[]> {
+export type FetchTracksOptions = {
+  playlistId?: string;
+  localOnly?: boolean;
+  includeOrphans?: boolean;
+};
+
+export async function fetchAllTracks(
+  opts: FetchTracksOptions = {},
+): Promise<LibraryTrack[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/tracks`);
+  const params = new URLSearchParams();
+  if (opts.playlistId) params.set("playlist_id", opts.playlistId);
+  if (opts.localOnly) params.set("local_only", "1");
+  if (opts.includeOrphans) params.set("include_orphans", "1");
+  const qs = params.toString();
+  const r = await fetch(`${url}/api/library/tracks${qs ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`tracks: ${r.status}`);
   const data = await r.json();
   return (data.tracks ?? []) as LibraryTrack[];
+}
+
+export type Playlist = {
+  playlist_id: string;
+  name: string;
+  track_count: number;
+  updated_at: string;
+};
+
+export async function fetchPlaylists(): Promise<Playlist[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/playlists`);
+  if (!r.ok) throw new Error(`playlists: ${r.status}`);
+  const data = await r.json();
+  return (data.playlists ?? []) as Playlist[];
 }
 
 export async function fetchArtists(): Promise<Artist[]> {

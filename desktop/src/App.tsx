@@ -16,6 +16,7 @@ type BackendStatus = "booting" | "ready" | "failed";
 function App() {
   const [status, setStatus] = useState<BackendStatus>("booting");
   const [screen, setScreen] = useState<string>("albums");
+  const [scopedPlaylistId, setScopedPlaylistId] = useState<string | null>(null);
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -44,10 +45,22 @@ function App() {
   }, []);
 
   const handleSidebarSelect = (id: string) => {
-    setScreen(id);
+    // Playlist clicks route to the Songs screen with a scope; other ids
+    // are plain screen names. Matches the sidebar's id convention.
+    if (id.startsWith("playlist:")) {
+      setScopedPlaylistId(id.slice("playlist:".length));
+      setScreen("songs");
+    } else {
+      setScopedPlaylistId(null);
+      setScreen(id);
+    }
     setOpenAlbum(null);
     setOpenArtist(null);
   };
+
+  const activeSidebarId = scopedPlaylistId
+    ? `playlist:${scopedPlaylistId}`
+    : screen;
 
   const openArtistFromSearch = (a: Artist) => {
     setScreen("artists");
@@ -76,7 +89,12 @@ function App() {
       return <AlbumsScreen ready={status === "ready"} onOpen={setOpenAlbum} />;
     }
     if (screen === "songs") {
-      return <SongsScreen ready={status === "ready"} />;
+      return (
+        <SongsScreen
+          ready={status === "ready"}
+          playlistId={scopedPlaylistId}
+        />
+      );
     }
     if (screen === "artists") {
       if (openArtist) {
@@ -98,9 +116,10 @@ function App() {
       <div className="h-screen w-screen flex flex-col">
         <div className="flex-1 flex min-h-0">
           <Sidebar
-            activeId={screen}
+            activeId={activeSidebarId}
             onSelect={handleSidebarSelect}
             onOpenSearch={() => setSearchOpen(true)}
+            ready={status === "ready"}
           />
           <main className="flex-1 flex flex-col min-w-0">{renderScreen()}</main>
           <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />

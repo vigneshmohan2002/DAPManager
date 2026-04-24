@@ -1,25 +1,39 @@
 import { useEffect, useMemo, useState } from "react";
 import TopBar from "../components/TopBar";
-import { fetchAllTracks, type LibraryTrack } from "../lib/api";
+import {
+  fetchAllTracks,
+  fetchPlaylists,
+  type LibraryTrack,
+} from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
 
 type SortKey = "title" | "artist" | "album";
 
-export default function SongsScreen({ ready }: { ready: boolean }) {
+type Props = {
+  ready: boolean;
+  // When set, Songs is scoped to this playlist's membership and the
+  // TopBar title reflects the playlist name. null means "all tracks".
+  playlistId?: string | null;
+};
+
+export default function SongsScreen({ ready, playlistId }: Props) {
   const [rows, setRows] = useState<LibraryTrack[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("artist");
   const [dir, setDir] = useState<"asc" | "desc">("asc");
+  const [playlistName, setPlaylistName] = useState<string | null>(null);
   const { play, current, isPlaying, toggle } = usePlayer();
 
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
+    setLoading(true);
+    setError(null);
     (async () => {
       try {
-        const data = await fetchAllTracks();
+        const data = await fetchAllTracks({ playlistId: playlistId ?? undefined });
         if (!cancelled) setRows(data);
       } catch (e) {
         if (!cancelled) setError(String(e));
@@ -30,7 +44,31 @@ export default function SongsScreen({ ready }: { ready: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [ready]);
+  }, [ready, playlistId]);
+
+  // Resolve the playlist name for the header. Cheap because
+  // fetchPlaylists is already cached sidebar-side; re-fetching here
+  // avoids prop-drilling the whole playlist list through App.tsx.
+  useEffect(() => {
+    if (!ready || !playlistId) {
+      setPlaylistName(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const lists = await fetchPlaylists();
+        if (cancelled) return;
+        const match = lists.find((p) => p.playlist_id === playlistId);
+        setPlaylistName(match?.name ?? null);
+      } catch {
+        if (!cancelled) setPlaylistName(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, playlistId]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -78,8 +116,12 @@ export default function SongsScreen({ ready }: { ready: boolean }) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar
-        title="Songs"
-        subtitle={`${visible.length} of ${rows.length}`}
+        title={playlistId ? playlistName ?? "Playlist" : "Songs"}
+        subtitle={
+          playlistId
+            ? `${visible.length} of ${rows.length} · playlist`
+            : `${visible.length} of ${rows.length}`
+        }
         search={search}
         onSearch={setSearch}
       />
