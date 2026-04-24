@@ -170,6 +170,80 @@ export async function fetchConfig(): Promise<ConfigPayload> {
   };
 }
 
+export type TagTier = "green" | "yellow" | "red";
+
+export type TagMeta = {
+  artist?: string;
+  album_artist?: string;
+  album?: string;
+  title?: string;
+  date?: string;
+  track_number?: string;
+  disc_number?: string;
+  mbid?: string;
+  release_mbid?: string;
+};
+
+export type IdentifyCandidate = {
+  score: number;
+  tier: TagTier;
+  meta: TagMeta;
+  current: TagMeta;
+};
+
+// Separate kinds so the caller can distinguish "couldn't fingerprint"
+// from "the API key is missing" from "no match found" — they all
+// want different UIs (retry, open Settings, accept).
+export type IdentifyResult =
+  | { kind: "match"; candidate: IdentifyCandidate; localPath: string }
+  | { kind: "no_match"; current: TagMeta }
+  | { kind: "needs_config"; key: string; message: string }
+  | { kind: "error"; message: string };
+
+export async function identifyTrack(mbid: string): Promise<IdentifyResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/tag/identify/${encodeURIComponent(mbid)}`,
+    { method: "POST" },
+  );
+  const data = await r.json();
+  if (!data.success) {
+    const msg = String(data.message ?? "identify failed");
+    if (msg.includes("acoustid_api_key")) {
+      return { kind: "needs_config", key: "acoustid_api_key", message: msg };
+    }
+    return { kind: "error", message: msg };
+  }
+  if (!data.candidate) {
+    return { kind: "no_match", current: data.current ?? {} };
+  }
+  return {
+    kind: "match",
+    candidate: data.candidate as IdentifyCandidate,
+    localPath: String(data.local_path ?? ""),
+  };
+}
+
+export async function applyTrackTags(
+  mbid: string,
+  meta: TagMeta,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/tag/apply/${encodeURIComponent(mbid)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ meta }),
+    },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
 export type SaveConfigResult = {
   success: boolean;
   message: string;

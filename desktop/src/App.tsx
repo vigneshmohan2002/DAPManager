@@ -60,6 +60,14 @@ function App() {
     [bumpPlaylists],
   );
 
+  const handleOpenSettings = useCallback((focusKey?: string) => {
+    setScreen("settings");
+    setScopedPlaylistId(null);
+    setOpenAlbum(null);
+    setOpenArtist(null);
+    setSettingsFocusKey(focusKey ?? null);
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -133,6 +141,7 @@ function App() {
           playlistId={scopedPlaylistId}
           playlistsVersion={playlistsVersion}
           onPlaylistsChanged={bumpPlaylists}
+          onOpenSettings={handleOpenSettings}
         />
       );
     }

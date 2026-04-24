@@ -2,17 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 import ContextMenu, {
   type ContextMenuEntry,
 } from "../components/ContextMenu";
+import IdentifyTagDialog from "../components/IdentifyTagDialog";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
 import {
   addTrackToPlaylist,
+  applyTrackTags,
   fetchAllTracks,
   fetchPlaylists,
+  identifyTrack,
   queueCatalogDownload,
   softDeleteTrack,
   type Availability,
+  type IdentifyCandidate,
   type LibraryTrack,
   type Playlist,
+  type TagMeta,
 } from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
 
@@ -30,6 +35,9 @@ type Props = {
   // soft-delete a track that affects playlist counts). Call this to
   // tell the rest of the app to refresh.
   onPlaylistsChanged: () => void;
+  // Route to Settings scoped to a missing key. Used by Identify &
+  // Tag when acoustid_api_key isn't configured.
+  onOpenSettings: (focusKey?: string) => void;
 };
 
 const AVAILABILITY_LABEL: Record<Availability, string> = {
@@ -51,6 +59,7 @@ export default function SongsScreen({
   playlistId,
   playlistsVersion,
   onPlaylistsChanged,
+  onOpenSettings,
 }: Props) {
   const [rows, setRows] = useState<LibraryTrack[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,6 +75,13 @@ export default function SongsScreen({
     track: LibraryTrack;
   } | null>(null);
   const [tableVersion, setTableVersion] = useState(0);
+  const [identify, setIdentify] = useState<{
+    mbid: string;
+    candidate: IdentifyCandidate;
+    localPath: string;
+  } | null>(null);
+  const [identifying, setIdentifying] = useState(false);
+  const [applyingTag, setApplyingTag] = useState(false);
 
   // Filters: match the web /library page's defaults + semantic.
   //   catalog-only OFF  -> local_only=1 (only rows with a file here)
@@ -221,6 +237,58 @@ export default function SongsScreen({
     reloadTable();
   };
 
+  const handleIdentify = async (track: LibraryTrack) => {
+    if (identifying) return;
+    setIdentifying(true);
+    try {
+      const result = await identifyTrack(track.mbid);
+      if (result.kind === "needs_config") {
+        toast.show(
+          `${result.message} Opening Settings.`,
+          "err",
+        );
+        onOpenSettings(result.key);
+        return;
+      }
+      if (result.kind === "error") {
+        toast.show(result.message, "err");
+        return;
+      }
+      if (result.kind === "no_match") {
+        toast.show("No match found on AcoustID / MusicBrainz.");
+        return;
+      }
+      setIdentify({
+        mbid: track.mbid,
+        candidate: result.candidate,
+        localPath: result.localPath,
+      });
+    } finally {
+      setIdentifying(false);
+    }
+  };
+
+  const handleApplyTags = async (meta: TagMeta) => {
+    if (!identify || applyingTag) return;
+    setApplyingTag(true);
+    try {
+      const result = await applyTrackTags(identify.mbid, meta);
+      if (!result.success) {
+        toast.show(result.message || "Tag apply failed", "err");
+        return;
+      }
+      toast.show("Tags written.");
+      setIdentify(null);
+      // If the MBID changed, the old row becomes an orphan and a new
+      // row is upserted. Either way, the visible table needs to re-
+      // fetch so artist/title/album reflect the new identity.
+      reloadTable();
+      onPlaylistsChanged();
+    } finally {
+      setApplyingTag(false);
+    }
+  };
+
   const handleAddToPlaylist = async (pid: string, track: LibraryTrack) => {
     const pl = allPlaylists.find((p) => p.playlist_id === pid);
     const name = pl?.name ?? pid;
@@ -262,6 +330,15 @@ export default function SongsScreen({
           kind: "item",
           label: "Queue Download",
           onSelect: () => handleQueueDownload(menu.track.mbid),
+        },
+        {
+          kind: "item",
+          label: identifying ? "Identifying…" : "Identify & Tag",
+          // Identify needs a local file to fingerprint. "drive" rows
+          // have a DAP path but no local_path; "remote" and
+          // "unavailable" have neither. Only "local" qualifies.
+          disabled: menu.track.availability !== "local" || identifying,
+          onSelect: () => handleIdentify(menu.track),
         },
         {
           kind: "item",
@@ -404,6 +481,15 @@ export default function SongsScreen({
           y={menu.y}
           entries={menuEntries}
           onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {identify ? (
+        <IdentifyTagDialog
+          candidate={identify.candidate}
+          localPath={identify.localPath}
+          applying={applyingTag}
+          onApply={handleApplyTags}
+          onCancel={() => setIdentify(null)}
         />
       ) : null}
     </div>
