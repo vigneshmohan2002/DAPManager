@@ -177,6 +177,38 @@
         .flash.visible { display: block; }
         .flash.ok { background: #15301f; color: #8fd3b0; }
         .flash.err { background: #3a1515; color: #e68a8a; }
+
+        /* Context menu */
+        .ctx-menu {
+            position: fixed;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            z-index: 100;
+            min-width: 180px;
+            padding: 4px 0;
+        }
+        .ctx-item {
+            padding: 6px 14px;
+            font-size: 13px;
+            color: #ddd;
+            cursor: pointer;
+        }
+        .ctx-item:hover { background: #3a3a5a; }
+        .ctx-item.danger { color: #e68a8a; }
+        .ctx-item.danger:hover { background: #4a2a2a; }
+        .ctx-item.disabled { color: #666; cursor: default; }
+        .ctx-item.disabled:hover { background: transparent; }
+        .ctx-submenu-arrow { float: right; color: #888; }
+        .ctx-sep {
+            border-top: 1px solid #3a3a3a;
+            margin: 4px 0;
+        }
+        .ctx-scroll {
+            max-height: 260px;
+            overflow-y: auto;
+        }
     </style>
 </head>
 
@@ -203,6 +235,7 @@
 
         <section class="main-pane">
             <div class="toolbar">
+                <button id="btn-new-playlist">New Playlist</button>
                 <button id="btn-queue">Queue Download</button>
                 <button id="btn-delete" class="secondary">Soft-Delete</button>
                 <button id="btn-report" class="secondary" title="Publish this device's inventory snapshot to the master.">Report Inventory</button>
@@ -240,6 +273,7 @@
             tracks: [],
             selected: new Set(),  // mbids
             filterText: "",
+            playlists: [],        // cached for Add-to-Playlist submenu
         };
 
         function escapeHtml(s) {
@@ -268,10 +302,12 @@
                 const data = await r.json();
                 const container = document.getElementById("playlist-list");
                 if (!data.success) {
+                    state.playlists = [];
                     container.innerHTML = `<div class="sidebar-item" style="color:#a55;">${escapeHtml(data.message || "error")}</div>`;
                     return;
                 }
                 const rows = data.playlists || [];
+                state.playlists = rows;
                 if (!rows.length) {
                     container.innerHTML = `<div class="sidebar-item" style="color:#666; cursor:default;">No playlists</div>`;
                     return;
@@ -284,8 +320,13 @@
                 `).join("");
                 container.querySelectorAll(".sidebar-item").forEach(el => {
                     el.addEventListener("click", () => selectPlaylist(el.dataset.pid));
+                    el.addEventListener("contextmenu", (e) => {
+                        e.preventDefault();
+                        showPlaylistMenu(e, el.dataset.pid);
+                    });
                 });
             } catch (e) {
+                state.playlists = [];
                 document.getElementById("playlist-list").innerHTML = `<div class="sidebar-item" style="color:#a55;">${escapeHtml(String(e))}</div>`;
             }
         }
@@ -379,6 +420,17 @@
                     cb.checked = next;
                     toggleSelect(mbid, next);
                 });
+                tr.addEventListener("contextmenu", (e) => {
+                    e.preventDefault();
+                    // If the row isn't selected, select just it — matches
+                    // how desktop file managers handle right-click.
+                    if (!state.selected.has(mbid)) {
+                        state.selected.clear();
+                        state.selected.add(mbid);
+                        renderTracks();
+                    }
+                    showTrackMenu(e);
+                });
             });
 
             syncSelectAllCheckbox();
@@ -462,8 +514,182 @@
             }
         }
 
+        // --- Playlist mutations ---
+
+        async function newPlaylist() {
+            const name = (prompt("New playlist name:") || "").trim();
+            if (!name) return;
+            setFlash(`Creating "${name}"…`);
+            try {
+                const r = await fetch("/api/library/playlists", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name }),
+                });
+                const data = await r.json();
+                if (!data.success) { setFlash(data.message || "error", "err"); return; }
+                setFlash(`Created "${data.name}".`, "ok");
+                await loadPlaylists();
+                selectPlaylist(data.playlist_id);
+            } catch (e) {
+                setFlash(`Failed: ${e}`, "err");
+            }
+        }
+
+        async function renamePlaylist(pid) {
+            const current = (state.playlists.find(p => p.playlist_id === pid) || {}).name || "";
+            const next = (prompt("Rename playlist to:", current) || "").trim();
+            if (!next || next === current) return;
+            try {
+                const r = await fetch(`/api/library/playlists/${encodeURIComponent(pid)}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: next }),
+                });
+                const data = await r.json();
+                if (!data.success) { setFlash(data.message || "error", "err"); return; }
+                setFlash(`Renamed to "${next}".`, "ok");
+                loadPlaylists();
+            } catch (e) {
+                setFlash(`Failed: ${e}`, "err");
+            }
+        }
+
+        async function deletePlaylist(pid) {
+            const name = (state.playlists.find(p => p.playlist_id === pid) || {}).name || pid;
+            if (!confirm(`Soft-delete playlist "${name}"? It becomes an orphan — restore from /orphans if needed.`)) return;
+            try {
+                const r = await fetch(`/api/library/playlists/${encodeURIComponent(pid)}`, {
+                    method: "DELETE",
+                });
+                const data = await r.json();
+                if (!data.success) { setFlash(data.message || "error", "err"); return; }
+                setFlash(`Deleted "${name}".`, "ok");
+                // If the deleted one was selected, drop back to All Tracks.
+                if (state.playlistId === pid) selectPlaylist("");
+                loadPlaylists();
+            } catch (e) {
+                setFlash(`Failed: ${e}`, "err");
+            }
+        }
+
+        async function addSelectedToPlaylist(pid) {
+            const mbids = [...state.selected];
+            if (!mbids.length) return;
+            const name = (state.playlists.find(p => p.playlist_id === pid) || {}).name || pid;
+
+            // Fetch current membership and merge — PUT replaces the full
+            // list, so the UI must compose the new set locally. Dedupe
+            // preserves the existing order and appends genuinely new rows.
+            try {
+                const r = await fetch(`/api/library/tracks?playlist_id=${encodeURIComponent(pid)}`);
+                const data = await r.json();
+                if (!data.success) { setFlash(data.message || "error", "err"); return; }
+                const existing = (data.tracks || []).map(t => t.mbid);
+                const existingSet = new Set(existing);
+                const toAdd = mbids.filter(m => !existingSet.has(m));
+                if (!toAdd.length) { setFlash(`Already in "${name}".`, "ok"); return; }
+                const merged = existing.concat(toAdd);
+                const r2 = await fetch(`/api/library/playlists/${encodeURIComponent(pid)}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ track_mbids: merged }),
+                });
+                const d2 = await r2.json();
+                if (!d2.success) { setFlash(d2.message || "error", "err"); return; }
+                const missed = (d2.requested ?? merged.length) - (d2.landed ?? 0);
+                setFlash(
+                    `Added ${toAdd.length} to "${name}"${missed ? ` (${missed} dropped as unknown)` : ""}.`,
+                    "ok"
+                );
+                loadPlaylists();
+                if (state.playlistId === pid) loadTracks();
+            } catch (e) {
+                setFlash(`Failed: ${e}`, "err");
+            }
+        }
+
+        // --- Context menus ---
+
+        function closeContextMenu() {
+            const el = document.querySelector(".ctx-menu");
+            if (el) el.remove();
+        }
+
+        function placeMenu(menu, x, y) {
+            document.body.appendChild(menu);
+            // Nudge back on-screen if it would overflow.
+            const r = menu.getBoundingClientRect();
+            if (r.right > window.innerWidth)  menu.style.left = (window.innerWidth - r.width - 4) + "px";
+            else                              menu.style.left = x + "px";
+            if (r.bottom > window.innerHeight) menu.style.top = (window.innerHeight - r.height - 4) + "px";
+            else                               menu.style.top = y + "px";
+        }
+
+        function showPlaylistMenu(evt, pid) {
+            closeContextMenu();
+            if (!pid) return;  // "All Tracks" entry has no pid
+            const menu = document.createElement("div");
+            menu.className = "ctx-menu";
+            menu.innerHTML = `
+                <div class="ctx-item" data-action="rename">Rename…</div>
+                <div class="ctx-item danger" data-action="delete">Delete (soft)</div>
+            `;
+            menu.querySelectorAll(".ctx-item").forEach(el => {
+                el.addEventListener("click", () => {
+                    const action = el.dataset.action;
+                    closeContextMenu();
+                    if (action === "rename") renamePlaylist(pid);
+                    else if (action === "delete") deletePlaylist(pid);
+                });
+            });
+            placeMenu(menu, evt.clientX, evt.clientY);
+        }
+
+        function showTrackMenu(evt) {
+            closeContextMenu();
+            const count = state.selected.size;
+            if (!count) return;
+            const menu = document.createElement("div");
+            menu.className = "ctx-menu";
+            const header = `<div class="ctx-item disabled">${count} track${count === 1 ? "" : "s"} selected</div>`;
+            const playlists = state.playlists || [];
+            const pickList = playlists.length
+                ? `<div class="ctx-scroll">` + playlists.map(p => `
+                    <div class="ctx-item" data-action="add" data-pid="${escapeHtml(p.playlist_id)}">
+                        ${escapeHtml(p.name)}
+                    </div>
+                `).join("") + `</div>`
+                : `<div class="ctx-item disabled">(no playlists — create one)</div>`;
+            menu.innerHTML = `
+                ${header}
+                <div class="ctx-sep"></div>
+                <div class="ctx-item disabled" style="font-size:11px;">Add to playlist</div>
+                ${pickList}
+                <div class="ctx-sep"></div>
+                <div class="ctx-item" data-action="queue">Queue Download</div>
+                <div class="ctx-item danger" data-action="delete">Soft-Delete</div>
+            `;
+            menu.querySelectorAll(".ctx-item").forEach(el => {
+                if (el.classList.contains("disabled")) return;
+                el.addEventListener("click", () => {
+                    const action = el.dataset.action;
+                    const pid = el.dataset.pid;
+                    closeContextMenu();
+                    if (action === "add" && pid) addSelectedToPlaylist(pid);
+                    else if (action === "queue") queueDownload();
+                    else if (action === "delete") softDelete();
+                });
+            });
+            placeMenu(menu, evt.clientX, evt.clientY);
+        }
+
+        document.addEventListener("click", closeContextMenu);
+        document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeContextMenu(); });
+
         // --- Wire up DOM ---
 
+        document.getElementById("btn-new-playlist").addEventListener("click", newPlaylist);
         document.getElementById("btn-queue").addEventListener("click", queueDownload);
         document.getElementById("btn-delete").addEventListener("click", softDelete);
         document.getElementById("btn-report").addEventListener("click", reportInventory);
