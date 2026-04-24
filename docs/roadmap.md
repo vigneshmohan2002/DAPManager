@@ -379,6 +379,20 @@ fix). Membership mutation is `link_track_to_playlist` +
 **Depends on** #6 for the web surface, but the desktop and API portions
 are standalone.
 
+**Shipped (API + web).** DB: `create_playlist`, `rename_playlist`,
+`unlink_track_from_playlist`, `replace_playlist_membership`,
+`get_playlist`. API: `POST /api/library/playlists` (201 with generated
+uuid4 hex id), `PUT /api/library/playlists/<id>` (partial rename +/or
+full membership replace; empty `track_mbids` list explicitly empties
+the playlist, omitting the key leaves it untouched; unknown mbids
+surfaced via `landed` vs `requested`), `DELETE
+/api/library/playlists/<id>` delegating to the soft-delete handler
+(forwards `?purge=true`). Web: New Playlist toolbar button, sidebar
+context menu (Rename / Delete) on playlist entries, track-row context
+menu with "Add to playlist" submenu that merges the existing
+membership client-side and PUTs the full list. Desktop (PySide6)
+portion deferred — will be built directly in the Tauri rewrite.
+
 ---
 
 ### 8. API auth tokens
@@ -474,4 +488,10 @@ context menu + review dialog + 20 tests.
 9. **#6 Web track browser** — sidebar + track table on `/library`.
    _Done. Desktop parity (context menus, column sorting) still lives
    in PySide6 and will be re-built in the Tauri rewrite._
-10. **#7 Playlist editor** — needs #6 for the web half.
+10. **#7 Playlist editor** — create / rename / delete / add-to.
+    _Done (API + web); desktop deferred to the Tauri rewrite._
+
+All items in this tranche are now shipped or explicitly deferred to
+the Tauri desktop rewrite. Further library/sync features belong in a
+new roadmap doc; Tauri parity is tracked in `desktop/` and the
+`feat(desktop)` commit series.
