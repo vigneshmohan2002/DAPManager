@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAP Manager — Library</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body { padding: 0; }
+        .library-shell {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            grid-template-rows: auto 1fr;
+            height: 100vh;
+            max-width: none;
+        }
+        .library-header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 10px 18px;
+            background: #181818;
+            border-bottom: 1px solid #333;
+        }
+        .library-header h1 {
+            margin: 0;
+            font-size: 18px;
+            color: var(--accent);
+        }
+        .library-header .dash-link {
+            color: #8bd;
+            font-size: 13px;
+            text-decoration: none;
+        }
+        .library-header .dash-link:hover { text-decoration: underline; }
+        .library-header .search {
+            flex: 1;
+            max-width: 360px;
+            padding: 6px 10px;
+            background: #222;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #eee;
+        }
+        .library-header .status-chip {
+            font-size: 12px;
+            color: #888;
+            margin-left: auto;
+        }
+
+        .sidebar {
+            background: #161616;
+            border-right: 1px solid #333;
+            overflow-y: auto;
+            padding: 8px 0;
+        }
+        .sidebar-section {
+            padding: 6px 12px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #777;
+            margin-top: 4px;
+        }
+        .sidebar-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 14px;
+            cursor: pointer;
+            color: #ddd;
+            font-size: 14px;
+            border-left: 3px solid transparent;
+        }
+        .sidebar-item:hover { background: #1f1f1f; }
+        .sidebar-item.active {
+            background: #1f1f1f;
+            border-left-color: var(--secondary);
+        }
+        .sidebar-item .count {
+            color: #666;
+            font-size: 12px;
+        }
+
+        .main-pane {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            padding: 10px 14px;
+            background: #1a1a1a;
+            border-bottom: 1px solid #333;
+        }
+        .toolbar button {
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        .toolbar button.secondary {
+            background: #333;
+            color: #eee;
+        }
+        .toolbar label {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 13px;
+            color: #bbb;
+            margin-left: 6px;
+        }
+        .toolbar .spacer { flex: 1; }
+        .toolbar .selected-count {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .track-table-wrap {
+            flex: 1;
+            overflow: auto;
+        }
+        table.tracks {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        table.tracks thead th {
+            position: sticky;
+            top: 0;
+            background: #222;
+            color: #ddd;
+            padding: 8px 10px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+            font-weight: 600;
+            z-index: 1;
+        }
+        table.tracks tbody td {
+            padding: 6px 10px;
+            border-bottom: 1px solid #262626;
+            vertical-align: middle;
+        }
+        table.tracks tbody tr:hover { background: #1b1b1b; }
+        table.tracks tbody tr.selected { background: #2a2a3e; }
+        table.tracks tbody tr.selected:hover { background: #303046; }
+        table.tracks td.select-col { width: 28px; }
+        table.tracks td.badge-col { white-space: nowrap; }
+        .empty {
+            padding: 30px;
+            color: #888;
+            text-align: center;
+            font-style: italic;
+        }
+        .badge {
+            display: inline-block;
+            padding: 1px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-right: 4px;
+        }
+        .badge-local { background: #153a2a; color: #8fd3b0; }
+        .badge-drive { background: #172a42; color: #8ac0e6; }
+        .badge-remote { background: #3a2e15; color: #e6c68a; }
+        .badge-orphan { background: #3a1515; color: #e68a8a; }
+        .flash {
+            padding: 8px 14px;
+            background: #2a2a15;
+            color: #e6e088;
+            font-size: 13px;
+            border-bottom: 1px solid #333;
+            display: none;
+        }
+        .flash.visible { display: block; }
+        .flash.ok { background: #15301f; color: #8fd3b0; }
+        .flash.err { background: #3a1515; color: #e68a8a; }
+    </style>
+</head>
+
+<body>
+    <div class="library-shell">
+        <div class="library-header">
+            <h1>Library</h1>
+            <a class="dash-link" href="/">← Dashboard</a>
+            <input class="search" id="search-box" placeholder="Filter current view (artist/title/album)…">
+            <span class="status-chip" id="status-chip"></span>
+        </div>
+
+        <aside class="sidebar">
+            <div class="sidebar-section">Library</div>
+            <div id="sidebar-library" class="sidebar-item active" data-pid="">
+                <span>All Tracks</span>
+                <span class="count" id="library-count">0</span>
+            </div>
+            <div class="sidebar-section">Playlists</div>
+            <div id="playlist-list">
+                <div class="sidebar-item" style="color:#666; cursor:default;">Loading…</div>
+            </div>
+        </aside>
+
+        <section class="main-pane">
+            <div class="toolbar">
+                <button id="btn-queue">Queue Download</button>
+                <button id="btn-delete" class="secondary">Soft-Delete</button>
+                <button id="btn-report" class="secondary" title="Publish this device's inventory snapshot to the master.">Report Inventory</button>
+                <label><input type="checkbox" id="toggle-catalog-only"> Show catalog-only</label>
+                <label><input type="checkbox" id="toggle-orphans"> Show orphans</label>
+                <div class="spacer"></div>
+                <span class="selected-count" id="selected-count">0 selected</span>
+                <button class="secondary" id="btn-refresh">Refresh</button>
+            </div>
+            <div class="flash" id="flash"></div>
+            <div class="track-table-wrap">
+                <table class="tracks">
+                    <thead>
+                        <tr>
+                            <th class="select-col"><input type="checkbox" id="select-all"></th>
+                            <th>Artist</th>
+                            <th>Title</th>
+                            <th>Album</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbody">
+                        <tr><td colspan="5" class="empty">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const state = {
+            playlistId: "",       // "" == All Tracks
+            catalogOnly: false,   // when true: include non-local rows
+            showOrphans: false,
+            tracks: [],
+            selected: new Set(),  // mbids
+            filterText: "",
+        };
+
+        function escapeHtml(s) {
+            return String(s ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
+
+        function setFlash(msg, kind) {
+            const el = document.getElementById("flash");
+            el.className = "flash visible" + (kind ? " " + kind : "");
+            el.textContent = msg;
+            if (kind === "ok") {
+                setTimeout(() => { el.className = "flash"; }, 4000);
+            }
+        }
+        function clearFlash() {
+            document.getElementById("flash").className = "flash";
+        }
+
+        async function loadPlaylists() {
+            try {
+                const r = await fetch("/api/library/playlists");
+                const data = await r.json();
+                const container = document.getElementById("playlist-list");
+                if (!data.success) {
+                    container.innerHTML = `<div class="sidebar-item" style="color:#a55;">${escapeHtml(data.message || "error")}</div>`;
+                    return;
+                }
+                const rows = data.playlists || [];
+                if (!rows.length) {
+                    container.innerHTML = `<div class="sidebar-item" style="color:#666; cursor:default;">No playlists</div>`;
+                    return;
+                }
+                container.innerHTML = rows.map(p => `
+                    <div class="sidebar-item" data-pid="${escapeHtml(p.playlist_id)}">
+                        <span>${escapeHtml(p.name)}</span>
+                        <span class="count">${p.track_count}</span>
+                    </div>
+                `).join("");
+                container.querySelectorAll(".sidebar-item").forEach(el => {
+                    el.addEventListener("click", () => selectPlaylist(el.dataset.pid));
+                });
+            } catch (e) {
+                document.getElementById("playlist-list").innerHTML = `<div class="sidebar-item" style="color:#a55;">${escapeHtml(String(e))}</div>`;
+            }
+        }
+
+        function selectPlaylist(pid) {
+            state.playlistId = pid || "";
+            document.querySelectorAll(".sidebar-item").forEach(el => {
+                el.classList.toggle("active", (el.dataset.pid || "") === state.playlistId);
+            });
+            loadTracks();
+        }
+
+        async function loadTracks() {
+            const tbody = document.getElementById("tbody");
+            tbody.innerHTML = `<tr><td colspan="5" class="empty">Loading…</td></tr>`;
+            state.selected.clear();
+            updateSelectedCount();
+
+            const params = new URLSearchParams();
+            if (state.playlistId) params.set("playlist_id", state.playlistId);
+            // Desktop parity: when "Show catalog-only" is OFF, only local rows.
+            if (!state.catalogOnly) params.set("local_only", "1");
+            if (state.showOrphans) params.set("include_orphans", "1");
+
+            try {
+                const r = await fetch(`/api/library/tracks?${params.toString()}`);
+                const data = await r.json();
+                if (!data.success) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="empty">${escapeHtml(data.message || "error")}</td></tr>`;
+                    return;
+                }
+                state.tracks = data.tracks || [];
+                renderTracks();
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" class="empty">Failed: ${escapeHtml(String(e))}</td></tr>`;
+            }
+        }
+
+        function availabilityBadge(av) {
+            switch (av) {
+                case "local":  return '<span class="badge badge-local">local</span>';
+                case "drive":  return '<span class="badge badge-drive">drive</span>';
+                case "remote": return '<span class="badge badge-remote">catalog-only</span>';
+                default:       return "";
+            }
+        }
+
+        function renderTracks() {
+            const tbody = document.getElementById("tbody");
+            const q = state.filterText.trim().toLowerCase();
+            const filtered = q
+                ? state.tracks.filter(t => (
+                    (t.artist || "").toLowerCase().includes(q) ||
+                    (t.title || "").toLowerCase().includes(q) ||
+                    (t.album || "").toLowerCase().includes(q)
+                ))
+                : state.tracks;
+
+            document.getElementById("status-chip").textContent =
+                q ? `${filtered.length} of ${state.tracks.length} tracks` : `${state.tracks.length} tracks`;
+
+            if (!filtered.length) {
+                tbody.innerHTML = `<tr><td colspan="5" class="empty">No tracks match.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = filtered.map(t => {
+                const mbid = t.mbid;
+                const selected = state.selected.has(mbid) ? "selected" : "";
+                const checked = state.selected.has(mbid) ? "checked" : "";
+                const badges = availabilityBadge(t.availability)
+                    + (t.orphan ? '<span class="badge badge-orphan">orphan</span>' : "");
+                return `
+                    <tr class="${selected}" data-mbid="${escapeHtml(mbid)}">
+                        <td class="select-col"><input type="checkbox" class="row-check" ${checked}></td>
+                        <td>${escapeHtml(t.artist)}</td>
+                        <td>${escapeHtml(t.title)}</td>
+                        <td>${escapeHtml(t.album || "")}</td>
+                        <td class="badge-col">${badges}</td>
+                    </tr>
+                `;
+            }).join("");
+
+            tbody.querySelectorAll("tr").forEach(tr => {
+                const mbid = tr.dataset.mbid;
+                const cb = tr.querySelector(".row-check");
+                cb.addEventListener("click", (e) => e.stopPropagation());
+                cb.addEventListener("change", () => toggleSelect(mbid, cb.checked));
+                tr.addEventListener("click", () => {
+                    const next = !state.selected.has(mbid);
+                    cb.checked = next;
+                    toggleSelect(mbid, next);
+                });
+            });
+
+            syncSelectAllCheckbox();
+        }
+
+        function toggleSelect(mbid, on) {
+            if (on) state.selected.add(mbid);
+            else state.selected.delete(mbid);
+            const tr = document.querySelector(`tr[data-mbid="${CSS.escape(mbid)}"]`);
+            if (tr) tr.classList.toggle("selected", on);
+            updateSelectedCount();
+            syncSelectAllCheckbox();
+        }
+
+        function updateSelectedCount() {
+            document.getElementById("selected-count").textContent = `${state.selected.size} selected`;
+        }
+
+        function syncSelectAllCheckbox() {
+            const all = document.getElementById("select-all");
+            const visible = [...document.querySelectorAll("#tbody tr[data-mbid]")];
+            if (!visible.length) {
+                all.checked = false;
+                all.indeterminate = false;
+                return;
+            }
+            const selectedVisible = visible.filter(tr => state.selected.has(tr.dataset.mbid)).length;
+            all.checked = selectedVisible === visible.length;
+            all.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+        }
+
+        // --- Toolbar actions ---
+
+        async function queueDownload() {
+            const mbids = [...state.selected];
+            if (!mbids.length) { setFlash("Select tracks first.", "err"); return; }
+            setFlash(`Queueing ${mbids.length}…`);
+            try {
+                const r = await fetch("/api/catalog/queue-download", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ mbids }),
+                });
+                const data = await r.json();
+                if (!data.success) { setFlash(data.message || "error", "err"); return; }
+                setFlash(
+                    `Queued ${data.queued}, already-linked ${data.skipped_linked}, already-queued ${data.skipped_queued}, not-found ${data.not_found}.`,
+                    "ok"
+                );
+            } catch (e) {
+                setFlash(`Failed: ${e}`, "err");
+            }
+        }
+
+        async function softDelete() {
+            const mbids = [...state.selected];
+            if (!mbids.length) { setFlash("Select tracks first.", "err"); return; }
+            if (!confirm(`Soft-delete ${mbids.length} track${mbids.length === 1 ? "" : "s"}? Rows become orphans and can be restored from the /orphans page.`)) return;
+            setFlash(`Deleting ${mbids.length}…`);
+            let ok = 0, fail = 0;
+            for (const mbid of mbids) {
+                try {
+                    const r = await fetch(`/api/tracks/${encodeURIComponent(mbid)}`, { method: "DELETE" });
+                    const data = await r.json();
+                    if (data.success) ok += 1; else fail += 1;
+                } catch (_) { fail += 1; }
+            }
+            setFlash(`Deleted ${ok}${fail ? `, ${fail} failed` : ""}.`, fail ? "err" : "ok");
+            loadTracks();
+        }
+
+        async function reportInventory() {
+            setFlash("Starting inventory report…");
+            try {
+                const r = await fetch("/api/inventory/report", { method: "POST" });
+                const data = await r.json();
+                setFlash(data.message || (data.success ? "started" : "error"),
+                    data.success ? "ok" : "err");
+            } catch (e) {
+                setFlash(`Failed: ${e}`, "err");
+            }
+        }
+
+        // --- Wire up DOM ---
+
+        document.getElementById("btn-queue").addEventListener("click", queueDownload);
+        document.getElementById("btn-delete").addEventListener("click", softDelete);
+        document.getElementById("btn-report").addEventListener("click", reportInventory);
+        document.getElementById("btn-refresh").addEventListener("click", () => {
+            loadPlaylists();
+            loadTracks();
+        });
+        document.getElementById("toggle-catalog-only").addEventListener("change", (e) => {
+            state.catalogOnly = e.target.checked;
+            loadTracks();
+        });
+        document.getElementById("toggle-orphans").addEventListener("change", (e) => {
+            state.showOrphans = e.target.checked;
+            loadTracks();
+        });
+        document.getElementById("sidebar-library").addEventListener("click", () => selectPlaylist(""));
+        document.getElementById("search-box").addEventListener("input", (e) => {
+            state.filterText = e.target.value;
+            renderTracks();
+        });
+        document.getElementById("select-all").addEventListener("change", (e) => {
+            const visible = [...document.querySelectorAll("#tbody tr[data-mbid]")];
+            for (const tr of visible) {
+                const cb = tr.querySelector(".row-check");
+                cb.checked = e.target.checked;
+                toggleSelect(tr.dataset.mbid, e.target.checked);
+            }
+        });
+
+        loadPlaylists();
+        loadTracks();
+    </script>
+</body>
+
+</html>

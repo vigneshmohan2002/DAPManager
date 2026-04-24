@@ -1525,6 +1525,12 @@ def orphans_page():
     return render_template("orphans.html")
 
 
+@app.route("/library")
+def library_page():
+    """Web track browser: sidebar of playlists + filterable track table."""
+    return render_template("library.html")
+
+
 @app.route("/api/fleet/summary", methods=["GET"])
 def fleet_summary():
     if not config:
