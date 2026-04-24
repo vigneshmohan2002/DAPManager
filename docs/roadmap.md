@@ -322,6 +322,18 @@ Use `/api/library/playlists` for the UI list to avoid clashing.
 **Effort.** ~6–8 hours. Bulk of the work is the template + JS; API is
 mostly additive.
 
+**Shipped.** New `/library` page with a playlist sidebar (All Tracks +
+live playlists from `list_playlists_with_counts`) and a track table with
+availability/orphan badges. Toolbar wires Queue Download → `POST
+/api/catalog/queue-download`, Soft-Delete → `DELETE /api/tracks/<mbid>`,
+Report Inventory → `POST /api/inventory/report`. Toggles "Show
+catalog-only" / "Show orphans" mirror the desktop semantics. API:
+`GET /api/library/playlists` (non-delta; distinct from the sync
+`/api/playlists` route), and `GET /api/library/tracks` now accepts
+`playlist_id`, `local_only`, `include_orphans` without breaking its
+default (no-param) behavior. Pagination and playlist rename/delete
+context menus deferred to #7.
+
 ---
 
 ### 7. Playlist editor (web + desktop)
@@ -459,10 +471,7 @@ context menu + review dialog + 20 tests.
    with pulled catalogs. _Done (backend + web); desktop deferred._
 8. **#5 Download-from-catalog** — wishlist queue via MBIDs. _API
    shipped; UI deferred to #6 / Tauri Library stage._
-6. **#4 Auto-link local files** — solves the "my pre-existing library
-   doesn't show up" complaint.
-7. **#5 Download-from-catalog** — converts catalog-only view into a
-   useful wishlist.
-8. **#6 Web track browser** — bigger project, do once the small stuff
-   is out of the way.
-9. **#7 Playlist editor** — needs #6 for the web half.
+9. **#6 Web track browser** — sidebar + track table on `/library`.
+   _Done. Desktop parity (context menus, column sorting) still lives
+   in PySide6 and will be re-built in the Tauri rewrite._
+10. **#7 Playlist editor** — needs #6 for the web half.
