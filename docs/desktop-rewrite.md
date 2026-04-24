@@ -24,10 +24,12 @@ that don't fit in a commit message.
 | 4b | `8a0dad6` | Songs screen — a sortable flat track table served by `/api/library/tracks` (no filters yet). |
 | 4c | `533d334` | Up Next queue panel (jump / remove / clear, mirrors the PySide6 queue dialog). |
 | 4d | `f9b289b` | Global search overlay (⌘K). Searches albums + artists + tracks via existing endpoints; keyboard navigation. |
+| 5a | `626fe1d` | Playlists in sidebar (live from `/api/library/playlists`) + Songs scoping via `?playlist_id=...`. Header reflects the scoped playlist's name. |
+| 5b | `4496daa` | Songs-screen filters: "Show catalog-only" (`local_only=0`) and "Show orphans" (`include_orphans=1`) toggles, plus a Status column with availability badges (`local`/`drive`/`catalog-only`/`missing`) and an orphan chip. Unavailable rows are dimmed and stripped from the play queue with a remapped start index. |
 
-Sidebar currently has **Albums / Artists / Songs** wired to real screens
-and **Downloads / New Releases / Fleet / Sync / Settings** as
-`<Placeholder>` stubs.
+Sidebar currently has **Albums / Artists / Songs / Playlists** wired to
+real screens and **Downloads / New Releases / Fleet / Sync / Settings**
+as `<Placeholder>` stubs.
 
 ---
 
@@ -40,24 +42,25 @@ first stage that starts *retiring* PySide6 rather than duplicating it.
 
 **Sub-pieces (land in this order):**
 
-### 5a — Playlists in the sidebar + Songs scoping
+### 5a — Playlists in the sidebar + Songs scoping — _Shipped (`626fe1d`)_
 
-- New `Playlists` section in `Sidebar.tsx`, populated from
-  `GET /api/library/playlists` (live playlists with `track_count`).
-- Clicking a playlist scopes the Songs screen via
-  `?playlist_id=...` on `/api/library/tracks`.
-- `SongsScreen` learns to accept a `playlistId` prop and re-fetch.
+### 5b — Songs screen filters + availability badges — _Shipped (`4496daa`)_
 
-### 5b — Songs screen filters
+Decisions worth preserving (not obvious from the diff):
 
-- Two toggles in the Songs `TopBar`: **Show catalog-only** (adds
-  `?local_only=0`; default OFF so Songs stays the "what I can play
-  locally" view), **Show orphans** (adds `?include_orphans=1`).
-- Availability badge column: `local` / `drive` / `catalog-only` /
-  `orphan`, using the `availability` and `orphan` fields the web
-  library page already consumes.
-- The remote-stream path (`availability === "remote"`) already works
-  end-to-end via the master proxy; the badge just makes it visible.
+- The filter strip lives below the `TopBar`, not inside it — the
+  `TopBar` is shared across screens and owns the draggable titlebar
+  region, so adding Songs-specific controls inline would have forced
+  a prop explosion.
+- `catalog-only OFF` maps to `local_only=1` (not the absence of the
+  param). That keeps Songs a "what I can play locally" view by
+  default and matches the web `/library` page's initial semantics.
+- Rows with `availability === "unavailable"` are kept in the table
+  (greyed out with a "missing" badge) so the user can *see* the
+  soft-deleted row when `Show orphans` is on, but are removed from
+  the play queue. `playFrom` remaps `startIndex` by walking `visible`
+  in order — a filter-then-clamp approach would mis-target when an
+  unavailable row precedes the clicked one.
 
 ### 5c — Sync screen
 
@@ -85,7 +88,7 @@ and do *every* library-management action the PySide6 app supports
 *except* the Audit / Complete-Albums / Resolve-Duplicates /
 Identify-&-Tag / Settings flows (those are later stages).
 
-**Estimated effort.** 5a ~1–2h · 5b ~1h · 5c ~2–3h · 5d ~1–2h.
+**Estimated effort remaining.** 5c ~2–3h · 5d ~1–2h (5a + 5b shipped).
 
 ---
 
