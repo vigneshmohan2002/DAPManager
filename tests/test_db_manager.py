@@ -1124,3 +1124,55 @@ def test_find_unlinked_by_artist_title_album_requires_all_three(db):
     assert db.find_unlinked_tracks_by_artist_title_album("", "t", "al") == []
     assert db.find_unlinked_tracks_by_artist_title_album("a", "", "al") == []
     assert db.find_unlinked_tracks_by_artist_title_album("a", "t", "") == []
+
+
+def test_list_playlists_with_counts_orders_by_name_and_excludes_orphans(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    db.add_or_update_track(Track(mbid="t2", title="U", artist="A"))
+    db.add_or_update_playlist(Playlist(playlist_id="pl-b", name="Bravo", spotify_url=""))
+    db.add_or_update_playlist(Playlist(playlist_id="pl-a", name="Alpha", spotify_url=""))
+    db.add_or_update_playlist(Playlist(playlist_id="pl-gone", name="Zebra", spotify_url=""))
+    db.link_track_to_playlist("pl-a", "t1", 0)
+    db.link_track_to_playlist("pl-a", "t2", 1)
+    db.link_track_to_playlist("pl-b", "t1", 0)
+    db.soft_delete_playlist("pl-gone")
+
+    rows = db.list_playlists_with_counts()
+    assert [r["name"] for r in rows] == ["Alpha", "Bravo"]
+    counts = {r["playlist_id"]: r["track_count"] for r in rows}
+    assert counts == {"pl-a": 2, "pl-b": 1}
+
+
+def test_list_tracks_filtered_scopes_to_playlist_in_order(db):
+    db.add_or_update_track(Track(mbid="t1", title="T1", artist="A", local_path="/m/1"))
+    db.add_or_update_track(Track(mbid="t2", title="T2", artist="A", local_path="/m/2"))
+    db.add_or_update_track(Track(mbid="t3", title="T3", artist="A"))  # unlinked
+    db.add_or_update_playlist(Playlist(playlist_id="p1", name="Mix", spotify_url=""))
+    db.link_track_to_playlist("p1", "t2", 0)
+    db.link_track_to_playlist("p1", "t1", 1)
+
+    rows = db.list_tracks_filtered(playlist_id="p1")
+    assert [r["mbid"] for r in rows] == ["t2", "t1"]
+
+
+def test_list_tracks_filtered_local_only_drops_catalog_only_rows(db):
+    db.add_or_update_track(Track(mbid="have", title="T", artist="A", local_path="/m/a"))
+    db.add_or_update_track(Track(mbid="ghost", title="T", artist="A"))
+
+    all_rows = db.list_tracks_filtered()
+    assert {r["mbid"] for r in all_rows} == {"have", "ghost"}
+
+    local_rows = db.list_tracks_filtered(local_only=True)
+    assert {r["mbid"] for r in local_rows} == {"have"}
+
+
+def test_list_tracks_filtered_include_orphans_toggles_soft_deleted(db):
+    db.add_or_update_track(Track(mbid="live", title="T", artist="A", local_path="/m/a"))
+    db.add_or_update_track(Track(mbid="dead", title="T", artist="A", local_path="/m/b"))
+    db.soft_delete_track("dead")
+
+    assert {r["mbid"] for r in db.list_tracks_filtered()} == {"live"}
+    all_rows = db.list_tracks_filtered(include_orphans=True)
+    assert {r["mbid"] for r in all_rows} == {"live", "dead"}
+    dead_row = next(r for r in all_rows if r["mbid"] == "dead")
+    assert dead_row["deleted_at"] is not None

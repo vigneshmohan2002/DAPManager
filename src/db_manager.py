@@ -1279,6 +1279,84 @@ class DatabaseManager:
         cursor.close()
         return playlists
 
+    def list_playlists_with_counts(self) -> List[dict]:
+        """Live playlists with membership counts, for the web library sidebar.
+
+        Orphans are excluded — the /orphans page handles those. Sort is
+        case-insensitive on name so the UI can render directly.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT p.playlist_id, p.name, p.updated_at,
+                   COUNT(pt.track_mbid) AS track_count
+            FROM playlists p
+            LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id
+            WHERE p.deleted_at IS NULL
+            GROUP BY p.playlist_id
+            ORDER BY p.name COLLATE NOCASE
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def list_tracks_filtered(
+        self,
+        playlist_id: Optional[str] = None,
+        local_only: bool = False,
+        include_orphans: bool = False,
+    ) -> List[dict]:
+        """Tracks for the web library browser — flat dict rows with
+        ``local_path``/``dap_path`` so the caller can resolve availability.
+
+        When ``playlist_id`` is set, results are scoped to that playlist's
+        membership (ordered by ``track_order``). Otherwise the full live
+        library is returned, ordered like ``list_all_tracks``. ``deleted_at``
+        is included so the API layer can flag orphans.
+        """
+        params: tuple
+        clauses = []
+        if local_only:
+            clauses.append("t.local_path IS NOT NULL")
+        if not include_orphans:
+            clauses.append("t.deleted_at IS NULL")
+
+        base_cols = (
+            "t.mbid, t.title, t.artist, t.album, t.track_number, t.disc_number, "
+            "t.local_path, t.dap_path, t.deleted_at, "
+            "COALESCE(NULLIF(t.release_mbid, ''), t.album || '|' || t.artist) AS album_id"
+        )
+
+        if playlist_id:
+            sql = (
+                f"SELECT {base_cols} FROM tracks t "
+                "JOIN playlist_tracks pt ON pt.track_mbid = t.mbid "
+                "WHERE pt.playlist_id = ?"
+            )
+            if clauses:
+                sql += " AND " + " AND ".join(clauses)
+            sql += " ORDER BY pt.track_order"
+            params = (playlist_id,)
+        else:
+            sql = f"SELECT {base_cols} FROM tracks t"
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            sql += (
+                " ORDER BY t.artist COLLATE NOCASE, "
+                "t.album COLLATE NOCASE, "
+                "COALESCE(t.disc_number, 1), "
+                "COALESCE(t.track_number, 9999), "
+                "t.title COLLATE NOCASE"
+            )
+            params = ()
+
+        cursor = self.conn.cursor()
+        cursor.execute(sql, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def get_playlists_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Return playlists changed since ``since_iso`` with their full
         current membership nested as ``tracks``.
