@@ -145,6 +145,54 @@ export function streamUrl(base: string, mbid: string): string {
   return `${base}/api/stream/${encodeURIComponent(mbid)}`;
 }
 
+export type ConfigGroup = { label: string; keys: string[] };
+export type ConfigValue = string | number | boolean | null;
+export type ConfigPayload = {
+  config: Record<string, ConfigValue>;
+  editable_keys: string[];
+  secret_keys: string[];
+  bool_keys: string[];
+  groups: ConfigGroup[];
+};
+
+export async function fetchConfig(): Promise<ConfigPayload> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/config`);
+  if (!r.ok) throw new Error(`config: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "config failed");
+  return {
+    config: data.config ?? {},
+    editable_keys: data.editable_keys ?? [],
+    secret_keys: data.secret_keys ?? [],
+    bool_keys: data.bool_keys ?? [],
+    groups: data.groups ?? [],
+  };
+}
+
+export type SaveConfigResult = {
+  success: boolean;
+  message: string;
+  changed: string[];
+};
+
+export async function saveConfig(
+  patch: Record<string, ConfigValue>,
+): Promise<SaveConfigResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+    changed: (data.changed ?? []) as string[],
+  };
+}
+
 export type SyncState = {
   last_catalog_sync: string | null;
   last_playlist_sync: string | null;

@@ -9,6 +9,7 @@ import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
 import FleetScreen from "./screens/FleetScreen";
+import SettingsScreen from "./screens/SettingsScreen";
 import SongsScreen from "./screens/SongsScreen";
 import SyncScreen from "./screens/SyncScreen";
 import { waitForBackend, type Album, type Artist } from "./lib/api";
@@ -24,6 +25,10 @@ function App() {
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // When another screen routes to Settings to demand a missing config
+  // key (e.g. Identify & Tag needs acoustid_api_key in Stage 7b), it
+  // sets this so the Settings screen can scroll + flash the row.
+  const [settingsFocusKey, setSettingsFocusKey] = useState<string | null>(null);
   // Bumped by any playlist mutation (create / rename / delete / add-
   // to-playlist). Sidebar + SongsScreen depend on it so their fetches
   // re-fire without prop-drilling a `refresh()` callback everywhere.
@@ -148,6 +153,15 @@ function App() {
     }
     if (screen === "fleet") {
       return <FleetScreen ready={status === "ready"} />;
+    }
+    if (screen === "settings") {
+      return (
+        <SettingsScreen
+          ready={status === "ready"}
+          focusKey={settingsFocusKey}
+          onConsumedFocusKey={() => setSettingsFocusKey(null)}
+        />
+      );
     }
     return <Placeholder name={screen} />;
   };
