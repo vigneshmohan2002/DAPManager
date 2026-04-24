@@ -563,6 +563,103 @@ def test_library_playlists_lists_live_playlists(client, mock_config):
     assert data["playlists"][0]["track_count"] == 12
 
 
+def test_library_playlists_create_returns_generated_id(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.create_playlist.return_value = "new-uuid-hex"
+        res = client.post('/api/library/playlists', json={"name": "  Fresh  "})
+
+    assert res.status_code == 201
+    data = res.get_json()
+    assert data == {"success": True, "playlist_id": "new-uuid-hex", "name": "Fresh"}
+
+
+def test_library_playlists_create_rejects_empty_name(client, mock_config):
+    res = client.post('/api/library/playlists', json={"name": "  "})
+    assert res.status_code == 400
+    assert res.get_json()["success"] is False
+
+
+def test_library_playlist_update_rename_only(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_playlist.return_value = MagicMock(name="existing")
+        inst.rename_playlist.return_value = True
+        res = client.put('/api/library/playlists/pl-1', json={"name": "Renamed"})
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data == {"success": True, "playlist_id": "pl-1", "renamed": True}
+    inst.rename_playlist.assert_called_once_with("pl-1", "Renamed")
+    # membership helper must NOT have been touched when track_mbids is absent.
+    assert not inst.replace_playlist_membership.called
+
+
+def test_library_playlist_update_replaces_membership(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_playlist.return_value = MagicMock()
+        inst.replace_playlist_membership.return_value = 2
+        res = client.put(
+            '/api/library/playlists/pl-1',
+            json={"track_mbids": ["a", "b", "ghost"]},
+        )
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["landed"] == 2
+    assert data["requested"] == 3
+    assert data["renamed"] is False
+    inst.replace_playlist_membership.assert_called_once_with("pl-1", ["a", "b", "ghost"])
+
+
+def test_library_playlist_update_empty_list_empties_playlist(client, mock_config):
+    # Explicit empty list means "empty the playlist" — distinct from
+    # omitting the key entirely (which leaves membership alone).
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_playlist.return_value = MagicMock()
+        inst.replace_playlist_membership.return_value = 0
+        res = client.put('/api/library/playlists/pl-1', json={"track_mbids": []})
+
+    assert res.status_code == 200
+    inst.replace_playlist_membership.assert_called_once_with("pl-1", [])
+
+
+def test_library_playlist_update_requires_name_or_tracks(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_playlist.return_value = MagicMock()
+        res = client.put('/api/library/playlists/pl-1', json={})
+    assert res.status_code == 400
+
+
+def test_library_playlist_update_404s_missing(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.get_playlist.return_value = None
+        res = client.put('/api/library/playlists/pl-nope', json={"name": "X"})
+    assert res.status_code == 404
+
+
+def test_library_playlist_delete_delegates_to_soft_delete(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.soft_delete_playlist.return_value = True
+        res = client.delete('/api/library/playlists/pl-1')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data == {"success": True, "deleted": True, "playlist_id": "pl-1"}
+
+
+def test_library_playlist_delete_forwards_purge_flag(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.purge_playlist.return_value = True
+        res = client.delete('/api/library/playlists/pl-1?purge=true')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["purged"] is True
+
+
 def test_library_artists_lists_artists(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         MockDB.return_value.__enter__.return_value.list_artists.return_value = [

@@ -566,7 +566,7 @@ def api_library_tracks():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-@app.route("/api/library/playlists")
+@app.route("/api/library/playlists", methods=["GET"])
 def api_library_playlists():
     """Live playlists with membership counts, for the library sidebar.
 
@@ -582,6 +582,107 @@ def api_library_playlists():
     except Exception as e:
         logger.exception("api_library_playlists failed")
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/playlists", methods=["POST"])
+def api_library_playlists_create():
+    """Create an empty playlist. Body: ``{"name": "..."}``.
+
+    Returns the generated ``playlist_id`` so the caller can immediately
+    PUT tracks into it without re-listing. Membership pushes to master
+    on the next scheduled push (same as any other playlist edit).
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "message": "name is required"}), 400
+    try:
+        with DatabaseManager(config.db_path) as db:
+            pid = db.create_playlist(name)
+    except ValueError as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+    except Exception as e:
+        logger.exception("api_library_playlists_create failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "playlist_id": pid, "name": name}), 201
+
+
+@app.route("/api/library/playlists/<playlist_id>", methods=["PUT"])
+def api_library_playlist_update(playlist_id: str):
+    """Partial update: rename and/or replace full membership.
+
+    Body keys (both optional — at least one required):
+      - ``name``: new display name (trimmed; rejected if empty).
+      - ``track_mbids``: list of mbids in the desired order. An empty
+        list explicitly empties the playlist; omit the key to leave
+        membership untouched.
+
+    Unknown mbids in ``track_mbids`` are silently dropped and surface
+    as ``landed`` vs ``requested`` in the response so the UI can flag
+    a partial miss.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "body must be an object"}), 400
+
+    has_name = "name" in data
+    has_tracks = "track_mbids" in data
+    if not has_name and not has_tracks:
+        return jsonify({
+            "success": False,
+            "message": "at least one of 'name' or 'track_mbids' is required",
+        }), 400
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            if db.get_playlist(playlist_id) is None:
+                return jsonify({
+                    "success": False,
+                    "message": "playlist not found or deleted",
+                }), 404
+            renamed = False
+            landed = None
+            requested = None
+            if has_name:
+                new_name = (data.get("name") or "").strip()
+                if not new_name:
+                    return jsonify({
+                        "success": False,
+                        "message": "name must not be empty",
+                    }), 400
+                renamed = db.rename_playlist(playlist_id, new_name)
+            if has_tracks:
+                mbids = data.get("track_mbids")
+                if not isinstance(mbids, list):
+                    return jsonify({
+                        "success": False,
+                        "message": "track_mbids must be a list",
+                    }), 400
+                requested = len(mbids)
+                landed = db.replace_playlist_membership(playlist_id, mbids)
+    except Exception as e:
+        logger.exception("api_library_playlist_update failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    resp = {"success": True, "playlist_id": playlist_id, "renamed": renamed}
+    if has_tracks:
+        resp["landed"] = landed
+        resp["requested"] = requested
+    return jsonify(resp)
+
+
+@app.route("/api/library/playlists/<playlist_id>", methods=["DELETE"])
+def api_library_playlist_delete(playlist_id: str):
+    """Soft-delete a playlist from the library UI. Delegates to the
+    existing ``DELETE /api/playlists/<id>`` logic so the row shows up
+    on the /orphans page and can be restored there. ``?purge=true``
+    is forwarded for hard-delete parity.
+    """
+    return soft_delete_playlist_route(playlist_id)
 
 
 def _master_url_configured() -> bool:
