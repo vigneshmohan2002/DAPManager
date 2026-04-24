@@ -28,6 +28,7 @@ that don't fit in a commit message.
 | 5b | `4496daa` | Songs-screen filters: "Show catalog-only" (`local_only=0`) and "Show orphans" (`include_orphans=1`) toggles, plus a Status column with availability badges (`local`/`drive`/`catalog-only`/`missing`) and an orphan chip. Unavailable rows are dimmed and stripped from the play queue with a remapped start index. |
 | 5c | `7f57839` | Sync screen replacing the placeholder. Sync All + per-step buttons (Pull Catalog / Pull Playlists / Push Playlists / Report Inventory / Link Local Files), each with a "Last: Nm ago" cursor from `/api/sync/state`. 2s `/api/status` poll drives a running-state strip and refreshes cursors on running→idle. |
 | 5d | `f26f687` | Fleet screen replacing the placeholder. Devices table from `/api/fleet/summary` + a track-across-fleet search (`/api/fleet/track?q=...`) with per-result holder pills tooltipped to `local_path`. Role-unaware. Also extracts `lib/time.ts` for `relativeTime`. |
+| 6 | `032116e` | Track + playlist context menus. Portal-based `ContextMenu` escapes table clipping; track rows get Add-to-Playlist submenu + Queue Download + Soft-Delete; playlist sidebar entries get Rename / Delete. New Playlist via a "+" accessory in the Playlists header. App-wide `Toast` context for mutation feedback. App owns a `playlistsVersion` counter that bumps on any mutation so Sidebar + SongsScreen re-fetch without prop-drilling. |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Sync /
 Fleet** wired to real screens and **Downloads / New Releases /
@@ -118,22 +119,37 @@ Stages 6–8).
 
 ---
 
-## Stage 6 — Track context menus & row actions
+## Stage 6 — Track context menus & row actions — _Shipped (`032116e`)_
 
-Right-click on a track row should mirror the web `/library` page:
+Decisions worth preserving:
 
-- **Soft-Delete** → `DELETE /api/tracks/<mbid>`
-- **Queue Download** (for catalog-only rows) → `POST
-  /api/catalog/queue-download`
-- **Add to Playlist → …** submenu → `PUT /api/library/playlists/<id>`
-  (compose new membership client-side, same shape as the web page)
-- **Identify & Tag** (needs the review dialog — see Stage 7)
-
-A portal-based menu component (React's `createPortal` to `document.body`)
-so the menu escapes table clipping the same way the web page's does.
-
-Also in this stage: the **New Playlist** / rename / delete UX on the
-playlist sidebar entries, matching the web right-click menu.
+- Single-track right-click, not the web's multi-select checkbox
+  model. The web `/library` page right-click operates on whatever
+  checkboxes are ticked ("N tracks selected"); the desktop uses
+  right-click-the-row-under-the-cursor because that's the native
+  desktop idiom. Shift-click ranges + Ctrl-click multi-add are a
+  larger feature on their own and aren't gated on this stage.
+- "Identify & Tag" is not in the menu yet — it needs the review
+  dialog, which is Stage 7. Deferred so we don't ship a half-working
+  entry that just hits the API without letting the user diff.
+- `ContextMenu` dismisses on `pointerdown` (not `click`) so the
+  outside-tap can still bubble through to whatever the user clicked
+  — matches the web page's `document.addEventListener("click",
+  closeContextMenu)` pattern, where clicking another row to open a
+  different menu works in a single click rather than requiring a
+  dismissing click + a fresh right-click.
+- `addTrackToPlaylist` fetches the current membership and PUTs the
+  merged list. The PUT endpoint is replace-not-append (that's the
+  design so last-writer-wins across fleet conflicts), so the client
+  has to compose. Same shape as the web page.
+- App-level `playlistsVersion` counter (bumped on every mutation)
+  instead of lifting the whole playlists list to App state. Sidebar
+  and SongsScreen each own their own fetch; the counter is just an
+  invalidation signal. Cheaper than a shared cache and avoids the
+  "who owns the source of truth" question for one client-side list.
+- `useToast` replaces the per-screen toast state I used in Sync/
+  Fleet. Migrating those two screens over is a cleanup for a later
+  commit — not worth bundling into Stage 6.
 
 ---
 
