@@ -287,16 +287,34 @@ Decisions worth preserving:
   routing or testing the script on a host that already has the master
   running.
 
-### 9b — CI Mac build *(no app changes)*
+### 9b — CI Mac build — _Shipped (`45b98f6`)_
 
-- New `.github/workflows/desktop-mac.yml`. Triggers on tags
-  matching `desktop-v*`. Runs on `macos-latest`. Caches
-  `~/.cargo`, `desktop/node_modules`, `desktop/src-tauri/target`.
-- Steps: `cd desktop && npm ci && npx tauri build --bundles app`.
-  Zip the `.app`. Attach as a release asset named
-  `DAPManager-mac.zip`.
-- Acceptance: pushing a `desktop-v0.0.1` tag produces a release with
-  a downloadable zip. No DAPManager source changes.
+Decisions worth preserving:
+
+- **Universal binary, not single-arch.** `macos-latest` is arm64,
+  but satellites can be on either Apple Silicon or Intel. Building
+  with `--target universal-apple-darwin` (and adding both Rust
+  targets via `dtolnay/rust-toolchain`) makes one zip work
+  everywhere, at the cost of a slightly longer build. The bundle
+  path moves from `target/release/...` to
+  `target/universal-apple-darwin/release/...` — every step that
+  references the artifact has to use the universal path.
+- **`ditto`, not `zip`.** `ditto -c -k --sequesterRsrc --keepParent`
+  is the macOS-native way to archive a `.app` while preserving
+  resource forks and (later) any signatures. Plain `zip` strips
+  metadata and can break Gatekeeper handling on the satellite side
+  even before notarization is on the table.
+- **`workflow_dispatch` alongside the tag trigger.** Lets the
+  master operator (or anyone with write access) build a test bundle
+  from a branch via the Actions tab without cutting a release tag.
+  The "attach to release" step is gated on `startsWith(github.ref,
+  'refs/tags/desktop-v')`, so dispatch builds upload the artifact
+  but don't touch any release.
+- **`Swatinem/rust-cache@v2` over hand-rolled cache.** It scopes
+  the cache key to `Cargo.lock` automatically and handles target-
+  dir invalidation correctly across runs. The `workspaces` input
+  points it at `desktop/src-tauri` since that's where the Cargo
+  workspace root lives.
 
 ### 9c — `/download/mac` endpoint + bundle injection
 
