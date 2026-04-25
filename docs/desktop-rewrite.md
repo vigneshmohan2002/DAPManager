@@ -29,10 +29,12 @@ that don't fit in a commit message.
 | 5c | `7f57839` | Sync screen replacing the placeholder. Sync All + per-step buttons (Pull Catalog / Pull Playlists / Push Playlists / Report Inventory / Link Local Files), each with a "Last: Nm ago" cursor from `/api/sync/state`. 2s `/api/status` poll drives a running-state strip and refreshes cursors on running→idle. |
 | 5d | `f26f687` | Fleet screen replacing the placeholder. Devices table from `/api/fleet/summary` + a track-across-fleet search (`/api/fleet/track?q=...`) with per-result holder pills tooltipped to `local_path`. Role-unaware. Also extracts `lib/time.ts` for `relativeTime`. |
 | 6 | `032116e` | Track + playlist context menus. Portal-based `ContextMenu` escapes table clipping; track rows get Add-to-Playlist submenu + Queue Download + Soft-Delete; playlist sidebar entries get Rename / Delete. New Playlist via a "+" accessory in the Playlists header. App-wide `Toast` context for mutation feedback. App owns a `playlistsVersion` counter that bumps on any mutation so Sidebar + SongsScreen re-fetch without prop-drilling. |
+| 7a | `d562aed` + `c7d3b85` | Settings screen replacing the placeholder, driven by `/api/config` fieldsets. Backend change: `/api/config` now returns `groups` + `bool_keys` from `src/config_keys.py` so the desktop reads the single Python source of truth rather than drifting like the web dashboard's hardcoded copy did. Numeric values are coerced on save so re-typing a number doesn't trip the backend's `!=` diff. Scrolls + flashes a `focusKey` row when another screen routes here with a missing-key complaint. |
+| 7b | `0340282` | Identify & Tag review dialog. Right-click a local row → `/api/tag/identify` → a modal with field-by-field before/after diff, tier-colored confidence pill, Apply/Cancel. Missing `acoustid_api_key` narrows via a discriminated union on the client and routes to Settings with `focusKey` set (reuses Stage 7a's scroll + flash). Disabled on non-local rows because the backend can't fingerprint without a local file. Cmd/Ctrl+Enter applies, Escape cancels. |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Sync /
-Fleet** wired to real screens and **Downloads / New Releases /
-Settings** as `<Placeholder>` stubs.
+Fleet / Settings** wired to real screens and **Downloads / New
+Releases** as `<Placeholder>` stubs.
 
 ---
 
@@ -153,21 +155,42 @@ Decisions worth preserving:
 
 ---
 
-## Stage 7 — Settings dialog + Identify & Tag review
+## Stage 7 — Settings + Identify & Tag — _Shipped (7a: `c7d3b85`, 7b: `0340282`)_
 
-The PySide6 Settings dialog has focus-key behavior (opens scoped to a
-specific missing field) and is the gate for auto-tag. Ship both
-together because Identify & Tag needs Settings to surface the
-`acoustid_api_key` warning path cleanly.
+Decisions worth preserving:
 
-- Settings modal reading/writing `/api/config`. Secret keys masked
-  with placeholder, empty submit == "don't change".
-- Focus-key: when the app detects a missing key (e.g. user tries
-  Identify & Tag without `acoustid_api_key`), opens Settings scoped
-  to that field with a "you need this" banner.
-- Identify & Tag review dialog: before/after diff, confidence tier
-  colouring, Apply/Cancel. Hits `/api/tag/identify/<mbid>` and
-  `/api/tag/apply/<mbid>`.
+- Settings is a **screen** not a modal. The sidebar already had a
+  "Settings" entry and every other stage-5+ target is a full screen;
+  a modal would have been the outlier. If a modal variant is ever
+  needed (e.g. scoped edit overlays from elsewhere in the app), the
+  component renders groups from `/api/config` and is easy to wrap.
+- **Backend change first.** `/api/config` now returns `groups` +
+  `bool_keys` from `src/config_keys.py`. The web dashboard already
+  drifted from the Python source (no Lidarr group); the desktop
+  reads the API directly so the same drift can't happen twice. The
+  web dashboard cleanup is a separate job.
+- **Numeric coercion on save.** If the original value for a key was
+  a number, the Save patch coerces the string input back to Number
+  before POSTing. The web dashboard sends everything as a string,
+  which means editing `sync_interval_seconds` from `5` to `5` still
+  trips the backend's `!=` diff and gets written as `"5"`. Desktop
+  avoids that.
+- **Focus-key via scroll + flash**, not a persistent banner. The
+  toast surfaces the reason ("acoustid_api_key not set"); Settings
+  scrolls the target row into view and flashes an accent ring. If
+  the field is off-screen the scroll anchors it mid-viewport. A
+  persistent banner could be added later if this doesn't prove
+  explanatory enough.
+- **Identify & Tag is gated on `availability === "local"`.** The
+  backend requires `local_path`; surfacing a 404 from the apply path
+  is worse UX than a grayed menu item. "drive" rows technically have
+  a file on a mounted drive but `local_path` is empty (they live at
+  `dap_path` only), so they're disabled too.
+- **Discriminated-union return from `identifyTrack`.** The client
+  distinguishes `match` / `no_match` / `needs_config` / `error` at
+  the API boundary so SongsScreen can route each case to the right
+  UI (dialog / toast / Settings / toast) instead of string-matching
+  on the error message in the component.
 
 ---
 
