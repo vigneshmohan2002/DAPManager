@@ -340,15 +340,49 @@ Decisions worth preserving:
   album grid with that URL pre-filled in Settings, and the Sync
   screen's status strip shows it as the live `master_url`.
 
-### 9e — Wizard steps 1–5 (skeleton + validation)
+### 9e — Wizard steps 1–5 — _Shipped (backend `b3820c1`, frontend `9018cd7`)_
 
-- Replace `setup.html` with a stepper template + JS state machine.
-- Add `/api/setup/validate-path` and
-  `/api/setup/detect-tailscale`.
-- `web_server.save_config` switches to `build_initial_config`.
-- Acceptance: walking through the wizard end-to-end on a fresh
-  install produces an identical-shape `config.json` to the current
-  flow (diff-tested in `tests/test_setup_flow.py`).
+Decisions worth preserving:
+
+- **Two feat commits, not one.** Stage 8 used one feat per substage,
+  but 9e was big enough that the backend (build_initial_config
+  extension + endpoints + tests, ~350 LOC) and the frontend (template
+  rewrite, ~600 LOC) were cleaner as separate commits. Pattern to use
+  for any future substage that crosses ~500 LOC.
+- **`save_config` defaults `role` to `master`** so the legacy single-
+  form template wasn't a flag-day with the new stepper. The two
+  commits could land minutes apart, but defaulting kept the system
+  uninterrupted in either ordering — useful if anyone reverts only
+  the frontend later.
+- **Vanilla JS state machine, no framework.** A 100-LOC state object
+  + `data-show-when` attribute + per-step `canAdvanceFrom` covers
+  what React would have at 10× the bytes shipped to the browser.
+  The wizard is one-shot; investing in a framework wouldn't pay back.
+- **`data-show-when="role!=satellite"`** drives role-conditional
+  visibility instead of branching the template into three flows.
+  Steps 3 and 4 reshape themselves; the rest are role-agnostic.
+  Keeps the markup linear and lets the same JS gating run regardless
+  of role.
+- **Path validation is on blur, not on every keystroke.** Filesystem
+  checks per character would either spam the endpoint or need
+  debouncing; blur is one round-trip per field and matches when the
+  user actually expects feedback.
+- **`public_master_url` is non-blocking at submit.** If detection
+  fails and the user advances without typing one, the wizard saves
+  the rest of the config; `/download/mac` (Stage 9c) is the gate
+  that refuses to serve when the URL is unset, with a clear message
+  pointing back at Settings. Blocking submit here would punish
+  operators who *know* they'll fill it in later.
+- **Token generation is client-side** via `crypto.getRandomValues`
+  (24 hex bytes). No server round-trip means the secret never
+  bounces through a request/response pair before the operator sees
+  it. Same primitive will be reused on the Settings screen if a
+  rotate-token button shows up there.
+- **Collapsed integration sections** — Soulseek, Jellyfin, Lidarr,
+  AcoustID. A fresh install with none of these still ends in three
+  filled fields (paths) plus optional URL/token, instead of
+  scrolling past 12 empty inputs. Lidarr is master-only, so the
+  satellite/standalone flows don't see it at all.
 
 ### 9f — Wizard step 6 (share with devices)
 
