@@ -22,6 +22,11 @@ services:
       DAPMANAGER_DEBUG: "0"
       # Optional: change the app's listening port inside the container.
       # DAPMANAGER_PORT: "5001"
+      # Public URL satellites use to reach this master. Populated by
+      # scripts/bootstrap-master.{sh,ps1} from the host's Tailscale
+      # state; passes through empty if unset, in which case the setup
+      # wizard prompts for it manually.
+      MASTER_PUBLIC_URL: ${MASTER_PUBLIC_URL:-}
 
   # Lidarr + Prowlarr ride the `arr` profile: they only start when you
   # opt in, either via `docker compose --profile arr up -d` or with
