@@ -8,36 +8,221 @@
     <link rel="stylesheet" href="/static/style.css">
     <style>
         .setup-container {
-            max-width: 600px;
+            max-width: 720px;
             margin: 40px auto;
         }
 
-        .form-group {
-            margin-bottom: 20px;
+        .stepper {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            font-size: 12px;
+            color: #888;
         }
 
-        label {
+        .stepper .pip {
+            flex: 1;
+            padding: 6px 10px;
+            border-radius: 4px;
+            background: #232323;
+            text-align: center;
+            border: 1px solid #2c2c2c;
+        }
+
+        .stepper .pip.active {
+            background: #2c4a2c;
+            color: #cfe9cf;
+            border-color: #4a7a4a;
+        }
+
+        .stepper .pip.done {
+            color: #cfe9cf;
+            border-color: #335433;
+        }
+
+        .step-panel {
+            display: none;
+        }
+
+        .step-panel.active {
             display: block;
-            margin-bottom: 8px;
+        }
+
+        .step-panel h2 {
+            margin-top: 0;
+            color: var(--secondary);
+            font-size: 18px;
+        }
+
+        .step-panel .step-help {
+            color: #aaa;
+            font-size: 13px;
+            margin-bottom: 18px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        label.field-label {
+            display: block;
+            margin-bottom: 6px;
             font-weight: bold;
             color: var(--secondary);
+            font-size: 13px;
         }
 
         input[type="text"],
-        input[type="password"] {
+        input[type="password"],
+        input[type="email"],
+        input[type="url"] {
             width: 100%;
-            padding: 10px;
-            background: #333;
-            border: 1px solid #555;
+            padding: 9px 10px;
+            background: #2a2a2a;
+            border: 1px solid #444;
             color: white;
             border-radius: 4px;
             box-sizing: border-box;
+            font-family: inherit;
+        }
+
+        input.invalid {
+            border-color: #b14a4a;
         }
 
         .help-text {
             font-size: 12px;
             color: #888;
-            margin-top: 5px;
+            margin-top: 4px;
+        }
+
+        .field-status {
+            font-size: 12px;
+            margin-top: 4px;
+            min-height: 16px;
+        }
+
+        .field-status.ok {
+            color: #6ec46e;
+        }
+
+        .field-status.bad {
+            color: #d57878;
+        }
+
+        .role-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+        }
+
+        .role-card {
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 14px;
+            cursor: pointer;
+            background: #232323;
+        }
+
+        .role-card.selected {
+            border-color: #4a7a4a;
+            background: #2c4a2c;
+        }
+
+        .role-card h3 {
+            margin: 0 0 6px 0;
+            font-size: 14px;
+            color: var(--secondary);
+        }
+
+        .role-card p {
+            margin: 0;
+            font-size: 12px;
+            color: #aaa;
+        }
+
+        .integration-section {
+            border: 1px solid #2c2c2c;
+            border-radius: 6px;
+            padding: 12px 14px;
+            margin-bottom: 14px;
+            background: #1d1d1d;
+        }
+
+        .integration-section summary {
+            cursor: pointer;
+            font-weight: bold;
+            color: var(--secondary);
+            font-size: 14px;
+            list-style: none;
+        }
+
+        .integration-section summary::before {
+            content: "▸ ";
+            display: inline-block;
+            transition: transform 0.1s;
+        }
+
+        .integration-section[open] summary::before {
+            content: "▾ ";
+        }
+
+        .integration-section .body {
+            padding-top: 12px;
+        }
+
+        .nav-row {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 28px;
+            gap: 12px;
+        }
+
+        .nav-row button {
+            min-width: 110px;
+        }
+
+        button.secondary {
+            background: #333;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            color: #ccc;
+        }
+
+        .url-suggest-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .url-suggest-row input {
+            flex-grow: 1;
+        }
+
+        .url-suggest-row button {
+            white-space: nowrap;
+            background: #2a4a6a;
+        }
+
+        .token-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .token-row input {
+            flex-grow: 1;
+            font-family: monospace;
+        }
+
+        .submit-error {
+            color: #d57878;
+            font-size: 13px;
+            margin-top: 12px;
         }
     </style>
 </head>
@@ -46,151 +231,447 @@
     <div class="container setup-container">
         <header>
             <h1>Welcome to DAP Manager</h1>
-            <p>Please configure your environment to get started.</p>
+            <p>Five quick steps and you're set.</p>
         </header>
 
         <main class="card">
-            <form id="setup-form" onsubmit="saveConfig(event)">
-                <div class="form-group">
-                    <label>Music Library Path</label>
-                    <input type="text" id="music_library_path" placeholder="/Users/username/Music/MyLibrary" required>
-                    <div class="help-text">Absolute path to your local FLAC/MP3 collection.</div>
-                </div>
+            <div class="stepper" id="stepper"></div>
 
-                <div class="form-group">
-                    <label>Downloads Path</label>
-                    <input type="text" id="downloads_path" placeholder="/Users/username/Downloads/Soulseek" required>
-                    <div class="help-text">Where Soulseek downloads files to.</div>
-                </div>
-
-                <div class="form-group">
-                    <label>DAP Mount Point</label>
-                    <input type="text" id="dap_mount_point" placeholder="/Volumes/DAP">
-                    <div class="help-text">Path where your DAP (Rockbox iPod, Shanling, etc.) is mounted.</div>
-                </div>
-
-                <hr style="border-color: #333; margin: 20px 0;">
-                <h3 style="color: var(--secondary); font-size: 16px; margin-bottom: 15px;">Jellyfin (Optional)</h3>
-
-                <div class="form-group">
-                    <label>Jellyfin Server URL</label>
-                    <input type="text" id="jellyfin_url" placeholder="http://192.168.1.10:8096">
-                    <div class="help-text">Base URL of your Jellyfin server. Leave blank to disable Jellyfin pull.</div>
-                </div>
-
-                <div class="form-group">
-                    <label>Jellyfin API Key</label>
-                    <input type="password" id="jellyfin_api_key">
-                    <div class="help-text">Dashboard → Advanced → API Keys.</div>
-                </div>
-
-                <div class="form-group">
-                    <label>Jellyfin User ID</label>
-                    <input type="text" id="jellyfin_user_id">
-                    <div class="help-text">Dashboard → Users → (click your user) → User ID in URL.</div>
-                </div>
-
-                <hr style="border-color: #333; margin: 20px 0;">
-
-                <div class="form-group">
-                    <label>Soulseek Command (or path)</label>
-                    <div style="display: flex; gap: 10px;">
-                        <input type="text" id="slsk_command" placeholder="slsk-batchdl" value="slsk-batchdl"
-                            style="flex-grow: 1;">
-                        <button type="button" onclick="installSlsk()" style="width: auto; background: #2196F3;">Install
-                            from 'sldl_releases/'</button>
+            <!-- Step 1: Role -->
+            <section class="step-panel" data-step="1">
+                <h2>What is this device?</h2>
+                <p class="step-help">Master holds the catalog and serves it to satellites. Standalone is master-without-satellites for a single-device setup.</p>
+                <div class="role-grid">
+                    <div class="role-card" data-role="master">
+                        <h3>Master</h3>
+                        <p>Hosts the central library. Other devices sync from here.</p>
                     </div>
-                    <div class="help-text" id="install-status">If you put the zip in 'sldl_releases' folder, click
-                        Install.</div>
+                    <div class="role-card" data-role="satellite">
+                        <h3>Satellite</h3>
+                        <p>Pulls from a master on your network.</p>
+                    </div>
+                    <div class="role-card" data-role="standalone">
+                        <h3>Standalone</h3>
+                        <p>Local-only. No fleet.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 2: Library paths -->
+            <section class="step-panel" data-step="2">
+                <h2>Library paths</h2>
+                <p class="step-help">Where music lives and where downloads land. Each is checked as you tab out.</p>
+
+                <div class="form-group">
+                    <label class="field-label">Music Library Path</label>
+                    <input type="text" id="music_library_path" placeholder="/Users/you/Music/MyLibrary">
+                    <div class="help-text">Absolute path to your local FLAC/MP3 collection.</div>
+                    <div class="field-status" data-status-for="music_library_path"></div>
                 </div>
 
                 <div class="form-group">
-                    <label>Soulseek Username</label>
-                    <input type="text" id="slsk_username">
+                    <label class="field-label">Downloads Path</label>
+                    <input type="text" id="downloads_path" placeholder="/Users/you/Downloads/Soulseek">
+                    <div class="help-text">Where Soulseek deposits files.</div>
+                    <div class="field-status" data-status-for="downloads_path"></div>
                 </div>
 
                 <div class="form-group">
-                    <label>Soulseek Password</label>
-                    <input type="password" id="slsk_password">
+                    <label class="field-label">DAP Mount Point <span style="color:#888;font-weight:normal;">(optional)</span></label>
+                    <input type="text" id="dap_mount_point" placeholder="/Volumes/DAP">
+                    <div class="help-text">Path where your DAP (Rockbox iPod, Shanling, etc.) mounts when plugged in.</div>
+                    <div class="field-status" data-status-for="dap_mount_point"></div>
+                </div>
+            </section>
+
+            <!-- Step 3: URL -->
+            <section class="step-panel" data-step="3">
+                <h2 data-show-when="role!=satellite">Public URL</h2>
+                <h2 data-show-when="role=satellite">Master URL</h2>
+
+                <p class="step-help" data-show-when="role!=satellite">
+                    The URL satellites use to reach this master. We try the
+                    <code>MASTER_PUBLIC_URL</code> env var first (set by
+                    <code>scripts/bootstrap-master.{sh,ps1}</code>), then
+                    <code>tailscale status --json</code> from inside the
+                    container. If nothing came back, type one in.
+                </p>
+                <p class="step-help" data-show-when="role=satellite">
+                    Where the master is reachable on your Tailnet/LAN.
+                    Usually <code>http://&lt;master-host&gt;:5001</code>.
+                </p>
+
+                <div class="form-group" data-show-when="role!=satellite">
+                    <label class="field-label">Public Master URL</label>
+                    <div class="url-suggest-row">
+                        <input type="text" id="public_master_url" placeholder="http://master.tail-XXXX.ts.net:5001">
+                        <button type="button" id="redetect-url">Re-detect</button>
+                    </div>
+                    <div class="help-text" id="url-source-hint">&nbsp;</div>
                 </div>
 
-                <hr style="border-color: #333; margin: 20px 0;">
-                <h3 style="color: var(--secondary); font-size: 16px; margin-bottom: 15px;">Advanced Options
-                    (slsk-batchdl)</h3>
-
-                <div class="checkbox-group" style="margin-bottom: 10px;">
-                    <label style="display: flex; align-items: center; gap: 10px;">
-                        <input type="checkbox" id="fast_search"> Fast Search (Start asap)
-                    </label>
-                    <div class="help-text" style="margin-left: 24px;">Download immediately when a match is found (Normal
-                        mode only).</div>
+                <div class="form-group" data-show-when="role=satellite">
+                    <label class="field-label">Master URL</label>
+                    <input type="text" id="master_url" placeholder="http://master.tail-XXXX.ts.net:5001">
+                    <div class="help-text">No trailing slash needed; the server normalises it.</div>
                 </div>
+            </section>
 
-                <div class="checkbox-group" style="margin-bottom: 10px;">
-                    <label style="display: flex; align-items: center; gap: 10px;">
-                        <input type="checkbox" id="remove_ft"> Smart Match (Ignore 'feat.')
-                    </label>
-                    <div class="help-text" style="margin-left: 24px;">Remove "feat." from titles to improve search
-                        matches.</div>
+            <!-- Step 4: Integrations -->
+            <section class="step-panel" data-step="4">
+                <h2>Integrations</h2>
+                <p class="step-help">All optional. Skip the ones you don't use — you can fill them in from Settings later.</p>
+
+                <details class="integration-section" data-show-when="role!=satellite">
+                    <summary>Soulseek (downloader)</summary>
+                    <div class="body">
+                        <div class="form-group">
+                            <label class="field-label">Username</label>
+                            <input type="text" id="slsk_username">
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">Password</label>
+                            <input type="password" id="slsk_password">
+                        </div>
+                    </div>
+                </details>
+
+                <details class="integration-section">
+                    <summary>Jellyfin</summary>
+                    <div class="body">
+                        <div class="form-group">
+                            <label class="field-label">Server URL</label>
+                            <input type="text" id="jellyfin_url" placeholder="http://192.168.1.10:8096">
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">API Key</label>
+                            <input type="password" id="jellyfin_api_key">
+                            <div class="help-text">Dashboard → Advanced → API Keys.</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">User ID</label>
+                            <input type="text" id="jellyfin_user_id">
+                            <div class="help-text">Dashboard → Users → click your user → ID is in the URL.</div>
+                        </div>
+                    </div>
+                </details>
+
+                <details class="integration-section" data-show-when="role=master">
+                    <summary>Lidarr (sidecar)</summary>
+                    <div class="body">
+                        <div class="form-group checkbox-row">
+                            <input type="checkbox" id="lidarr_enabled">
+                            <label for="lidarr_enabled" style="font-weight:normal;">Enable Lidarr search/release watching</label>
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">Lidarr URL</label>
+                            <input type="text" id="lidarr_url" placeholder="http://lidarr:8686">
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">Lidarr API Key</label>
+                            <input type="password" id="lidarr_api_key">
+                        </div>
+                    </div>
+                </details>
+
+                <details class="integration-section">
+                    <summary>AcoustID / MusicBrainz (tagging)</summary>
+                    <div class="body">
+                        <div class="form-group">
+                            <label class="field-label">AcoustID API Key</label>
+                            <input type="password" id="acoustid_api_key">
+                            <div class="help-text">Get one at <a href="https://acoustid.org/api-key" target="_blank" rel="noopener">acoustid.org/api-key</a>.</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">Contact Email</label>
+                            <input type="email" id="contact_email" placeholder="you@example.com">
+                            <div class="help-text">Required by MusicBrainz when fetching metadata.</div>
+                        </div>
+                    </div>
+                </details>
+            </section>
+
+            <!-- Step 5: Auth -->
+            <section class="step-panel" data-step="5">
+                <h2>API token</h2>
+                <p class="step-help">
+                    Optional. When set, the master's API requires
+                    <code>Authorization: Bearer &lt;token&gt;</code> from satellites
+                    and downloads. Leave blank for open-LAN mode (fine on a
+                    private Tailnet).
+                </p>
+                <div class="form-group">
+                    <label class="field-label">API Token</label>
+                    <div class="token-row">
+                        <input type="text" id="api_token" placeholder="leave blank for open mode">
+                        <button type="button" id="generate-token" class="secondary">Generate</button>
+                    </div>
+                    <div class="help-text">Editable from Settings later.</div>
                 </div>
+            </section>
 
-                <div class="checkbox-group" style="margin-bottom: 10px;">
-                    <label style="display: flex; align-items: center; gap: 10px;">
-                        <input type="checkbox" id="desperate_mode"> Desperate Mode
-                    </label>
-                    <div class="help-text" style="margin-left: 24px;">Search harder by ignoring initial filters
-                        (slower).</div>
-                </div>
-
-                <div class="checkbox-group" style="margin-bottom: 10px;">
-                    <label style="display: flex; align-items: center; gap: 10px;">
-                        <input type="checkbox" id="strict_quality"> Strict Quality
-                    </label>
-                    <div class="help-text" style="margin-left: 24px;">Skip files if they don't meet preferred quality
-                        (flac/mp3).</div>
-                </div>
-
-                <button type="submit" style="width: 100%; margin-top: 20px;">Save Configuration</button>
-            </form>
+            <div class="nav-row">
+                <button type="button" id="back-btn" class="secondary">Back</button>
+                <button type="button" id="next-btn">Next</button>
+            </div>
+            <div class="submit-error" id="submit-error" style="display:none;"></div>
         </main>
     </div>
 
     <script>
-        function saveConfig(e) {
-            e.preventDefault();
+        const TOTAL_STEPS = 5;
+        const state = {
+            currentStep: 1,
+            role: 'master',
+            urlSource: 'none',
+        };
 
-            const config = {
-                music_library_path: document.getElementById('music_library_path').value,
-                downloads_path: document.getElementById('downloads_path').value,
-                dap_mount_point: document.getElementById('dap_mount_point').value,
-                jellyfin_url: document.getElementById('jellyfin_url').value,
-                jellyfin_api_key: document.getElementById('jellyfin_api_key').value,
-                jellyfin_user_id: document.getElementById('jellyfin_user_id').value,
-                slsk_command: document.getElementById('slsk_command').value,
-                slsk_username: document.getElementById('slsk_username').value,
-                slsk_password: document.getElementById('slsk_password').value,
-                fast_search: document.getElementById('fast_search').checked,
-                remove_ft: document.getElementById('remove_ft').checked,
-                desperate_mode: document.getElementById('desperate_mode').checked,
-                strict_quality: document.getElementById('strict_quality').checked
-            };
+        const $ = (sel) => document.querySelector(sel);
+        const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-            fetch('/api/save_config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config)
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert("Configuration saved! Redirecting...");
-                        window.location.href = '/';
-                    } else {
-                        alert("Error saving config: " + data.message);
-                    }
-                })
-                .catch(err => alert("Network error: " + err));
+        // --------- Stepper rendering ---------
+        function renderStepper() {
+            const labels = ['Role', 'Paths', 'URL', 'Integrations', 'Auth'];
+            const html = labels.map((label, i) => {
+                const idx = i + 1;
+                let cls = 'pip';
+                if (idx === state.currentStep) cls += ' active';
+                else if (idx < state.currentStep) cls += ' done';
+                return `<div class="${cls}">${idx}. ${label}</div>`;
+            }).join('');
+            $('#stepper').innerHTML = html;
         }
+
+        function applyRoleVisibility() {
+            $$('[data-show-when]').forEach((el) => {
+                const cond = el.getAttribute('data-show-when');
+                el.style.display = matchesRoleCond(cond) ? '' : 'none';
+            });
+        }
+
+        function matchesRoleCond(cond) {
+            // cond is "role=master" or "role!=satellite" — minimal grammar.
+            const m = cond.match(/^role(=|!=)(.+)$/);
+            if (!m) return true;
+            const op = m[1];
+            const target = m[2].trim();
+            return op === '=' ? state.role === target : state.role !== target;
+        }
+
+        function showStep(n) {
+            state.currentStep = n;
+            $$('.step-panel').forEach((el) => {
+                el.classList.toggle('active', Number(el.dataset.step) === n);
+            });
+            $('#back-btn').disabled = n === 1;
+            $('#next-btn').textContent = n === TOTAL_STEPS ? 'Save & Finish' : 'Next';
+            renderStepper();
+            applyRoleVisibility();
+            if (n === 3 && state.role !== 'satellite') {
+                tryDetectUrl(false);
+            }
+        }
+
+        // --------- Step 1: Role cards ---------
+        function bindRoleCards() {
+            const cards = $$('.role-card');
+            const refresh = () => cards.forEach((c) =>
+                c.classList.toggle('selected', c.dataset.role === state.role)
+            );
+            cards.forEach((c) => c.addEventListener('click', () => {
+                state.role = c.dataset.role;
+                refresh();
+                applyRoleVisibility();
+            }));
+            refresh();
+        }
+
+        // --------- Step 2: path validation ---------
+        async function validatePath(id, kind, optional) {
+            const input = document.getElementById(id);
+            const status = document.querySelector(`[data-status-for="${id}"]`);
+            const value = input.value.trim();
+            if (!value) {
+                input.classList.toggle('invalid', !optional);
+                status.className = 'field-status' + (optional ? '' : ' bad');
+                status.textContent = optional ? '' : 'Required.';
+                return optional;
+            }
+            try {
+                const res = await fetch('/api/setup/validate-path', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: value, kind }),
+                });
+                const body = await res.json();
+                if (body.ok) {
+                    input.classList.remove('invalid');
+                    status.className = 'field-status ok';
+                    status.textContent = '✓ found';
+                } else {
+                    input.classList.add('invalid');
+                    status.className = 'field-status bad';
+                    status.textContent = body.message || 'invalid';
+                }
+                return body.ok;
+            } catch (err) {
+                status.className = 'field-status bad';
+                status.textContent = 'check failed: ' + err;
+                return false;
+            }
+        }
+
+        function bindPathFields() {
+            const items = [
+                ['music_library_path', 'directory', false],
+                ['downloads_path', 'directory', false],
+                ['dap_mount_point', 'directory', true],
+            ];
+            for (const [id, kind, optional] of items) {
+                const el = document.getElementById(id);
+                el.addEventListener('blur', () => validatePath(id, kind, optional));
+            }
+        }
+
+        // --------- Step 3: URL detect ---------
+        async function tryDetectUrl(force) {
+            const input = $('#public_master_url');
+            if (!force && input.value.trim()) return;
+            const hint = $('#url-source-hint');
+            hint.textContent = 'Detecting…';
+            try {
+                const res = await fetch('/api/setup/detect-public-url');
+                const body = await res.json();
+                if (body.url) {
+                    input.value = body.url;
+                    state.urlSource = body.source;
+                    hint.textContent = body.source === 'env'
+                        ? 'Pulled from MASTER_PUBLIC_URL env (bootstrap script).'
+                        : 'Pulled from in-container Tailscale.';
+                } else {
+                    hint.textContent = 'No suggestion — type the URL satellites should use.';
+                }
+            } catch (err) {
+                hint.textContent = 'Detection failed: ' + err;
+            }
+        }
+
+        // --------- Step 5: token gen ---------
+        function generateToken() {
+            const buf = new Uint8Array(24);
+            crypto.getRandomValues(buf);
+            const hex = Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+            $('#api_token').value = hex;
+        }
+
+        // --------- Per-step gating ---------
+        async function canAdvanceFrom(step) {
+            if (step === 1) return true;
+            if (step === 2) {
+                const a = await validatePath('music_library_path', 'directory', false);
+                const b = await validatePath('downloads_path', 'directory', false);
+                const c = await validatePath('dap_mount_point', 'directory', true);
+                return a && b && c;
+            }
+            if (step === 3) {
+                if (state.role === 'satellite') {
+                    const v = $('#master_url').value.trim();
+                    if (!v) {
+                        flashError('Master URL is required for satellites.');
+                        return false;
+                    }
+                    return true;
+                }
+                // Master/standalone: public_master_url is recommended but
+                // not blocking — wizard accepts blank, server-side
+                // /download/mac will refuse to serve if it's missing.
+                return true;
+            }
+            if (step === 4) return true;
+            return true;
+        }
+
+        function flashError(msg) {
+            const el = $('#submit-error');
+            el.textContent = msg;
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 4000);
+        }
+
+        // --------- Submit ---------
+        function collectPayload() {
+            const v = (id) => (document.getElementById(id) || { value: '' }).value;
+            const checked = (id) => !!(document.getElementById(id) || {}).checked;
+            const base = {
+                role: state.role,
+                music_library_path: v('music_library_path').trim(),
+                downloads_path: v('downloads_path').trim(),
+                dap_mount_point: v('dap_mount_point').trim(),
+                acoustid_api_key: v('acoustid_api_key'),
+                contact_email: v('contact_email').trim(),
+                api_token: v('api_token').trim(),
+                jellyfin_url: v('jellyfin_url').trim(),
+                jellyfin_api_key: v('jellyfin_api_key'),
+                jellyfin_user_id: v('jellyfin_user_id').trim(),
+            };
+            if (state.role === 'satellite') {
+                base.master_url = v('master_url').trim();
+            } else {
+                base.public_master_url = v('public_master_url').trim();
+                base.slsk_username = v('slsk_username').trim();
+                base.slsk_password = v('slsk_password');
+            }
+            if (state.role === 'master') {
+                base.lidarr_enabled = checked('lidarr_enabled');
+                base.lidarr_url = v('lidarr_url').trim();
+                base.lidarr_api_key = v('lidarr_api_key');
+            }
+            return base;
+        }
+
+        async function submitConfig() {
+            $('#next-btn').disabled = true;
+            try {
+                const res = await fetch('/api/save_config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(collectPayload()),
+                });
+                const body = await res.json();
+                if (body.success) {
+                    window.location.href = '/';
+                } else {
+                    flashError('Save failed: ' + (body.message || 'unknown error'));
+                    $('#next-btn').disabled = false;
+                }
+            } catch (err) {
+                flashError('Network error: ' + err);
+                $('#next-btn').disabled = false;
+            }
+        }
+
+        // --------- Wire up ---------
+        function init() {
+            bindRoleCards();
+            bindPathFields();
+            $('#back-btn').addEventListener('click', () => {
+                if (state.currentStep > 1) showStep(state.currentStep - 1);
+            });
+            $('#next-btn').addEventListener('click', async () => {
+                if (state.currentStep === TOTAL_STEPS) {
+                    submitConfig();
+                    return;
+                }
+                if (await canAdvanceFrom(state.currentStep)) {
+                    showStep(state.currentStep + 1);
+                }
+            });
+            $('#redetect-url').addEventListener('click', () => tryDetectUrl(true));
+            $('#generate-token').addEventListener('click', generateToken);
+            showStep(1);
+        }
+
+        init();
     </script>
 </body>
 
