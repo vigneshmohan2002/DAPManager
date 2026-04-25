@@ -309,10 +309,13 @@ Decisions worth preserving:
 
 ---
 
-Once Stage 8 lands, `desktop_app.py` can be retired — the Tauri app
-will cover every toolbar/menu action it exposes. The retirement is a
-separate commit that removes the PySide6 file, the `PySide6` dep from
-`requirements.txt`, and the `test_desktop_app.py` test module.
+**Stage 8 exit + retirement.** All four sub-stages shipped; the Tauri
+app now covers every toolbar/menu action `desktop_app.py` exposed.
+PySide6 was retired in a single follow-up commit that deleted
+`desktop_app.py` (1,595 LOC), `tests/test_desktop_app.py`, and the
+`PySide6>=6.6.0` line from `requirements.txt`. `src/first_run.py`
+stayed — its pure `build_initial_config` helper is reusable for a
+future Tauri first-run wizard, and its tests don't touch Qt.
 
 ---
 

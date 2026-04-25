@@ -1,10 +1,11 @@
 """
-First-run setup: pure logic for the desktop wizard.
+First-run setup: pure config-build logic.
 
-Kept UI-free so the payload/validation can be unit tested without
-booting Qt. The Qt wizard in desktop_app.py just collects values and
-hands them to build_initial_config, then writes the result to
-config.json.
+UI-free so the payload/validation can be unit tested in isolation.
+Today's only consumer is the web ``/setup`` page (which rolls its own
+form-to-dict mapping in ``web_server.save_config``); ``build_initial_config``
+is kept here as the reusable, role-aware payload builder for a future
+Tauri first-run wizard or a refactor of the web setup.
 """
 
 import os
