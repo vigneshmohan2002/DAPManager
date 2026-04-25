@@ -32,10 +32,11 @@ that don't fit in a commit message.
 | 7a | `d562aed` + `c7d3b85` | Settings screen replacing the placeholder, driven by `/api/config` fieldsets. Backend change: `/api/config` now returns `groups` + `bool_keys` from `src/config_keys.py` so the desktop reads the single Python source of truth rather than drifting like the web dashboard's hardcoded copy did. Numeric values are coerced on save so re-typing a number doesn't trip the backend's `!=` diff. Scrolls + flashes a `focusKey` row when another screen routes here with a missing-key complaint. |
 | 7b | `0340282` | Identify & Tag review dialog. Right-click a local row → `/api/tag/identify` → a modal with field-by-field before/after diff, tier-colored confidence pill, Apply/Cancel. Missing `acoustid_api_key` narrows via a discriminated union on the client and routes to Settings with `focusKey` set (reuses Stage 7a's scroll + flash). Disabled on non-local rows because the backend can't fingerprint without a local file. Cmd/Ctrl+Enter applies, Escape cancels. |
 | 8a | `24cd34f` | Audit screen replacing the placeholder, paired with Complete-Albums trigger. Auto-loads `/api/audit/results` on mount; renders an album-cover grid with a per-card "N missing" badge + have/total counts. "Complete Albums" button POSTs `/api/albums/complete` with an optional "Also run downloader & rescan" checkbox; running-state strip + results refresh reuse SyncScreen's `/api/status` edge-trigger pattern. |
+| 8b | `4223c36` | Orphans screen replacing the web `/orphans` page. Tabbed Tracks / Playlists tables from `/api/orphans/{tracks,playlists}`; row actions are Restore / Delete file (tracks, when `local_path` is set) / Purge with confirms before destructive ones. Playlist mutations bump `playlistsVersion` so the sidebar's live-list refetch covers both restore (re-appears) and purge (no-op visually but cheap to bump). |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
-Sync / Fleet / Settings** wired to real screens and **Downloads / New
-Releases** as `<Placeholder>` stubs.
+Orphans / Sync / Fleet / Settings** wired to real screens and
+**Downloads / New Releases** as `<Placeholder>` stubs.
 
 ---
 
@@ -227,10 +228,31 @@ Decisions worth preserving:
   `QMessageBox.question`. The downloader checkbox lives next to the
   CTA so the user can flip it without a separate dialog.
 
+### 8b — Orphans screen — _Shipped (`4223c36`)_
+
+Decisions worth preserving:
+
+- **Picked next on value/work ratio.** Stage 6 added the soft-delete
+  path from the desktop, so orphans now accumulate from desktop use
+  itself — making the cleanup view recurring rather than occasional.
+  Work was small (two read endpoints + restore/purge/delete-file
+  endpoints already existed) so this is the leanest path to closing
+  a loop the user opens from the desktop.
+- **Tabs, not stacked sections.** The web `/orphans` page uses tabs
+  for the same two tables; matched it because the table shapes are
+  unrelated (track rows vs playlist rows) and stacking burns
+  vertical space when one side is empty.
+- **Delete file is hidden when `local_path` is empty.** Idempotent
+  for missing files at the backend, but offering an action that does
+  nothing visible is worse UX than just hiding the button.
+- **Bump `playlistsVersion` after both restore and purge.** Restore
+  re-adds the playlist to the sidebar's live list; purge is a no-op
+  for the sidebar (the row was already hidden) but bumping is cheap
+  and avoids a "did I update both directions?" footgun.
+
 ### Remaining sub-tasks
 
 - **Resolve Duplicates** → `/api/duplicates` + `/api/duplicates/resolve`.
-- **Orphans page** → reuse the web `/orphans` table shape.
 - **Suggest to Jellyfin** — Jellyfin-pull flow.
 
 Once Stage 8 lands, `desktop_app.py` can be retired — the Tauri app
