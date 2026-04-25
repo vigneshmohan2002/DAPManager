@@ -34,10 +34,12 @@ that don't fit in a commit message.
 | 8a | `24cd34f` | Audit screen replacing the placeholder, paired with Complete-Albums trigger. Auto-loads `/api/audit/results` on mount; renders an album-cover grid with a per-card "N missing" badge + have/total counts. "Complete Albums" button POSTs `/api/albums/complete` with an optional "Also run downloader & rescan" checkbox; running-state strip + results refresh reuse SyncScreen's `/api/status` edge-trigger pattern. |
 | 8b | `4223c36` | Orphans screen replacing the web `/orphans` page. Tabbed Tracks / Playlists tables from `/api/orphans/{tracks,playlists}`; row actions are Restore / Delete file (tracks, when `local_path` is set) / Purge with confirms before destructive ones. Playlist mutations bump `playlistsVersion` so the sidebar's live-list refetch covers both restore (re-appears) and purge (no-op visually but cheap to bump). |
 | 8c | `35de8fd` | Resolve Duplicates screen replacing the PySide6 modal. Lists groups from `/api/duplicates` with per-group radios + "Skip this group"; recommended candidate (highest score) seeds the default. Single "Resolve N (M files)" CTA loops `/api/duplicates/resolve` per group and surfaces a deleted + errors summary toast. Groups with one candidate or skipped state are filtered from the plan. |
+| 8d | `1c13ad8` | Suggest screen replacing the PySide6 "Suggest to Jellyfin" dialog. Reads `dap_manager_host_url` from `/api/config`; missing host routes through the focus-key Settings flow. Textarea parses `Artist - Title` lines client-side (mirrors `parse_manual_suggestions`) and POSTs `<host>/api/suggestions`. Selection-based suggest from SongsScreen is deferred — manual paste covers the workflow at a fraction of the integration cost. |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
-Duplicates / Orphans / Sync / Fleet / Settings** wired to real screens
-and **Downloads / New Releases** as `<Placeholder>` stubs.
+Duplicates / Orphans / Sync / Fleet / Suggest / Settings** wired to
+real screens and **Downloads / New Releases** as `<Placeholder>`
+stubs.
 
 ---
 
@@ -275,9 +277,37 @@ Decisions worth preserving:
   entry), so a re-fetch is the simplest way to show progress without
   tracking partial state in the screen.
 
-### Remaining sub-tasks
+### 8d — Suggest screen — _Shipped (`1c13ad8`)_
 
-- **Suggest to Jellyfin** — Jellyfin-pull flow.
+Decisions worth preserving:
+
+- **Manual-paste only, no SongsScreen integration.** The PySide6
+  flow has both — paste *and* suggest-from-selection. Selection
+  would mean adding a multi-select model to SongsScreen + a context-
+  menu entry + a wiring path from there into the Suggest flow.
+  Manual paste covers the actual workflow (user types a few lines)
+  at maybe 10% of the cost. Selection-based can land in a later
+  stage if the user actually misses it.
+- **Fetch host from `/api/config`, not a prop.** The host can change
+  via the Settings screen mid-session; reading config on mount keeps
+  the screen self-contained. The Settings save flow already reloads
+  the in-process config server-side, so a re-mount of Suggest picks
+  up the new value.
+- **Reuse Stage 7a's focus-key router.** Missing
+  `dap_manager_host_url` calls `onOpenSettings("dap_manager_host_url")`
+  which scrolls + flashes the field. Same plumbing as the
+  acoustid_api_key path from Stage 7b.
+- **Direct `fetch` to the host URL works** because Tauri's CSP is
+  `null` and webview HTTP is unrestricted. If a future hardening
+  turns CSP on, this will need to move to `@tauri-apps/plugin-http`
+  with an allowlist — calling out as a known fragile point.
+- **`parseManualSuggestions` lives in `lib/api.ts`** alongside the
+  POST helper. It's a pure function but the symmetry with the Python
+  side (`parse_manual_suggestions`) is the documentation: both ends
+  use the same rules so test coverage on either side gives
+  confidence.
+
+---
 
 Once Stage 8 lands, `desktop_app.py` can be retired — the Tauri app
 will cover every toolbar/menu action it exposes. The retirement is a
