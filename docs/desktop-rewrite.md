@@ -31,9 +31,10 @@ that don't fit in a commit message.
 | 6 | `032116e` | Track + playlist context menus. Portal-based `ContextMenu` escapes table clipping; track rows get Add-to-Playlist submenu + Queue Download + Soft-Delete; playlist sidebar entries get Rename / Delete. New Playlist via a "+" accessory in the Playlists header. App-wide `Toast` context for mutation feedback. App owns a `playlistsVersion` counter that bumps on any mutation so Sidebar + SongsScreen re-fetch without prop-drilling. |
 | 7a | `d562aed` + `c7d3b85` | Settings screen replacing the placeholder, driven by `/api/config` fieldsets. Backend change: `/api/config` now returns `groups` + `bool_keys` from `src/config_keys.py` so the desktop reads the single Python source of truth rather than drifting like the web dashboard's hardcoded copy did. Numeric values are coerced on save so re-typing a number doesn't trip the backend's `!=` diff. Scrolls + flashes a `focusKey` row when another screen routes here with a missing-key complaint. |
 | 7b | `0340282` | Identify & Tag review dialog. Right-click a local row → `/api/tag/identify` → a modal with field-by-field before/after diff, tier-colored confidence pill, Apply/Cancel. Missing `acoustid_api_key` narrows via a discriminated union on the client and routes to Settings with `focusKey` set (reuses Stage 7a's scroll + flash). Disabled on non-local rows because the backend can't fingerprint without a local file. Cmd/Ctrl+Enter applies, Escape cancels. |
+| 8a | `24cd34f` | Audit screen replacing the placeholder, paired with Complete-Albums trigger. Auto-loads `/api/audit/results` on mount; renders an album-cover grid with a per-card "N missing" badge + have/total counts. "Complete Albums" button POSTs `/api/albums/complete` with an optional "Also run downloader & rescan" checkbox; running-state strip + results refresh reuse SyncScreen's `/api/status` edge-trigger pattern. |
 
-Sidebar currently has **Albums / Artists / Songs / Playlists / Sync /
-Fleet / Settings** wired to real screens and **Downloads / New
+Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
+Sync / Fleet / Settings** wired to real screens and **Downloads / New
 Releases** as `<Placeholder>` stubs.
 
 ---
@@ -197,12 +198,37 @@ Decisions worth preserving:
 ## Stage 8 — Remaining library actions (PySide6 parity closers)
 
 The long tail, batched because none of them are big on their own and
-none block anything else:
+none block anything else.
 
-- **Audit Library** → `/api/audit` + `/api/audit/results` + cover art
-  panels, queue missing tracks for download.
-- **Complete Albums** → `/api/albums/complete` with optional
-  `run_downloads` flag.
+### 8a — Audit screen + Complete-Albums trigger — _Shipped (`24cd34f`)_
+
+Decisions worth preserving:
+
+- **Audit + Complete are one screen, not two.** PySide6 splits them
+  across two toolbar buttons (Audit opens a list dialog, Complete is
+  a separate Yes/No prompt) but the conceptual flow is "see what's
+  missing, then fix it." Combining them gets two of the five Stage 8
+  sub-tasks in a single screen with a shared running-state strip and
+  no extra sidebar entry to invent. Each Complete run also re-fires
+  the audit query on the running→idle edge, so the user sees the
+  list shrink without touching anything.
+- **No `/api/audit` POST.** That endpoint kicks the legacy file-
+  logged audit task; the desktop reads `/api/audit/results` directly
+  (which is just a DB query for incomplete albums + cover art URL
+  enrichment). Same shape as the web dashboard's audit pane.
+- **Cover art straight from coverartarchive.org**, not proxied
+  through the backend. The audit results endpoint already attaches
+  `https://coverartarchive.org/release/<mbid>/front-250` URLs; the
+  card uses `loading="lazy"` and an `onError` fallback so missing
+  releases don't break the grid.
+- **Confirm prompt on Complete.** The downloader/rescan path
+  rewrites tags and downloads files; a one-click trigger felt too
+  loose for a destructive-ish operation. Mirrors the PySide6
+  `QMessageBox.question`. The downloader checkbox lives next to the
+  CTA so the user can flip it without a separate dialog.
+
+### Remaining sub-tasks
+
 - **Resolve Duplicates** → `/api/duplicates` + `/api/duplicates/resolve`.
 - **Orphans page** → reuse the web `/orphans` table shape.
 - **Suggest to Jellyfin** — Jellyfin-pull flow.
