@@ -33,10 +33,11 @@ that don't fit in a commit message.
 | 7b | `0340282` | Identify & Tag review dialog. Right-click a local row → `/api/tag/identify` → a modal with field-by-field before/after diff, tier-colored confidence pill, Apply/Cancel. Missing `acoustid_api_key` narrows via a discriminated union on the client and routes to Settings with `focusKey` set (reuses Stage 7a's scroll + flash). Disabled on non-local rows because the backend can't fingerprint without a local file. Cmd/Ctrl+Enter applies, Escape cancels. |
 | 8a | `24cd34f` | Audit screen replacing the placeholder, paired with Complete-Albums trigger. Auto-loads `/api/audit/results` on mount; renders an album-cover grid with a per-card "N missing" badge + have/total counts. "Complete Albums" button POSTs `/api/albums/complete` with an optional "Also run downloader & rescan" checkbox; running-state strip + results refresh reuse SyncScreen's `/api/status` edge-trigger pattern. |
 | 8b | `4223c36` | Orphans screen replacing the web `/orphans` page. Tabbed Tracks / Playlists tables from `/api/orphans/{tracks,playlists}`; row actions are Restore / Delete file (tracks, when `local_path` is set) / Purge with confirms before destructive ones. Playlist mutations bump `playlistsVersion` so the sidebar's live-list refetch covers both restore (re-appears) and purge (no-op visually but cheap to bump). |
+| 8c | `35de8fd` | Resolve Duplicates screen replacing the PySide6 modal. Lists groups from `/api/duplicates` with per-group radios + "Skip this group"; recommended candidate (highest score) seeds the default. Single "Resolve N (M files)" CTA loops `/api/duplicates/resolve` per group and surfaces a deleted + errors summary toast. Groups with one candidate or skipped state are filtered from the plan. |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
-Orphans / Sync / Fleet / Settings** wired to real screens and
-**Downloads / New Releases** as `<Placeholder>` stubs.
+Duplicates / Orphans / Sync / Fleet / Settings** wired to real screens
+and **Downloads / New Releases** as `<Placeholder>` stubs.
 
 ---
 
@@ -250,9 +251,32 @@ Decisions worth preserving:
   for the sidebar (the row was already hidden) but bumping is cheap
   and avoids a "did I update both directions?" footgun.
 
+### 8c — Resolve Duplicates screen — _Shipped (`35de8fd`)_
+
+Decisions worth preserving:
+
+- **Single batched "Resolve N" CTA, not per-group buttons.** PySide6
+  uses one OK button that loops; matched it because the typical case
+  is "accept the recommendations across the board" and a per-group
+  button forces the user into N×click for the same outcome. Per-
+  group state is still a radio so individual edits cost nothing.
+- **Sequential POSTs, not a single bulk endpoint.** The backend's
+  `/api/duplicates/resolve` takes one mbid at a time. Adding a bulk
+  variant would only help if the round-trip latency stacked up —
+  duplicate counts are typically <50, so the chatty version stays
+  simpler and surfaces per-group errors naturally.
+- **Skip = empty keep_path on the client side.** The PySide6 dialog
+  uses a sentinel "Skip this group" radio with `keep_path = ""`;
+  matched it. Plans where `keep_path === ""` or where no paths would
+  be deleted are filtered before resolve, so the count on the CTA
+  reflects what the loop will actually touch.
+- **Refresh after resolve.** Resolved groups disappear from the
+  result of `/api/duplicates` (the backend clears the duplicate
+  entry), so a re-fetch is the simplest way to show progress without
+  tracking partial state in the screen.
+
 ### Remaining sub-tasks
 
-- **Resolve Duplicates** → `/api/duplicates` + `/api/duplicates/resolve`.
 - **Suggest to Jellyfin** — Jellyfin-pull flow.
 
 Once Stage 8 lands, `desktop_app.py` can be retired — the Tauri app
