@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from flask import Flask, render_template, jsonify, request, redirect, url_for
+from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 import threading
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
@@ -302,6 +302,7 @@ def check_setup():
         "save_config",
         "setup_validate_path",
         "setup_detect_public_url",
+        "download_mac",
         "static",
     ):
         return redirect(url_for("setup"))
@@ -509,6 +510,92 @@ def setup_validate_path():
     if kind == "file" and not os.path.isfile(path):
         return jsonify({"ok": False, "message": "not a file"})
     return jsonify({"ok": True})
+
+
+def _read_master_config_for_download():
+    """Re-read config.json from disk for /download/mac.
+
+    Avoids depending on the in-process ``config`` global, which only
+    becomes truthy after init_app_logic runs. The download endpoint
+    needs to work right after the wizard finishes — before the next
+    request triggers init.
+    """
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+@app.route("/download/mac", methods=["GET"])
+def download_mac():
+    """Serve the satellite Mac bundle with this master's URL embedded.
+
+    Refuses with 409 when ``public_master_url`` isn't configured —
+    serving a bundle pinned to a URL satellites can't reach is a
+    worse outcome than failing loudly. When ``api_token`` is set,
+    requires it via ``Authorization: Bearer`` or ``?token=`` query.
+    """
+    import hmac
+    from src.satellite_bundle import (
+        BundleFetchError,
+        ensure_cached_bundle,
+        inject_master_config,
+    )
+
+    cfg = _read_master_config_for_download() or {}
+    public_url = (cfg.get("public_master_url") or "").strip().rstrip("/")
+    if not public_url:
+        return jsonify({
+            "success": False,
+            "message": (
+                "public_master_url is not set. Open Settings → Multi-Device "
+                "Sync (or re-run /setup) and fill it in before sharing the "
+                "download link."
+            ),
+        }), 409
+
+    token = (cfg.get("api_token") or "").strip()
+    if token:
+        provided = ""
+        header = request.headers.get("Authorization", "")
+        if header.startswith("Bearer "):
+            provided = header[len("Bearer "):].strip()
+        else:
+            provided = (request.args.get("token") or "").strip()
+        if not hmac.compare_digest(provided, token):
+            return jsonify({
+                "success": False,
+                "message": "missing or invalid api token",
+            }), 401
+
+    try:
+        base_path = ensure_cached_bundle()
+    except BundleFetchError as e:
+        logger.warning("download_mac: bundle fetch failed: %s", e)
+        return jsonify({
+            "success": False,
+            "message": (
+                "Could not fetch the satellite bundle from GitHub. "
+                "Check the master's outbound connectivity."
+            ),
+        }), 502
+
+    try:
+        body = inject_master_config(base_path, public_url, token or None)
+    except Exception as e:
+        logger.exception("download_mac: injection failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return Response(
+        body,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="DAPManager-mac.zip"',
+            "Content-Length": str(len(body)),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.route("/api/setup/detect-public-url", methods=["GET"])
