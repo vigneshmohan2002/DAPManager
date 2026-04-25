@@ -37,6 +37,7 @@ def build_initial_config(
     downloads_path: str,
     dap_mount_point: str = "",
     master_url: str = "",
+    public_master_url: str = "",
     api_token: str = "",
     device_name: str = "",
     slsk_username: str = "",
@@ -44,14 +45,25 @@ def build_initial_config(
     jellyfin_url: str = "",
     jellyfin_api_key: str = "",
     jellyfin_user_id: str = "",
+    lidarr_url: str = "",
+    lidarr_api_key: str = "",
+    lidarr_enabled: bool = False,
+    acoustid_api_key: str = "",
+    contact_email: str = "",
     report_inventory_to_host: bool = False,
+    fast_search: bool = False,
+    remove_ft: bool = False,
+    desperate_mode: bool = False,
+    strict_quality: bool = False,
 ) -> dict:
     """Shape a config.json dict for a first-run install.
 
     Role drives the defaults: master flips ``is_master`` and accepts
-    Jellyfin + Soulseek creds; satellite writes ``master_url`` and an
-    optional bearer token and leaves sldl config blank (downloads
-    forward to the master); standalone is satellite-without-master.
+    Jellyfin + Soulseek + Lidarr creds plus a ``public_master_url``
+    that satellites use to reach back; satellite writes ``master_url``
+    and an optional bearer token and leaves sldl config blank
+    (downloads forward to the master); standalone is satellite-
+    without-master and keeps its own downloader.
     """
     if role not in ("master", "satellite", "standalone"):
         raise ValueError(f"unknown role: {role}")
@@ -69,12 +81,15 @@ def build_initial_config(
         "dap_playlist_dir_name": "Playlists",
         "conversion_sample_rate": 44100,
         "conversion_bit_depth": 16,
-        "fast_search": False,
-        "remove_ft": False,
-        "desperate_mode": False,
-        "strict_quality": False,
+        "fast_search": bool(fast_search),
+        "remove_ft": bool(remove_ft),
+        "desperate_mode": bool(desperate_mode),
+        "strict_quality": bool(strict_quality),
         "is_master": role == "master",
         "device_role": "master" if role == "master" else "satellite",
+        "acoustid_api_key": acoustid_api_key,
+        "contact_email": contact_email,
+        "api_token": api_token,
     }
 
     if role == "master":
@@ -84,7 +99,11 @@ def build_initial_config(
             "jellyfin_url": jellyfin_url,
             "jellyfin_api_key": jellyfin_api_key,
             "jellyfin_user_id": jellyfin_user_id,
+            "lidarr_enabled": bool(lidarr_enabled),
+            "lidarr_url": lidarr_url,
+            "lidarr_api_key": lidarr_api_key,
             "master_url": "",
+            "public_master_url": (public_master_url or "").rstrip("/"),
             "report_inventory_to_host": True,
         })
     elif role == "satellite":
@@ -92,7 +111,6 @@ def build_initial_config(
             "slsk_username": "",
             "slsk_password": "",
             "master_url": (master_url or "").rstrip("/"),
-            "api_token": api_token,
             "report_inventory_to_host": bool(report_inventory_to_host),
         })
         if device_name:
@@ -101,7 +119,11 @@ def build_initial_config(
         cfg.update({
             "slsk_username": slsk_username,
             "slsk_password": slsk_password,
+            "jellyfin_url": jellyfin_url,
+            "jellyfin_api_key": jellyfin_api_key,
+            "jellyfin_user_id": jellyfin_user_id,
             "master_url": "",
+            "public_master_url": (public_master_url or "").rstrip("/"),
             "report_inventory_to_host": False,
         })
 

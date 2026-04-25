@@ -300,6 +300,8 @@ def check_setup():
     if not config_exists() and request.endpoint not in (
         "setup",
         "save_config",
+        "setup_validate_path",
+        "setup_detect_public_url",
         "static",
     ):
         return redirect(url_for("setup"))
@@ -445,41 +447,112 @@ def update_config():
     return jsonify({"success": True, "changed": changed})
 
 
+_FIRST_RUN_FIELDS = {
+    "music_library_path", "downloads_path", "dap_mount_point",
+    "master_url", "public_master_url", "api_token", "device_name",
+    "slsk_username", "slsk_password",
+    "jellyfin_url", "jellyfin_api_key", "jellyfin_user_id",
+    "lidarr_url", "lidarr_api_key", "lidarr_enabled",
+    "acoustid_api_key", "contact_email",
+    "report_inventory_to_host",
+    "fast_search", "remove_ft", "desperate_mode", "strict_quality",
+}
+
+
 @app.route("/api/save_config", methods=["POST"])
 def save_config():
-    data = request.json
-    try:
-        # Construct the config dictionary based on config-mac.json structure
-        new_config = {
-            "music_library_path": data.get("music_library_path"),
-            "downloads_path": data.get("downloads_path"),
-            "slsk_cmd_base": ["slsk-batchdl"],  # Default
-            "ffmpeg_path": "ffmpeg",  # Default
-            "dap_mount_point": data.get("dap_mount_point"),
-            "dap_music_dir_name": "Music",
-            "dap_playlist_dir_name": "Playlists",
-            "database_file": "dap_library.db",
-            "slsk_username": data.get("slsk_username"),
-            "slsk_password": data.get("slsk_password"),
-            "fast_search": data.get("fast_search", False),
-            "remove_ft": data.get("remove_ft", False),
-            "desperate_mode": data.get("desperate_mode", False),
-            "strict_quality": data.get("strict_quality", False),
-            "conversion_sample_rate": 44100,
-            "conversion_bit_depth": 16,
-            "jellyfin_url": data.get("jellyfin_url", ""),
-            "jellyfin_api_key": data.get("jellyfin_api_key", ""),
-            "jellyfin_user_id": data.get("jellyfin_user_id", ""),
-        }
+    """Persist a fresh config.json from the setup wizard payload.
 
-        # Save as config.json
+    Routes through ``src.first_run.build_initial_config`` so the wizard
+    and any future programmatic setup share one shape definition.
+    Defaults ``role`` to ``master`` to stay compatible with the legacy
+    single-form template that didn't send a role.
+    """
+    from src.first_run import build_initial_config
+
+    data = request.json or {}
+    role = (data.get("role") or "master").strip().lower()
+    payload = {k: v for k, v in data.items() if k in _FIRST_RUN_FIELDS}
+    try:
+        new_config = build_initial_config(role, **payload)
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+
+    try:
         ensure_parent_dir(CONFIG_FILE)
         with open(CONFIG_FILE, "w") as f:
             json.dump(new_config, f, indent=4)
-
         return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
+        logger.exception("save_config failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/setup/validate-path", methods=["POST"])
+def setup_validate_path():
+    """Light-weight existence check used by step 2 of the setup wizard.
+
+    Body: {"path": str, "kind": "directory"|"file"} (kind defaults to
+    "directory"). Returns {"ok": bool, "message"?: str}. Empty paths
+    are treated as missing rather than valid — the wizard can render
+    its own "required" copy when the field is blank.
+    """
+    data = request.json or {}
+    path = (data.get("path") or "").strip()
+    kind = (data.get("kind") or "directory").strip().lower()
+    if not path:
+        return jsonify({"ok": False, "message": "path is empty"})
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "message": "path does not exist"})
+    if kind == "directory" and not os.path.isdir(path):
+        return jsonify({"ok": False, "message": "not a directory"})
+    if kind == "file" and not os.path.isfile(path):
+        return jsonify({"ok": False, "message": "not a file"})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/setup/detect-public-url", methods=["GET"])
+def setup_detect_public_url():
+    """Suggest a public URL for the master at first-run.
+
+    Detection priority, matching the host bootstrap script:
+      1. ``MASTER_PUBLIC_URL`` env (populated by the bootstrap script).
+      2. In-container ``tailscale status --json`` (only useful when
+         Tailscale runs in the container or for non-Docker installs).
+    Returns {"source": "env"|"tailscale"|"none", "url"?: str}.
+    """
+    import shutil
+    import subprocess
+
+    env_url = (os.environ.get("MASTER_PUBLIC_URL") or "").strip()
+    if env_url:
+        return jsonify({"source": "env", "url": env_url})
+
+    cli = shutil.which("tailscale")
+    if not cli:
+        return jsonify({"source": "none"})
+    port = (os.environ.get("MASTER_PORT") or "5001").strip() or "5001"
+    try:
+        proc = subprocess.run(
+            [cli, "status", "--json"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return jsonify({"source": "none"})
+    if proc.returncode != 0 or not proc.stdout:
+        return jsonify({"source": "none"})
+    try:
+        status = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return jsonify({"source": "none"})
+    self_block = status.get("Self") or {}
+    dns = (self_block.get("DNSName") or "").rstrip(".")
+    if dns:
+        return jsonify({"source": "tailscale", "url": f"http://{dns}:{port}"})
+    for ip in (self_block.get("TailscaleIPs") or []):
+        if ip and ":" not in ip:
+            return jsonify({"source": "tailscale", "url": f"http://{ip}:{port}"})
+    return jsonify({"source": "none"})
 
 
 @app.route("/api/library/albums")

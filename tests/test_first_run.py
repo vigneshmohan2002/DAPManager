@@ -99,6 +99,61 @@ def test_unknown_role_raises():
         )  # type: ignore[arg-type]
 
 
+def test_master_strips_trailing_slash_on_public_master_url():
+    cfg = build_initial_config(
+        "master",
+        music_library_path="/m",
+        downloads_path="/d",
+        public_master_url="http://master.tail.ts.net:5001/",
+    )
+    assert cfg["public_master_url"] == "http://master.tail.ts.net:5001"
+
+
+def test_satellite_does_not_get_public_master_url():
+    cfg = build_initial_config(
+        "satellite",
+        music_library_path="/m",
+        downloads_path="/d",
+        master_url="http://m:5001",
+        public_master_url="http://leaked:5001",
+    )
+    assert "public_master_url" not in cfg
+
+
+def test_master_carries_lidarr_and_acoustid_fields():
+    cfg = build_initial_config(
+        "master",
+        music_library_path="/m",
+        downloads_path="/d",
+        lidarr_url="http://lidarr:8686",
+        lidarr_api_key="lk",
+        lidarr_enabled=True,
+        acoustid_api_key="ak",
+        contact_email="me@example.com",
+    )
+    assert cfg["lidarr_url"] == "http://lidarr:8686"
+    assert cfg["lidarr_api_key"] == "lk"
+    assert cfg["lidarr_enabled"] is True
+    assert cfg["acoustid_api_key"] == "ak"
+    assert cfg["contact_email"] == "me@example.com"
+
+
+def test_advanced_sldl_flags_propagate():
+    cfg = build_initial_config(
+        "master",
+        music_library_path="/m",
+        downloads_path="/d",
+        fast_search=True,
+        remove_ft=True,
+        desperate_mode=False,
+        strict_quality=True,
+    )
+    assert cfg["fast_search"] is True
+    assert cfg["remove_ft"] is True
+    assert cfg["desperate_mode"] is False
+    assert cfg["strict_quality"] is True
+
+
 def test_all_roles_set_required_defaults():
     for role in ("master", "satellite", "standalone"):
         cfg = build_initial_config(role, music_library_path="/m", downloads_path="/d")
