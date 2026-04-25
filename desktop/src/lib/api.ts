@@ -267,6 +267,42 @@ export async function saveConfig(
   };
 }
 
+export type IncompleteAlbum = {
+  artist: string;
+  album: string;
+  mbid: string;
+  have: number;
+  total: number;
+  missing: number;
+  cover_art: string;
+};
+
+export async function fetchAuditResults(): Promise<IncompleteAlbum[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/audit/results`);
+  if (!r.ok) throw new Error(`audit/results: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "audit failed");
+  return (data.results ?? []) as IncompleteAlbum[];
+}
+
+export async function runCompleteAlbums(
+  runDownloads: boolean,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/albums/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_downloads: runDownloads }),
+  });
+  if (!r.ok) return { success: false, message: `complete: ${r.status}` };
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
 export type SyncState = {
   last_catalog_sync: string | null;
   last_playlist_sync: string | null;
