@@ -27,10 +27,26 @@ Stage 7a Settings screen.
   base archive into a `BytesIO` and adds `Contents/Resources/master_url.txt`
   + `Contents/Resources/master_token.txt`. Tauri reads on first launch.
   Sign-and-modify is a non-issue because the bundle is unsigned.
-- **Public URL: Tailscale MagicDNS, auto-detected, user-overridable.**
-  Wizard runs `tailscale status --json` and pre-fills the suggestion.
-  User can edit (multiple Tailnets, custom hostnames, mixed LAN+VPN,
-  etc.) and the value is saved as `public_master_url` in config.
+- **Public URL: env-var-first, populated by a host-side bootstrap
+  script.** The reference master deployment is a Docker container on
+  a Windows host, so `tailscale status --json` from inside the
+  container can't see the host's Tailscale state. The host-side
+  bootstrap script (see Architecture below) detects the Tailscale
+  URL on the host and passes it through to the container as
+  `MASTER_PUBLIC_URL`. Detection priority *inside the container*:
+  1. `MASTER_PUBLIC_URL` env var — populated by the bootstrap
+     script in the standard path; can also be set manually in
+     `docker-compose.yml` or `docker run -e`.
+  2. In-container `tailscale status --json` — fires only if
+     Tailscale is running *inside* the container (sidecar pattern)
+     or for non-Docker installs.
+  3. Blank field; user types the URL in the wizard.
+
+  Whatever the wizard ends up with is saved as `public_master_url`
+  in `config.json` and is fully editable from Settings later.
+  `request.host_url` is **not** used as a fallback — Docker Desktop
+  serves it as `http://localhost:5001` from the operator's browser,
+  which is not reachable from satellites.
 - **Auth: token-gate `/download/mac` and embed.** When master has
   `api_token` set, the download endpoint enforces it (so only people
   who already know the token can pull a pre-authed satellite); the
@@ -50,6 +66,48 @@ Stage 7a Settings screen.
 ---
 
 ## Architecture
+
+### Piece 0 — Host-side bootstrap script
+
+The Docker container can't see host Tailscale state, so the
+detection has to happen on the host *before* `docker compose up`.
+Two scripts ship side-by-side in `scripts/`:
+
+- **`scripts/bootstrap-master.ps1`** (Windows hosts, primary
+  deployment).
+- **`scripts/bootstrap-master.sh`** (Linux/macOS hosts, or Windows
+  hosts running WSL/Git Bash).
+
+Each does the same three things:
+
+1. Run the local Tailscale CLI (`tailscale status --json` on POSIX,
+   `tailscale.exe status --json` on Windows). Parse `Self.DNSName`,
+   strip the trailing dot, compose `http://<dnsname>:<port>` (port
+   from a `MASTER_PORT` env var, default 5001). On failure, exit
+   with a clear "Tailscale not detected — set MASTER_PUBLIC_URL
+   manually and re-run" message rather than starting the container
+   with a bad URL.
+2. Export `MASTER_PUBLIC_URL` (and `MASTER_PORT` if overridden) into
+   the env, then run `docker compose up -d`.
+3. Print the resulting download link (`<MASTER_PUBLIC_URL>/download/mac`)
+   so the operator can copy it to other devices without opening
+   the wizard at all once the master is past first-run.
+
+The script is the *recommended* startup path; running `docker
+compose up` directly still works as long as the operator sets
+`MASTER_PUBLIC_URL` themselves.
+
+`docker-compose.yml` reads:
+
+```yaml
+services:
+  dapmanager:
+    environment:
+      MASTER_PUBLIC_URL: ${MASTER_PUBLIC_URL:-}
+```
+
+so a missing env var passes through cleanly to the wizard's manual-
+entry path.
 
 ### Piece 1 — `/download/mac` endpoint
 
@@ -77,7 +135,10 @@ Implementation pieces:
     pure stream-rewrite, returns the modified zip bytes (or yields
     chunks for streaming responses).
 - **`web_server.py`** — new `/download/mac` route.
-  - Reads `public_master_url` from config (fallback: `request.host_url`).
+  - Reads `public_master_url` from config. Refuses to serve (HTTP
+    409 with a clear message) when it's unset, since serving a
+    bundle pinned to `localhost` or a LAN IP that isn't reachable
+    from satellites is a worse outcome than failing loudly.
   - Reads `api_token` from config; if set, enforces it on this route
     and embeds it in the artifact.
   - Returns a `application/zip` response with `Content-Disposition:
@@ -125,7 +186,7 @@ step's required fields are valid.
 |---|---|---|---|
 | 1 | Role | role: master / satellite / standalone | Defaults to master. Changes which subsequent steps render. |
 | 2 | Library paths | music_library_path, downloads_path, dap_mount_point | Inline-validated via `POST /api/setup/validate-path`. |
-| 3 | Public URL | public_master_url (auto-filled from `tailscale status --json` if available) | Master + standalone only; satellite uses `dap_manager_host_url` instead. |
+| 3 | Public URL | public_master_url (auto-filled from `MASTER_PUBLIC_URL` env, then in-container `tailscale status --json`, else blank) | Master + standalone only; satellite uses `dap_manager_host_url` instead. Help text explains the env-var path for Docker users. |
 | 4 | Integrations | jellyfin_url + key + user_id, lidarr_url + key, spotify_client_id + secret, acoustid_api_key | All optional. Collapsed by default; expand-per-service. |
 | 5 | Auth | api_token (optional; "leave blank for open LAN mode") | Generates a default with a "regenerate" button if user wants one. |
 | 6 | Done — share with devices | (no fields) | Shows `/download/mac` URL, "Copy link" button, QR code. Master + standalone only. |
@@ -139,10 +200,15 @@ Backend changes:
   noted when retiring `desktop_app.py`).
 - **`/api/setup/validate-path`** — POST `{path: str, kind:
   "directory"|"file"}` → `{ok: bool, message?: str}`. Used by step 2.
-- **`/api/setup/detect-tailscale`** — GET → `{detected: bool, url?:
-  str, hostname?: str, error?: str}`. Subprocesses `tailscale status
-  --json`, parses `Self.DNSName` (strip trailing dot), composes
-  `http://<dnsname>:<listen_port>`. Used by step 3 to pre-fill.
+- **`/api/setup/detect-public-url`** — GET → `{source: "env" |
+  "tailscale" | "none", url?: str, hostname?: str, error?: str}`.
+  Tries detection paths in order: `MASTER_PUBLIC_URL` env var, then
+  `tailscale status --json` (subprocess with 2s timeout, parses
+  `Self.DNSName`, strips trailing dot, composes
+  `http://<dnsname>:<listen_port>`). Returns the first hit. Used by
+  step 3 to pre-fill; the wizard surfaces `source` so the help text
+  can explain *where* the suggestion came from ("from
+  `MASTER_PUBLIC_URL`" vs "from local Tailscale").
 
 QR code in step 6: a tiny client-side library (`qrcode-svg`,
 `~5KB`) renders the download URL inline. Avoids a server round-trip
@@ -150,7 +216,7 @@ and keeps the wizard a single static template.
 
 ---
 
-## Tailscale auto-detect
+## Public URL detection
 
 `tailscale status --json` returns:
 
@@ -164,20 +230,28 @@ and keeps the wizard a single static template.
 }
 ```
 
-Detection logic:
+The same parsing logic appears in two places — once in the host
+bootstrap script (POSIX + PowerShell variants), once in
+`/api/setup/detect-public-url` for non-Docker installs and the
+sidecar-Tailscale case:
 
 1. Subprocess `tailscale status --json` with a 2s timeout.
 2. If exit 0 and `Self.DNSName` is non-empty: strip trailing dot,
-   compose `http://<dnsname>:<port>` where `port` = the master's
-   listen port (from env `DAPMANAGER_PORT`, default 5001). Return.
+   compose `http://<dnsname>:<port>` where `port` = `MASTER_PORT`
+   env (default 5001). Return.
 3. Else if `Self.TailscaleIPs[0]` (IPv4) is set: fall back to that.
    MagicDNS may be disabled in the Tailnet — IP still works.
-4. Else (binary missing, daemon down, exit non-zero): return
-   `{detected: false}` and let the wizard show an empty field.
+4. Else (binary missing, daemon down, exit non-zero):
+   - Bootstrap script: exits with a clear error so the operator
+     knows to set `MASTER_PUBLIC_URL` manually.
+   - `/api/setup/detect-public-url`: returns `{source: "none"}` and
+     lets the wizard show an empty field.
 
-The wizard pre-fills but never blocks on the detection — if the
-user knows their address better (custom DNS, reverse proxy, port
-override), they overtype.
+The wizard *prefers* `MASTER_PUBLIC_URL` from the env when set
+(populated by the bootstrap script), only running its own detection
+when the env is empty. Whichever path produces a URL, the user can
+overtype it — multiple Tailnets, custom DNS, reverse proxies, port
+overrides etc. all need the manual override.
 
 ---
 
@@ -185,7 +259,22 @@ override), they overtype.
 
 Each is one feat commit + one docs commit, same cadence as Stage 8.
 
-### 9a — CI Mac build *(no app changes; highest ratio)*
+### 9a — Host bootstrap scripts *(no app changes; covers the Docker-on-Windows path)*
+
+- New `scripts/bootstrap-master.sh` (POSIX) and
+  `scripts/bootstrap-master.ps1` (Windows). Both detect Tailscale,
+  export `MASTER_PUBLIC_URL`, run `docker compose up -d`, print the
+  download link.
+- `docker-compose.yml` updated to pass `MASTER_PUBLIC_URL` through.
+- README section under "Running the master" pointing at the
+  scripts as the recommended startup path.
+- Acceptance: on a Tailnet-connected Windows host, running
+  `.\scripts\bootstrap-master.ps1` brings up the container with
+  `MASTER_PUBLIC_URL` already set to the host's MagicDNS URL; the
+  wizard's step 3 pre-fills correctly without the operator typing
+  anything.
+
+### 9b — CI Mac build *(no app changes)*
 
 - New `.github/workflows/desktop-mac.yml`. Triggers on tags
   matching `desktop-v*`. Runs on `macos-latest`. Caches
@@ -196,7 +285,7 @@ Each is one feat commit + one docs commit, same cadence as Stage 8.
 - Acceptance: pushing a `desktop-v0.0.1` tag produces a release with
   a downloadable zip. No DAPManager source changes.
 
-### 9b — `/download/mac` endpoint + bundle injection
+### 9c — `/download/mac` endpoint + bundle injection
 
 - Add `src/satellite_bundle.py` (cache + zip rewrite).
 - Add `/download/mac` route in `web_server.py`. Token-gated when
@@ -208,7 +297,7 @@ Each is one feat commit + one docs commit, same cadence as Stage 8.
   && unzip -p out.zip Contents/Resources/master_url.txt` echoes the
   configured URL.
 
-### 9c — Tauri first-run pickup
+### 9d — Tauri first-run pickup
 
 - `src-tauri/src/main.rs` setup hook: read resource files, write
   `config.json` if absent. Tested by mocking
@@ -220,7 +309,7 @@ Each is one feat commit + one docs commit, same cadence as Stage 8.
   album grid with that URL pre-filled in Settings, and the Sync
   screen's status strip shows it as the live `master_url`.
 
-### 9d — Wizard steps 1–5 (skeleton + validation)
+### 9e — Wizard steps 1–5 (skeleton + validation)
 
 - Replace `setup.html` with a stepper template + JS state machine.
 - Add `/api/setup/validate-path` and
@@ -230,7 +319,7 @@ Each is one feat commit + one docs commit, same cadence as Stage 8.
   install produces an identical-shape `config.json` to the current
   flow (diff-tested in `tests/test_setup_flow.py`).
 
-### 9e — Wizard step 6 (share with devices)
+### 9f — Wizard step 6 (share with devices)
 
 - Final step renders `/download/mac` URL, a Copy button, and an
   inline SVG QR code.
@@ -238,9 +327,11 @@ Each is one feat commit + one docs commit, same cadence as Stage 8.
   working download link; clicking it on a *different* Mac on the
   Tailnet retrieves a configured `.app`.
 
-Ordering: 9a → 9b → 9c form the end-to-end satellite story. 9d can
-land in parallel with 9b/9c since it's independent. 9e gates on 9b
-being live.
+Ordering: 9a unblocks the operator's Docker-on-Windows path. 9b →
+9c → 9d form the end-to-end binary-distribution story. 9e (wizard
+skeleton) can land in parallel with 9b/9c/9d since it's independent.
+9f gates on 9c being live (download link works) and surfaces it in
+the UI.
 
 ---
 
