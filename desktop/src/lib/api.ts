@@ -267,6 +267,106 @@ export async function saveConfig(
   };
 }
 
+export type OrphanTrack = {
+  mbid: string;
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+  deleted_at: string | null;
+  local_path: string | null;
+};
+
+export type OrphanPlaylist = {
+  playlist_id: string;
+  name: string;
+  deleted_at: string | null;
+  track_count: number;
+};
+
+export async function fetchOrphanTracks(): Promise<OrphanTrack[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/orphans/tracks`);
+  if (!r.ok) throw new Error(`orphans/tracks: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "orphans/tracks failed");
+  return (data.tracks ?? []) as OrphanTrack[];
+}
+
+export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/orphans/playlists`);
+  if (!r.ok) throw new Error(`orphans/playlists: ${r.status}`);
+  const data = await r.json();
+  if (!data.success)
+    throw new Error(data.message ?? "orphans/playlists failed");
+  return (data.playlists ?? []) as OrphanPlaylist[];
+}
+
+export async function restoreTrack(mbid: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/tracks/${encodeURIComponent(mbid)}/restore`,
+    { method: "POST" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export async function purgeTrack(mbid: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/tracks/${encodeURIComponent(mbid)}?purge=true`,
+    { method: "DELETE" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export async function deleteTrackFile(mbid: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/tracks/${encodeURIComponent(mbid)}/file`,
+    { method: "DELETE" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export async function restorePlaylist(pid: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/playlists/${encodeURIComponent(pid)}/restore`,
+    { method: "POST" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export async function purgePlaylist(pid: string): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/playlists/${encodeURIComponent(pid)}?purge=true`,
+    { method: "DELETE" },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
 export type IncompleteAlbum = {
   artist: string;
   album: string;

@@ -10,6 +10,7 @@ import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
 import AuditScreen from "./screens/AuditScreen";
 import FleetScreen from "./screens/FleetScreen";
+import OrphansScreen from "./screens/OrphansScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import SongsScreen from "./screens/SongsScreen";
 import SyncScreen from "./screens/SyncScreen";
@@ -166,6 +167,14 @@ function App() {
     }
     if (screen === "fleet") {
       return <FleetScreen ready={status === "ready"} />;
+    }
+    if (screen === "orphans") {
+      return (
+        <OrphansScreen
+          ready={status === "ready"}
+          onPlaylistsChanged={bumpPlaylists}
+        />
+      );
     }
     if (screen === "settings") {
       return (
