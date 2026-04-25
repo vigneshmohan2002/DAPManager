@@ -259,20 +259,33 @@ overrides etc. all need the manual override.
 
 Each is one feat commit + one docs commit, same cadence as Stage 8.
 
-### 9a — Host bootstrap scripts *(no app changes; covers the Docker-on-Windows path)*
+### 9a — Host bootstrap scripts — _Shipped (`6fc110d`)_
 
-- New `scripts/bootstrap-master.sh` (POSIX) and
-  `scripts/bootstrap-master.ps1` (Windows). Both detect Tailscale,
-  export `MASTER_PUBLIC_URL`, run `docker compose up -d`, print the
-  download link.
-- `docker-compose.yml` updated to pass `MASTER_PUBLIC_URL` through.
-- README section under "Running the master" pointing at the
-  scripts as the recommended startup path.
-- Acceptance: on a Tailnet-connected Windows host, running
-  `.\scripts\bootstrap-master.ps1` brings up the container with
-  `MASTER_PUBLIC_URL` already set to the host's MagicDNS URL; the
-  wizard's step 3 pre-fills correctly without the operator typing
-  anything.
+Decisions worth preserving:
+
+- **Two siblings, not one cross-shell script.** POSIX uses `tailscale
+  status --json | python3` because python3 is universal on macOS/Linux
+  and the JSON parse is two lines. PowerShell uses native
+  `ConvertFrom-Json` and a `Resolve-TailscaleCli` helper that also
+  checks `Program Files\Tailscale\tailscale.exe` since Windows
+  installers don't always put the CLI on `PATH`. Trying to bridge both
+  with WSL or pwsh-on-mac would have added a runtime dependency for no
+  payoff — the scripts are short enough that duplicating the logic is
+  cheaper than abstracting it.
+- **Detection-failure exits 1, doesn't fall through.** If Tailscale
+  isn't reachable we'd rather refuse to start than launch with an
+  unset `MASTER_PUBLIC_URL` — the master would then serve a download
+  bundle pinned to a URL satellites can't reach, which is a worse
+  outcome than a loud failure. Operator override is documented in the
+  exit message.
+- **`MASTER_PUBLIC_URL: ${MASTER_PUBLIC_URL:-}`** in the compose file
+  passes through *empty* when unset, so direct `docker compose up`
+  without the bootstrap script still works (wizard prompts manually).
+  An unset compose interpolation would error and block startup.
+- **`--print-only` flag** lets operators verify the detected URL
+  before booting the container — useful when debugging Tailnet
+  routing or testing the script on a host that already has the master
+  running.
 
 ### 9b — CI Mac build *(no app changes)*
 
