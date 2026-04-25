@@ -367,6 +367,60 @@ export async function purgePlaylist(pid: string): Promise<ActionResult> {
   };
 }
 
+export type DuplicateCandidate = {
+  path: string;
+  score: number;
+  is_recommended?: boolean;
+};
+
+export type DuplicateGroup = {
+  mbid: string;
+  artist: string;
+  title: string;
+  candidates: DuplicateCandidate[];
+};
+
+export async function fetchDuplicates(): Promise<DuplicateGroup[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/duplicates`);
+  if (!r.ok) throw new Error(`duplicates: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "duplicates failed");
+  return (data.duplicates ?? []) as DuplicateGroup[];
+}
+
+export type ResolveDuplicateResult = {
+  success: boolean;
+  message: string;
+  deleted: string[];
+  errors: string[];
+};
+
+export async function resolveDuplicate(
+  mbid: string,
+  keepPath: string,
+  deletePaths: string[],
+): Promise<ResolveDuplicateResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/duplicates/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mbid,
+      keep_path: keepPath,
+      delete_paths: deletePaths,
+    }),
+  });
+  const data = await r.json();
+  const inner = (data.result ?? {}) as { deleted?: string[]; errors?: string[] };
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+    deleted: inner.deleted ?? [],
+    errors: inner.errors ?? [],
+  };
+}
+
 export type IncompleteAlbum = {
   artist: string;
   album: string;
