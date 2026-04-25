@@ -319,7 +319,11 @@ future Tauri first-run wizard, and its tests don't touch Qt.
 
 ---
 
-## Stage 9 — Musicat-inspired polish
+## Stage 9 — Musicat-inspired polish — _parked_
+
+Parked while the onboarding stage runs. See
+[`docs/onboarding.md`](onboarding.md) for the master-setup-wizard +
+satellite-client-distribution work that lands first.
 
 After parity, move *beyond* PySide6. See
 `memory/reference_design_musicat.md` for the pool of ideas. Likely
