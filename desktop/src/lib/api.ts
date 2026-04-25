@@ -367,6 +367,68 @@ export async function purgePlaylist(pid: string): Promise<ActionResult> {
   };
 }
 
+export type SuggestionItem =
+  | { artist: string; title: string }
+  | { search_query: string };
+
+export type SuggestionResult = {
+  success: boolean;
+  message: string;
+  received: number;
+  queued: number;
+  skipped: number;
+};
+
+// Mirrors desktop_app.py's parse_manual_suggestions: blank / "#"
+// lines drop, "artist - title" splits, otherwise free-form query.
+export function parseManualSuggestions(text: string): SuggestionItem[] {
+  const items: SuggestionItem[] = [];
+  for (const raw of (text ?? "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const dash = line.indexOf(" - ");
+    if (dash > 0) {
+      const artist = line.slice(0, dash).trim();
+      const title = line.slice(dash + 3).trim();
+      if (artist && title) {
+        items.push({ artist, title });
+        continue;
+      }
+    }
+    items.push({ search_query: line });
+  }
+  return items;
+}
+
+export async function postSuggestions(
+  host: string,
+  items: SuggestionItem[],
+): Promise<SuggestionResult> {
+  const cleaned = host.replace(/\/+$/, "");
+  const r = await fetch(`${cleaned}/api/suggestions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!r.ok) {
+    return {
+      success: false,
+      message: `${r.status} ${r.statusText}`,
+      received: 0,
+      queued: 0,
+      skipped: 0,
+    };
+  }
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+    received: Number(data.received ?? 0),
+    queued: Number(data.queued ?? 0),
+    skipped: Number(data.skipped ?? 0),
+  };
+}
+
 export type DuplicateCandidate = {
   path: string;
   score: number;

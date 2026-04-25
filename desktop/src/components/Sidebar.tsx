@@ -59,6 +59,7 @@ const STATIC_SECTIONS: SidebarSection[] = [
       { id: "orphans", label: "Orphans" },
       { id: "fleet", label: "Fleet" },
       { id: "sync", label: "Sync" },
+      { id: "suggest", label: "Suggest" },
       { id: "settings", label: "Settings" },
     ],
   },
