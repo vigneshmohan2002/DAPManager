@@ -1072,16 +1072,19 @@ def _guess_audio_mime(path: str) -> str:
 
 @app.route("/api/healthz")
 def healthz():
-    """Liveness probe for container orchestrators.
+    """Liveness probe.
 
-    Unauthenticated and side-effect-free; returns 200 once the Flask
-    app is up and config has loaded. Exempt from the API-token gate.
+    Always 200 once Flask is serving; the body carries readiness so a
+    caller can distinguish "alive but unconfigured" (fresh install,
+    wizard not yet run) from "alive and ready". The Tauri desktop
+    bootstrap waits on alive=200 then renders the appropriate screen
+    based on `ok`. Unauthenticated, side-effect-free, exempt from the
+    API-token gate and the pre-config setup-redirect gate.
     """
-    ok = config is not None
-    return (
-        jsonify({"ok": ok, "initialized": task_manager is not None}),
-        200 if ok else 503,
-    )
+    return jsonify({
+        "ok": config is not None,
+        "initialized": task_manager is not None,
+    }), 200
 
 
 @app.route("/api/status")

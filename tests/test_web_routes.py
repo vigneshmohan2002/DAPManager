@@ -28,12 +28,12 @@ def test_healthz_unauthenticated_with_token_set(client, _token_config):
 
 
 def test_healthz_bypasses_setup_gate(client, monkeypatch, tmp_path):
-    # Pre-config liveness probe must not 302 to /setup, otherwise the
-    # Tauri desktop bootstrap reads the redirect as "backend down" and
-    # surfaces a fatal error.
+    # Pre-config liveness probe must not 302 to /setup, and must return
+    # 200 so the Tauri desktop bootstrap can distinguish "alive but
+    # unconfigured" from "backend down" via the body, not the status.
     monkeypatch.setattr('web_server.CONFIG_FILE', str(tmp_path / 'missing.json'))
     res = client.get('/api/healthz', follow_redirects=False)
-    assert res.status_code == 503
+    assert res.status_code == 200
     assert res.get_json() == {"ok": False, "initialized": False}
 
 def test_api_stats(client, mock_config):
