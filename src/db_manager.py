@@ -63,6 +63,7 @@ class Playlist:
     playlist_id: str
     name: str
     spotify_url: str
+    smart_rules: Optional[str] = None
 
 
 @dataclass
@@ -232,6 +233,9 @@ class DatabaseManager:
             if "deleted_at" not in pl_cols:
                 cursor.execute("ALTER TABLE playlists ADD COLUMN deleted_at TIMESTAMP")
                 logger.info("Added column: playlists.deleted_at")
+            if "smart_rules" not in pl_cols:
+                cursor.execute("ALTER TABLE playlists ADD COLUMN smart_rules TEXT")
+                logger.info("Added column: playlists.smart_rules")
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Schema migration failed: {e}")
@@ -793,26 +797,47 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
-    def create_playlist(self, name: str) -> str:
-        """Insert a new empty playlist with a generated UUID and return it.
+    def create_playlist(self, name: str, smart_rules: Optional[str] = None) -> str:
+        """Insert a new playlist with a generated UUID and return it.
 
-        Name is required but otherwise unconstrained; the UI is expected
-        to trim before sending. The generated id is a plain uuid4 hex so
-        it sorts distinctly from the Spotify-style ids imported via the
-        Spotify client.
+        ``smart_rules`` is the JSON-encoded ruleset (already serialized by
+        ``smart_playlist.serialize``) or None for a regular static playlist.
+        Smart playlists are auto-populated from the ruleset on read; the
+        caller doesn't insert membership rows for them.
         """
         if not name or not name.strip():
             raise ValueError("playlist name is required")
         pid = uuid.uuid4().hex
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT INTO playlists (playlist_id, name, spotify_url, updated_at) "
-            "VALUES (?, ?, '', CURRENT_TIMESTAMP)",
-            (pid, name.strip()),
+            "INSERT INTO playlists "
+            "(playlist_id, name, spotify_url, updated_at, smart_rules) "
+            "VALUES (?, ?, '', CURRENT_TIMESTAMP, ?)",
+            (pid, name.strip(), smart_rules),
         )
         self.conn.commit()
         cursor.close()
         return pid
+
+    def update_playlist_smart_rules(
+        self, playlist_id: str, smart_rules: Optional[str]
+    ) -> bool:
+        """Replace the smart_rules JSON for ``playlist_id``. Bumps updated_at
+        so the change rides the playlist delta. Returns True iff a row was
+        actually updated.
+        """
+        if not playlist_id:
+            return False
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE playlists SET smart_rules = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE playlist_id = ?",
+            (smart_rules, playlist_id),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
 
     def unlink_track_from_playlist(self, playlist_id: str, track_mbid: str) -> bool:
         """Remove a track from a playlist's membership.
@@ -1215,13 +1240,15 @@ class DatabaseManager:
 
         cursor.execute(
             """
-            INSERT INTO playlists (playlist_id, name, spotify_url, updated_at, deleted_at)
-            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+            INSERT INTO playlists
+                (playlist_id, name, spotify_url, updated_at, deleted_at, smart_rules)
+            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?)
             ON CONFLICT(playlist_id) DO UPDATE SET
                 name = excluded.name,
                 spotify_url = excluded.spotify_url,
                 updated_at = excluded.updated_at,
-                deleted_at = excluded.deleted_at
+                deleted_at = excluded.deleted_at,
+                smart_rules = excluded.smart_rules
             """,
             (
                 pid,
@@ -1229,6 +1256,7 @@ class DatabaseManager:
                 row.get("spotify_url") or "",
                 row.get("updated_at"),
                 row.get("deleted_at"),
+                row.get("smart_rules"),
             ),
         )
 
@@ -1407,12 +1435,17 @@ class DatabaseManager:
         """Live playlists with membership counts, for the web library sidebar.
 
         Orphans are excluded — the /orphans page handles those. Sort is
-        case-insensitive on name so the UI can render directly.
+        case-insensitive on name so the UI can render directly. Smart
+        playlists return their stored rules JSON; ``track_count`` for them
+        reflects only manual membership (always 0 today since add/remove
+        ops are rejected for smart playlists), not the evaluated count —
+        that would require running the rules query per playlist on every
+        sidebar render.
         """
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT p.playlist_id, p.name, p.updated_at,
+            SELECT p.playlist_id, p.name, p.updated_at, p.smart_rules,
                    COUNT(pt.track_mbid) AS track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id
@@ -1434,11 +1467,15 @@ class DatabaseManager:
         """Tracks for the web library browser — flat dict rows with
         ``local_path``/``dap_path`` so the caller can resolve availability.
 
-        When ``playlist_id`` is set, results are scoped to that playlist's
-        membership (ordered by ``track_order``). Otherwise the full live
-        library is returned, ordered like ``list_all_tracks``. ``deleted_at``
-        is included so the API layer can flag orphans.
+        When ``playlist_id`` is a static playlist, results are scoped to
+        that playlist's membership (ordered by ``track_order``). When the
+        playlist is smart (non-null ``smart_rules``), results come from
+        evaluating the ruleset against the tracks table — no ``track_order``
+        exists, so rows fall back to the standard library sort. Without a
+        playlist_id, the full live library is returned.
         """
+        from .smart_playlist import build_where, parse_stored
+
         params: tuple
         clauses = []
         if local_only:
@@ -1452,33 +1489,56 @@ class DatabaseManager:
             "COALESCE(NULLIF(t.release_mbid, ''), t.album || '|' || t.artist) AS album_id"
         )
 
-        if playlist_id:
-            sql = (
-                f"SELECT {base_cols} FROM tracks t "
-                "JOIN playlist_tracks pt ON pt.track_mbid = t.mbid "
-                "WHERE pt.playlist_id = ?"
-            )
-            if clauses:
-                sql += " AND " + " AND ".join(clauses)
-            sql += " ORDER BY pt.track_order"
-            params = (playlist_id,)
-        else:
-            sql = f"SELECT {base_cols} FROM tracks t"
-            if clauses:
-                sql += " WHERE " + " AND ".join(clauses)
-            sql += (
-                " ORDER BY t.artist COLLATE NOCASE, "
-                "t.album COLLATE NOCASE, "
-                "COALESCE(t.disc_number, 1), "
-                "COALESCE(t.track_number, 9999), "
-                "t.title COLLATE NOCASE"
-            )
-            params = ()
+        library_order = (
+            " ORDER BY t.artist COLLATE NOCASE, "
+            "t.album COLLATE NOCASE, "
+            "COALESCE(t.disc_number, 1), "
+            "COALESCE(t.track_number, 9999), "
+            "t.title COLLATE NOCASE"
+        )
 
         cursor = self.conn.cursor()
-        cursor.execute(sql, params)
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
+        try:
+            if playlist_id:
+                cursor.execute(
+                    "SELECT smart_rules FROM playlists WHERE playlist_id = ?",
+                    (playlist_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    # Unknown playlist — return empty rather than the full
+                    # library so a stale UI link doesn't dump 50k rows.
+                    return []
+                smart = parse_stored(row["smart_rules"])
+
+                if smart is not None:
+                    where, smart_params = build_where(smart)
+                    sql = f"SELECT {base_cols} FROM tracks t WHERE {where}"
+                    if clauses:
+                        sql += " AND " + " AND ".join(clauses)
+                    sql += library_order
+                    params = tuple(smart_params)
+                else:
+                    sql = (
+                        f"SELECT {base_cols} FROM tracks t "
+                        "JOIN playlist_tracks pt ON pt.track_mbid = t.mbid "
+                        "WHERE pt.playlist_id = ?"
+                    )
+                    if clauses:
+                        sql += " AND " + " AND ".join(clauses)
+                    sql += " ORDER BY pt.track_order"
+                    params = (playlist_id,)
+            else:
+                sql = f"SELECT {base_cols} FROM tracks t"
+                if clauses:
+                    sql += " WHERE " + " AND ".join(clauses)
+                sql += library_order
+                params = ()
+
+            cursor.execute(sql, params)
+            rows = [dict(r) for r in cursor.fetchall()]
+        finally:
+            cursor.close()
         return rows
 
     def get_playlists_since(self, since_iso: Optional[str] = None) -> List[dict]:
@@ -1493,14 +1553,15 @@ class DatabaseManager:
         cursor = self.conn.cursor()
         if since_iso:
             cursor.execute(
-                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at "
-                "FROM playlists WHERE updated_at > ? ORDER BY updated_at ASC",
+                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at, "
+                "smart_rules FROM playlists WHERE updated_at > ? "
+                "ORDER BY updated_at ASC",
                 (since_iso,),
             )
         else:
             cursor.execute(
-                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at "
-                "FROM playlists ORDER BY updated_at ASC"
+                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at, "
+                "smart_rules FROM playlists ORDER BY updated_at ASC"
             )
         playlists = [dict(row) for row in cursor.fetchall()]
 
@@ -1627,10 +1688,12 @@ class DatabaseManager:
     def _row_to_playlist(self, row):
         if not row:
             return None
+        keys = row.keys() if hasattr(row, "keys") else ()
         return Playlist(
             playlist_id=row["playlist_id"],
             name=row["name"],
             spotify_url=row["spotify_url"],
+            smart_rules=row["smart_rules"] if "smart_rules" in keys else None,
         )
 
     def get_library_stats(self) -> dict:
