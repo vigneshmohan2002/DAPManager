@@ -131,6 +131,23 @@ export function albumCoverUrl(base: string, albumId: string): string {
   return `${base}/api/library/albums/${encodeURIComponent(albumId)}/cover`;
 }
 
+export type ArtistInfo = {
+  summary: string;
+  source_url: string | null;
+  image_url: string | null;
+  title: string;
+};
+
+export async function fetchArtistInfo(name: string): Promise<ArtistInfo | null> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/artists/${encodeURIComponent(name)}/info`,
+  );
+  if (!r.ok) return null;
+  const data = await r.json();
+  return data.success ? (data.info as ArtistInfo) : null;
+}
+
 export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
   const url = await backendUrl();
   const r = await fetch(

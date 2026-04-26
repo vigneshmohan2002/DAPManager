@@ -36,6 +36,32 @@ def test_healthz_bypasses_setup_gate(client, monkeypatch, tmp_path):
     assert res.status_code == 200
     assert res.get_json() == {"ok": False, "initialized": False}
 
+def test_artist_info_returns_summary_when_client_has_one(client, mock_config):
+    fake = {
+        "summary": "Beck is an American musician.",
+        "source_url": "https://en.wikipedia.org/wiki/Beck",
+        "image_url": None,
+        "title": "Beck",
+    }
+    with patch('src.wikipedia_client.get_artist_summary', return_value=fake) as mock_get:
+        res = client.get('/api/library/artists/Beck/info')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body == {"success": True, "info": fake}
+    mock_get.assert_called_once_with("Beck")
+
+
+def test_artist_info_returns_success_false_on_miss(client, mock_config):
+    with patch('src.wikipedia_client.get_artist_summary', return_value=None):
+        res = client.get('/api/library/artists/Unknown%20Band/info')
+    # Misses are 200/success:false (not HTTP 404) so the UI can render
+    # an empty state without console noise.
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body == {"success": False, "message": "no summary"}
+
+
 def test_api_stats(client, mock_config):
     """Test stats endpoint. Mocks DB interaction."""
     # We need to mock DatabaseManager within web_server context

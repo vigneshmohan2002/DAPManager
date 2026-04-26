@@ -913,6 +913,29 @@ def api_library_artists():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/artists/<path:name>/info")
+def api_library_artist_info(name: str):
+    """Wikipedia summary for an artist, used by the desktop infoscreen.
+
+    Returns a success:false body (HTTP 200) on misses rather than 404 so the
+    UI can render a quiet empty-state without console noise. Network/parse
+    failures inside the client also fold to success:false — they're cached as
+    misses so the screen doesn't retry on every mount.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        from src.wikipedia_client import get_artist_summary
+
+        info = get_artist_summary(name)
+        if info is None:
+            return jsonify({"success": False, "message": "no summary"})
+        return jsonify({"success": True, "info": info})
+    except Exception as e:
+        logger.exception("api_library_artist_info failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/albums/<path:album_id>/cover")
 def api_library_album_cover(album_id: str):
     """Return embedded cover art for an album, or 404 if none."""
