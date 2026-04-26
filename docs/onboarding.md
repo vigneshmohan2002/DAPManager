@@ -316,17 +316,41 @@ Decisions worth preserving:
   points it at `desktop/src-tauri` since that's where the Cargo
   workspace root lives.
 
-### 9c — `/download/mac` endpoint + bundle injection
+### 9c — `/download/mac` endpoint + bundle injection — _Shipped (`4d69701`)_
 
-- Add `src/satellite_bundle.py` (cache + zip rewrite).
-- Add `/download/mac` route in `web_server.py`. Token-gated when
-  `api_token` is set. Streams the rewritten zip.
-- Add `tests/test_satellite_bundle.py` covering: cache hit, cache
-  miss, fetch failure, injection adds the right entries without
-  breaking existing ones.
-- Acceptance: `curl -L http://localhost:5001/download/mac > out.zip
-  && unzip -p out.zip Contents/Resources/master_url.txt` echoes the
-  configured URL.
+Decisions worth preserving:
+
+- **Inject per-request, not per-cache-write.** The cached zip on
+  disk stays as the unmodified upstream artifact; injection runs at
+  request time off `public_master_url` and `api_token` from
+  config.json. Means an operator can rotate `public_master_url` or
+  the token from Settings and the next download reflects it
+  immediately without busting `cache/desktop-bundle/<tag>.zip`.
+- **`?token=` query alongside `Authorization: Bearer`.** Browsers
+  can't natively send Bearer headers from a clicked link, and the
+  wizard's step-6 share screen needs a clickable URL. Query-string
+  tokens are usually a leak risk, but here the deployment is
+  Tailnet/LAN-only and the same token is embedded in the bundle the
+  request returns — there's nothing in the URL the recipient
+  doesn't already get. `hmac.compare_digest` covers the comparison.
+- **`_read_master_config_for_download` re-reads config.json** rather
+  than going through the `config` global. Right after the wizard
+  completes, the in-process `init_app_logic` hasn't necessarily
+  re-fired yet, so the global can be stale. Re-reading from disk
+  costs one syscall per download and removes the timing dependency.
+- **`/download/mac` is whitelisted in `check_setup`** so the route
+  returns 409 with a useful message instead of 302-redirecting a
+  satellite browser to `/setup`. A redirect to a setup wizard from
+  a satellite POV is a confusing dead end.
+- **`DATA_DIR` env var, not a new config field, anchors the cache.**
+  Matches what `scripts/docker-entrypoint.sh` already exports;
+  non-Docker installs fall through to `cwd/cache/desktop-bundle/`.
+  Adding a `bundle_cache_dir` config key would have been one more
+  thing for the Settings screen to surface — not worth it.
+- **Fetch failure → 502, not 500.** The upstream is GitHub; a
+  network blip there isn't a master bug. The 502 message points
+  the operator at outbound connectivity rather than the master's
+  logs.
 
 ### 9d — Tauri first-run pickup
 
