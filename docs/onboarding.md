@@ -1,7 +1,7 @@
 # Onboarding — Master setup wizard + satellite client distribution
 
-Status: **active stage** (post-Stage 8, pre-Stage 9). Stage 9
-(Musicat-inspired polish) is parked until this lands.
+Status: **shipped** (all six sub-stages, 9a–9f). Stage 9
+(Musicat-inspired polish) is the next focus.
 
 The goal is a two-click satellite onboarding flow:
 
@@ -433,13 +433,40 @@ Decisions worth preserving:
   scrolling past 12 empty inputs. Lidarr is master-only, so the
   satellite/standalone flows don't see it at all.
 
-### 9f — Wizard step 6 (share with devices)
+### 9f — Wizard step 6 (share with devices) — _Shipped (`a015d78`)_
 
-- Final step renders `/download/mac` URL, a Copy button, and an
-  inline SVG QR code.
-- Acceptance: completing the wizard lands on a screen with a
-  working download link; clicking it on a *different* Mac on the
-  Tailnet retrieves a configured `.app`.
+Decisions worth preserving:
+
+- **Save between step 5 and step 6**, not at the end. Step 6's
+  content (the share link) depends on the saved `public_master_url`
+  — rendering it before save would mean trusting the user typed it
+  identically twice. Saving first, then advancing, lets the share
+  step render off the persisted value with no ambiguity.
+- **Back disabled on step 6.** Once saved, going back to step 5 and
+  hitting Next would re-submit. Locking the back button is cheaper
+  than making the save endpoint defend against re-submits.
+- **`?token=` in the share URL when one is set.** Browsers can't
+  send Bearer headers from a clicked link, so the share link
+  embeds the token via query string for the Mac-double-click flow.
+  The wizard shows a "treat like a credential" warning so operators
+  know what they're handing out. Open mode (no token) gets a
+  different copy that says it's reachable to anyone on the Tailnet.
+- **QR via CDN, fail-soft.** `qrcode@1.5.3` from jsdelivr is loaded
+  with `defer`; `renderQr` checks for `window.QRCode` and silently
+  hides the QR card if the lib didn't load (offline master, blocked
+  CDN). The link + Copy button always work — QR is the nicety, not
+  the contract. SVG output (`type: 'svg'`) keeps it crisp at any
+  display size and stays inside the page DOM.
+- **`navigator.clipboard.writeText` with a fallback message.** No
+  hidden textarea + execCommand fallback; if clipboard is blocked
+  the copy-status text tells the operator to select-and-copy
+  manually. Modern browsers all support the async clipboard API on
+  HTTPS / localhost / Tailnet hosts.
+- **Satellite gets a "You're set" confirmation, not a hard
+  redirect.** Symmetric flow — every role passes through six steps
+  — and the confirmation page is a useful "hand-off, click
+  Finish" beat instead of a jarring jump straight to the album
+  grid.
 
 Ordering: 9a unblocks the operator's Docker-on-Windows path. 9b →
 9c → 9d form the end-to-end binary-distribution story. 9e (wizard
@@ -464,3 +491,25 @@ the UI.
 When all of that is true, this doc gets a *Shipped* marker per
 sub-stage like `desktop-rewrite.md`, and Stage 9 (Musicat polish)
 becomes the next focus.
+
+---
+
+## Onboarding stage exit
+
+All six sub-stages shipped. Real-world acceptance test still wants
+a fresh master + fresh satellite on the same Tailnet to walk the
+end-to-end flow once; until that happens the on-disk pieces work
+in isolation but the loop is unverified. Carryover for the next
+session:
+
+- **`master_url` / `dap_manager_host_url` unification.** The seed
+  writes both because `SuggestScreen.tsx` reads
+  `dap_manager_host_url` directly from `/api/config`. Folding that
+  field into `master_url` and pruning the duplicate from
+  `config_keys.py` is straightforward but out of onboarding scope.
+- **`DESKTOP_RELEASE_TAG` bump after first CI release.** The
+  constant in `src/satellite_bundle.py` is `desktop-v0.1.0` —
+  needs to match whatever tag the 9b workflow attaches its first
+  zip to before /download/mac will resolve.
+
+Stage 9 (Musicat-inspired polish) is the next focus.
