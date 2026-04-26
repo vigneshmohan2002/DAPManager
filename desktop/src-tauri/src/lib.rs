@@ -9,11 +9,13 @@
 // surface the browser already uses — so no serde contracts between
 // Rust and Python are needed. Rust just babysits the process.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use tauri::{Manager, RunEvent, State};
+
+mod seed_config;
 
 const DEFAULT_BACKEND_PORT: u16 = 5001;
 
@@ -30,19 +32,27 @@ impl BackendHandle {
         }
     }
 
-    fn spawn(&self, project_root: PathBuf, python: String) -> std::io::Result<()> {
+    fn spawn(
+        &self,
+        project_root: PathBuf,
+        python: String,
+        config_path: Option<&Path>,
+    ) -> std::io::Result<()> {
         let mut guard = self.child.lock().unwrap();
         if guard.is_some() {
             return Ok(());
         }
         let script = project_root.join("web_server.py");
-        let child = Command::new(&python)
-            .arg(&script)
+        let mut cmd = Command::new(&python);
+        cmd.arg(&script)
             .current_dir(&project_root)
             .env("DAPMANAGER_PORT", self.port.to_string())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        if let Some(p) = config_path {
+            cmd.env("DAPMANAGER_CONFIG", p);
+        }
+        let child = cmd.spawn()?;
         *guard = Some(child);
         Ok(())
     }
@@ -92,7 +102,42 @@ pub fn run() {
             let state: State<BackendHandle> = app.state();
             let root = resolve_project_root();
             let python = resolve_python();
-            if let Err(e) = state.spawn(root.clone(), python.clone()) {
+
+            let home = app.path().home_dir().ok();
+            let config_path = home
+                .as_deref()
+                .map(seed_config::platform_config_path);
+
+            if let (Some(home_dir), Some(cfg_path)) = (home.as_deref(), config_path.as_deref()) {
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    match seed_config::seed_satellite_config(
+                        cfg_path,
+                        &resource_dir,
+                        home_dir,
+                    ) {
+                        Ok(seed_config::SeedOutcome::Seeded { master_url, has_token }) => {
+                            eprintln!(
+                                "DAPManager: seeded satellite config at {} (master={}, token={})",
+                                cfg_path.display(),
+                                master_url,
+                                if has_token { "yes" } else { "no" }
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!(
+                            "DAPManager: seed_satellite_config failed at {}: {}",
+                            cfg_path.display(),
+                            e
+                        ),
+                    }
+                }
+            }
+
+            if let Err(e) = state.spawn(
+                root.clone(),
+                python.clone(),
+                config_path.as_deref(),
+            ) {
                 eprintln!(
                     "DAPManager: failed to spawn Python backend ({} at {}): {}",
                     python,
