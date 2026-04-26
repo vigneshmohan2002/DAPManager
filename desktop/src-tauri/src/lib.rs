@@ -13,11 +13,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
-use tauri::{Manager, RunEvent, State};
+use tauri::{Manager, PhysicalSize, RunEvent, State, WebviewWindow, WindowEvent};
 
 mod seed_config;
 
 const DEFAULT_BACKEND_PORT: u16 = 5001;
+
+// Mini-player threshold. Matches the size we set from the JS side
+// (`enterMiniPlayer` in `lib/window.ts`); the small buffer absorbs
+// rounding when the OS's logical size lands a pixel off after the
+// scale-factor round-trip.
+const MINI_PLAYER_SIZE: u32 = 220;
 
 struct BackendHandle {
     child: Mutex<Option<Child>>,
@@ -90,6 +96,28 @@ fn backend_url(state: State<BackendHandle>) -> String {
     format!("http://127.0.0.1:{}", state.port)
 }
 
+// When the main window shrinks to mini-player size, drop OS chrome
+// and pin it always-on-top across spaces. Reverse on grow-back.
+// Hooked to `WindowEvent::Resized` so a manual resize works too —
+// not just the scripted one from `enterMiniPlayer`.
+fn handle_mini_player_chrome(window: &WebviewWindow, size: &PhysicalSize<u32>) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let width = (size.width as f64 / scale).round() as u32;
+    let height = (size.height as f64 / scale).round() as u32;
+    let is_decorated = window.is_decorated().unwrap_or(true);
+
+    let in_mini = width <= MINI_PLAYER_SIZE && height <= MINI_PLAYER_SIZE;
+    if in_mini && is_decorated {
+        let _ = window.set_decorations(false);
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_visible_on_all_workspaces(true);
+    } else if !in_mini && !is_decorated {
+        let _ = window.set_decorations(true);
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_visible_on_all_workspaces(false);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let handle = BackendHandle::new(DEFAULT_BACKEND_PORT);
@@ -99,6 +127,15 @@ pub fn run() {
         .manage(handle)
         .invoke_handler(tauri::generate_handler![backend_url])
         .setup(|app| {
+            if let Some(main_window) = app.get_webview_window("main") {
+                let window_for_handler = main_window.clone();
+                main_window.on_window_event(move |event| {
+                    if let WindowEvent::Resized(size) = event {
+                        handle_mini_player_chrome(&window_for_handler, size);
+                    }
+                });
+            }
+
             let state: State<BackendHandle> = app.state();
             let root = resolve_project_root();
             let python = resolve_python();

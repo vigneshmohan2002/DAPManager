@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import MiniPlayer from "./components/MiniPlayer";
 import PlayerBar from "./components/PlayerBar";
 import QueuePanel from "./components/QueuePanel";
 import SearchOverlay from "./components/SearchOverlay";
@@ -29,6 +30,14 @@ function App() {
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Mini-player mode is purely a layout switch — same window, same
+  // PlayerProvider, same audio element. Triggered by the user
+  // shrinking the window via `enterMiniPlayer` (or by hand).
+  const [isMini, setIsMini] = useState(
+    typeof window !== "undefined" &&
+      window.innerWidth <= 220 &&
+      window.innerHeight <= 220,
+  );
   // When another screen routes to Settings to demand a missing config
   // key (e.g. Identify & Tag needs acoustid_api_key in Stage 7b), it
   // sets this so the Settings screen can scroll + flash the row.
@@ -81,6 +90,14 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsMini(window.innerWidth <= 220 && window.innerHeight <= 220);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -204,34 +221,41 @@ function App() {
   return (
     <ToastProvider>
       <PlayerProvider>
-        <div className="h-screen w-screen flex flex-col">
-          <div className="flex-1 flex min-h-0">
-            <Sidebar
-              activeId={activeSidebarId}
-              onSelect={handleSidebarSelect}
-              onOpenSearch={() => setSearchOpen(true)}
-              ready={status === "ready"}
-              playlistsVersion={playlistsVersion}
-              onPlaylistsChanged={bumpPlaylists}
-              onPlaylistCreated={handlePlaylistCreated}
-              onPlaylistDeleted={handlePlaylistDeleted}
+        {isMini ? (
+          <MiniPlayer />
+        ) : (
+          <div className="h-screen w-screen flex flex-col">
+            <div className="flex-1 flex min-h-0">
+              <Sidebar
+                activeId={activeSidebarId}
+                onSelect={handleSidebarSelect}
+                onOpenSearch={() => setSearchOpen(true)}
+                ready={status === "ready"}
+                playlistsVersion={playlistsVersion}
+                onPlaylistsChanged={bumpPlaylists}
+                onPlaylistCreated={handlePlaylistCreated}
+                onPlaylistDeleted={handlePlaylistDeleted}
+              />
+              <main className="flex-1 flex flex-col min-w-0">
+                {renderScreen()}
+              </main>
+              <QueuePanel
+                open={queueOpen}
+                onClose={() => setQueueOpen(false)}
+              />
+            </div>
+            <PlayerBar
+              queueOpen={queueOpen}
+              onToggleQueue={() => setQueueOpen((q) => !q)}
             />
-            <main className="flex-1 flex flex-col min-w-0">
-              {renderScreen()}
-            </main>
-            <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
+            <SearchOverlay
+              open={searchOpen}
+              onClose={() => setSearchOpen(false)}
+              onOpenAlbum={openAlbumFromSearch}
+              onOpenArtist={openArtistFromSearch}
+            />
           </div>
-          <PlayerBar
-            queueOpen={queueOpen}
-            onToggleQueue={() => setQueueOpen((q) => !q)}
-          />
-          <SearchOverlay
-            open={searchOpen}
-            onClose={() => setSearchOpen(false)}
-            onOpenAlbum={openAlbumFromSearch}
-            onOpenArtist={openArtistFromSearch}
-          />
-        </div>
+        )}
       </PlayerProvider>
     </ToastProvider>
   );

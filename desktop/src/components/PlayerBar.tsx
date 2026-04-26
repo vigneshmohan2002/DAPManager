@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { albumCoverUrl, backendUrl } from "../lib/api";
+import { enterMiniPlayer } from "../lib/window";
 import { usePlayer } from "../player/PlayerContext";
 
 function fmt(secs: number): string {
@@ -106,6 +107,15 @@ export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
           }`}
         >
           ☰
+        </button>
+        <button
+          onClick={() => {
+            enterMiniPlayer().catch(() => {});
+          }}
+          aria-label="Enter mini-player"
+          className="w-9 h-9 rounded-md text-sm hover:text-[var(--color-text)] hover:bg-[var(--color-surface)]/60"
+        >
+          ⤡
         </button>
       </div>
     </footer>
