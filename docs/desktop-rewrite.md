@@ -373,15 +373,54 @@ Decisions worth preserving:
   fine for the bar's pixel velocity. Switching to RAF is cheap if
   smoother visuals matter later.
 
+### 9 / artist infoscreen — _Shipped (this commit)_
+
+Wikipedia-summary card on `ArtistDetailScreen`, above the album
+grid. Skeleton on load, hidden on miss, links out to Wikipedia
+on hit.
+
+Decisions worth preserving:
+
+- **Wikipedia REST API direct, not via MusicBrainz first.** The
+  obvious "right" path is MB → artist MBID → URL relation →
+  Wikipedia title, but that's three round-trips per artist for
+  marginal disambiguation gain. Bare-name lookup with a
+  "<name> (band)" fallback hits the right page in the common case
+  with one or two HTTP calls. If a future user complains about
+  wrong-page hits ("Pink" → the colour), revisit.
+- **Disambiguation pages → treat as miss.** Wikipedia returns
+  `type: "disambiguation"` with an extract like "X may refer to:".
+  Showing that is worse than showing nothing, so the client folds
+  it to None and falls back to "(band)".
+- **Process-local cache, both positive and negative.** Repeat
+  visits to the same artist within a session don't re-hit
+  Wikipedia. Negative caching is important too — if a name
+  doesn't resolve, retrying on every screen mount just wastes
+  network and the user's attention.
+- **HTTP 200 / `success: false` on miss, not 404.** Same shape as
+  the rest of the API; the client renders a quiet empty-state
+  rather than logging a console error on every artist without a
+  Wikipedia page.
+- **No discography timeline.** The original sketch was "Wikipedia
+  summary + discography timeline", but the DB has no
+  release-year column — adding one means schema migration plus MB
+  release-group browse calls. Deferred until users ask; the album
+  grid below already shows what we have.
+- **`contact_email`-derived User-Agent.** Reuses the
+  MusicBrainz-client identity rather than minting a new one;
+  Wikipedia's etiquette is satisfied either way and config-key
+  surface stays small.
+
 ### Remaining picks (not yet started)
 
 - Smart playlists (rule-based, evaluated server-side). Needs new
   schema: `smart_playlist_rules` table or a JSON column on
   `playlists`.
-- Artist infoscreen: Wikipedia summary + discography timeline.
-  Read-only; Wikipedia lookup via existing `contact_email` UA.
 - Listening stats tab (needs a `play_events` table — schema change,
   not trivial).
+- Discography timeline with release years (release-year column +
+  MB release-group browse, gated on artist infoscreen having
+  enough adoption to justify the schema work).
 
 ---
 
