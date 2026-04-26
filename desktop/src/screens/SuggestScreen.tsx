@@ -12,7 +12,7 @@ type Props = {
   onOpenSettings: (focusKey?: string) => void;
 };
 
-const HOST_KEY = "dap_manager_host_url";
+const HOST_KEY = "master_url";
 
 export default function SuggestScreen({ ready, onOpenSettings }: Props) {
   const [host, setHost] = useState<string | null>(null);
