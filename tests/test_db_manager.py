@@ -1277,3 +1277,104 @@ def test_rename_playlist_rejects_missing_id_or_empty_name(db):
     assert db.rename_playlist(pid, "") is False
     assert db.rename_playlist(pid, "   ") is False
     assert db.rename_playlist("nonexistent-id", "X") is False
+
+
+# --- Smart playlists -------------------------------------------------------
+
+def test_create_smart_playlist_persists_rules(db):
+    from src.smart_playlist import serialize
+    rules = serialize({"match": "all", "rules": [
+        {"field": "artist", "op": "contains", "value": "Beatles"}
+    ]})
+    pid = db.create_playlist("My Beatles", smart_rules=rules)
+    pl = db.get_playlist(pid)
+    assert pl.smart_rules == rules
+
+
+def test_update_playlist_smart_rules_replaces_and_bumps(db):
+    pid = db.create_playlist("Live filter")
+    assert db.get_playlist(pid).smart_rules is None
+
+    from src.smart_playlist import serialize
+    new_rules = serialize({"match": "any", "rules": [
+        {"field": "title", "op": "contains", "value": "remix"}
+    ]})
+    assert db.update_playlist_smart_rules(pid, new_rules) is True
+    assert db.get_playlist(pid).smart_rules == new_rules
+
+
+def test_smart_playlist_resolves_via_list_tracks_filtered(db):
+    from src.smart_playlist import serialize
+
+    db.add_or_update_track(Track(mbid="b1", title="Help", artist="The Beatles", album="Help!"))
+    db.add_or_update_track(Track(mbid="b2", title="Yesterday", artist="The Beatles", album="Help!"))
+    db.add_or_update_track(Track(mbid="s1", title="Satisfaction", artist="Rolling Stones", album="Out of Our Heads"))
+
+    rules = serialize({"match": "all", "rules": [
+        {"field": "artist", "op": "contains", "value": "Beatles"}
+    ]})
+    pid = db.create_playlist("Beatles auto", smart_rules=rules)
+
+    rows = db.list_tracks_filtered(playlist_id=pid)
+    mbids = sorted(r["mbid"] for r in rows)
+    assert mbids == ["b1", "b2"]
+
+
+def test_smart_playlist_combines_with_local_only_filter(db):
+    from src.smart_playlist import serialize
+
+    db.add_or_update_track(Track(mbid="b1", title="Help", artist="The Beatles", local_path="/m/b1.mp3"))
+    db.add_or_update_track(Track(mbid="b2", title="Yesterday", artist="The Beatles"))  # No local_path
+
+    rules = serialize({"match": "all", "rules": [
+        {"field": "artist", "op": "contains", "value": "Beatles"}
+    ]})
+    pid = db.create_playlist("Beatles auto", smart_rules=rules)
+
+    all_rows = db.list_tracks_filtered(playlist_id=pid)
+    local_rows = db.list_tracks_filtered(playlist_id=pid, local_only=True)
+    assert sorted(r["mbid"] for r in all_rows) == ["b1", "b2"]
+    assert [r["mbid"] for r in local_rows] == ["b1"]
+
+
+def test_unknown_playlist_id_returns_empty_not_full_library(db):
+    db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
+    rows = db.list_tracks_filtered(playlist_id="does-not-exist")
+    assert rows == []
+
+
+def test_apply_playlist_row_round_trips_smart_rules(db):
+    from src.smart_playlist import serialize
+    rules = serialize({"match": "any", "rules": [
+        {"field": "title", "op": "starts_with", "value": "Live"}
+    ]})
+    action = db.apply_playlist_row({
+        "playlist_id": "remote-1",
+        "name": "Pulled smart",
+        "smart_rules": rules,
+        "tracks": [],
+    })
+    assert action == "inserted"
+    pl = db.get_playlist("remote-1")
+    assert pl.smart_rules == rules
+
+
+def test_get_playlists_since_includes_smart_rules(db):
+    from src.smart_playlist import serialize
+    rules = serialize({"match": "all", "rules": [
+        {"field": "tag_tier", "op": "equals", "value": "green"}
+    ]})
+    db.create_playlist("Green tier", smart_rules=rules)
+    pushed = db.get_playlists_since()
+    assert any(p["smart_rules"] == rules for p in pushed)
+
+
+def test_list_playlists_with_counts_exposes_smart_rules(db):
+    from src.smart_playlist import serialize
+    rules = serialize({"match": "all", "rules": [
+        {"field": "album", "op": "equals", "value": "OK Computer"}
+    ]})
+    db.create_playlist("OK Computer pin", smart_rules=rules)
+    rows = db.list_playlists_with_counts()
+    smart_row = next(r for r in rows if r["name"] == "OK Computer pin")
+    assert smart_row["smart_rules"] == rules
