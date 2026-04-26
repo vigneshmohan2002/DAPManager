@@ -39,6 +39,9 @@ class ConfigManager:
         "ipod_mount_point": "dap_mount_point",
         "ipod_music_dir_name": "dap_music_dir_name",
         "ipod_playlist_dir_name": "dap_playlist_dir_name",
+        # dap_manager_host_url was a parallel name for master_url used by
+        # the old desktop app. Stage 9d's seeded satellites wrote both.
+        "dap_manager_host_url": "master_url",
     }
 
     def __new__(cls):
@@ -80,18 +83,34 @@ class ConfigManager:
         logger.info("Configuration loaded successfully")
 
     def _migrate_legacy_keys(self):
-        """Rewrite pre-rename ipod_* keys to dap_* and persist the update."""
+        """Rewrite pre-rename keys to their canonical names and persist."""
         migrated = False
         for old, new in self.LEGACY_KEY_MAP.items():
-            if old in self._config and new not in self._config:
+            if old not in self._config:
+                continue
+            if new not in self._config:
+                # Plain rename: move the value over.
                 self._config[new] = self._config.pop(old)
                 migrated = True
+            elif self._config[new] == self._config[old]:
+                # Both present with the same value (the Stage 9d
+                # dual-write case): drop the legacy duplicate.
+                self._config.pop(old)
+                migrated = True
+            else:
+                # Both present but they disagree — that's user data.
+                # Leave it alone and warn so the operator can resolve.
+                logger.warning(
+                    "Config has both '%s' and '%s' with different values; "
+                    "leaving as-is. Edit config.json to keep one.",
+                    old, new,
+                )
         if migrated:
             try:
                 ensure_parent_dir(self.CONFIG_FILE)
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(self._config, f, indent=4)
-                logger.info("Migrated legacy ipod_* config keys to dap_*")
+                logger.info("Migrated legacy config keys")
             except OSError as e:
                 logger.warning(f"Could not persist migrated config: {e}")
 

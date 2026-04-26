@@ -171,6 +171,103 @@ def test_config_legacy_ipod_keys_migrate_to_dap():
             ConfigManager._instance = None
 
 
+def test_config_legacy_dap_manager_host_url_drops_when_master_url_matches():
+    """9d-style dual-write: both keys present, same value → legacy dropped."""
+    ConfigManager._instance = None
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        legacy_config = {
+            "database_file": "test.db",
+            "music_library_path": os.path.join(temp_dir, "music"),
+            "downloads_path": os.path.join(temp_dir, "downloads"),
+            "ffmpeg_path": "ffmpeg",
+            "dap_mount_point": os.path.join(temp_dir, "dap"),
+            "dap_music_dir_name": "Music",
+            "dap_playlist_dir_name": "Playlists",
+            "master_url": "http://m:5001",
+            "dap_manager_host_url": "http://m:5001",
+        }
+        with open(config_file, "w") as f:
+            json.dump(legacy_config, f)
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.get("dap_manager_host_url") is None
+            assert config.get("master_url") == "http://m:5001"
+
+            with open(config_file, "r") as f:
+                persisted = json.load(f)
+            assert "dap_manager_host_url" not in persisted
+            assert persisted["master_url"] == "http://m:5001"
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
+def test_config_legacy_dap_manager_host_url_renames_when_master_url_absent():
+    """Pre-9d desktop config: only legacy key present → renamed to master_url."""
+    ConfigManager._instance = None
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        legacy_config = {
+            "database_file": "test.db",
+            "music_library_path": os.path.join(temp_dir, "music"),
+            "downloads_path": os.path.join(temp_dir, "downloads"),
+            "ffmpeg_path": "ffmpeg",
+            "dap_mount_point": os.path.join(temp_dir, "dap"),
+            "dap_music_dir_name": "Music",
+            "dap_playlist_dir_name": "Playlists",
+            "dap_manager_host_url": "http://legacy:5001",
+        }
+        with open(config_file, "w") as f:
+            json.dump(legacy_config, f)
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.get("dap_manager_host_url") is None
+            assert config.get("master_url") == "http://legacy:5001"
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
+def test_config_legacy_keys_kept_when_values_disagree():
+    """If user edited one key out-of-sync, leave both for them to resolve."""
+    ConfigManager._instance = None
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        legacy_config = {
+            "database_file": "test.db",
+            "music_library_path": os.path.join(temp_dir, "music"),
+            "downloads_path": os.path.join(temp_dir, "downloads"),
+            "ffmpeg_path": "ffmpeg",
+            "dap_mount_point": os.path.join(temp_dir, "dap"),
+            "dap_music_dir_name": "Music",
+            "dap_playlist_dir_name": "Playlists",
+            "master_url": "http://canonical:5001",
+            "dap_manager_host_url": "http://different:5001",
+        }
+        with open(config_file, "w") as f:
+            json.dump(legacy_config, f)
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.get("master_url") == "http://canonical:5001"
+            assert config.get("dap_manager_host_url") == "http://different:5001"
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
 def test_jellyfin_enabled_property():
     """jellyfin_enabled is True iff url, api_key, and user_id are all set."""
     ConfigManager._instance = None
