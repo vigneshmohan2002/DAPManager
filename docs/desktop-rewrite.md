@@ -319,30 +319,69 @@ future Tauri first-run wizard, and its tests don't touch Qt.
 
 ---
 
-## Stage 9 — Musicat-inspired polish — _parked_
+## Stage 9 — Musicat-inspired polish
 
-Parked while the onboarding stage runs. See
-[`docs/onboarding.md`](onboarding.md) for the master-setup-wizard +
-satellite-client-distribution work that lands first.
+Onboarding shipped (see [`docs/onboarding.md`](onboarding.md)), so
+Stage 9 is now active. Pool of ideas in
+`memory/reference_design_musicat.md`; landing as small sub-stages,
+ranked by value/work the same way Stage 8 was.
 
-After parity, move *beyond* PySide6. See
-`memory/reference_design_musicat.md` for the pool of ideas. Likely
-picks:
+### 9 / mini-player — _Shipped (`0e579cb` + test `3f5e10a`)_
 
-- Waveform-based seeker in `PlayerBar` (canvas rendering an offline
-  `AudioContext.decodeAudioData` pass on `play()`).
+Compact always-on-top window variant. Threshold + scale-factor math
+extracted to a pure `decide_chrome_action` returning a `ChromeAction`
+enum so the boundary cases (220 px exact, hysteresis, HiDPI 2.0x,
+fractional 1.5x scale, scale=0 fallback) are unit-testable on the
+Rust side without touching `set_decorations`.
+
+### 9 / waveform seeker — _Shipped (this commit)_
+
+Canvas-based seeker in `PlayerBar`, replacing the plain
+`<input type="range">` once peaks are decoded. Falls back to the
+slider while peaks are loading or on decode failure.
+
+Decisions worth preserving:
+
+- **Pure `binPeaks` + thin React hook split.** `lib/waveform.ts`
+  takes a `Float32Array` and returns the normalized per-bin peak
+  array — no DOM, no `AudioContext`. The hook
+  (`lib/useWaveformPeaks.ts`) does the `fetch` + `decodeAudioData` +
+  cache plumbing. Keeps the math testable without jsdom and keeps
+  the cache module-scoped so peaks survive PlayerBar re-mounts when
+  the window flips into mini-player and back.
+- **Module-scoped `Map<mbid, Float32Array>` cache.** Same `mbid`
+  keys all fetches (catalog vs. local file paths don't matter — the
+  stream URL is content-addressed by mbid). Re-skipping back to a
+  played track within the session pulls peaks from the cache
+  instantly; only browser-process restart clears it.
+- **Range-input fallback, not a placeholder.** While peaks are null
+  (loading/error) the original slider renders, so seek is always
+  available. Replacing the slider unconditionally would have made
+  the UI worse on decode failures than it is today.
+- **Double-fetches the stream** (audio element + AudioContext).
+  Acceptable on local-network streaming where bandwidth isn't the
+  bottleneck. If remote streaming becomes common, revisit by
+  routing both through a single `fetch` + `URL.createObjectURL`
+  chain.
+- **Pointer-capture drag, not click-only.** `onPointerDown` captures
+  the pointer and `onPointerMove` (gated by `e.buttons === 1`)
+  re-seeks during the drag. Matches the muscle memory of the
+  original range input — clicking the canvas alone would have been
+  a regression for users who scrub.
+- **No RAF position loop.** Redraws on `position` prop change only;
+  the audio element's `timeupdate` fires ~4×/sec which is choppy but
+  fine for the bar's pixel velocity. Switching to RAF is cheap if
+  smoother visuals matter later.
+
+### Remaining picks (not yet started)
+
 - Smart playlists (rule-based, evaluated server-side). Needs new
   schema: `smart_playlist_rules` table or a JSON column on
   `playlists`.
 - Artist infoscreen: Wikipedia summary + discography timeline.
   Read-only; Wikipedia lookup via existing `contact_email` UA.
-- Mini-player window mode (Tauri supports multi-window; a compact
-  always-on-top variant when the main window is hidden).
 - Listening stats tab (needs a `play_events` table — schema change,
   not trivial).
-
-Stage 9 is explicitly post-parity and exploratory; don't schedule
-until Stage 8 lands and the PySide6 app is gone.
 
 ---
 
