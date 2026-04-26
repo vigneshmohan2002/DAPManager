@@ -224,6 +224,51 @@
             font-size: 13px;
             margin-top: 12px;
         }
+
+        .share-link-row {
+            display: flex;
+            gap: 8px;
+            align-items: stretch;
+            margin-bottom: 12px;
+        }
+
+        .share-link-row input {
+            flex-grow: 1;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .share-link-row button {
+            white-space: nowrap;
+            background: #2a4a6a;
+        }
+
+        .qr-card {
+            background: #ffffff;
+            padding: 16px;
+            border-radius: 6px;
+            display: inline-block;
+            margin-top: 12px;
+        }
+
+        .qr-card svg {
+            display: block;
+            width: 200px;
+            height: 200px;
+        }
+
+        .copy-status {
+            font-size: 12px;
+            color: #6ec46e;
+            min-height: 16px;
+            margin-top: 4px;
+        }
+
+        .done-message {
+            color: #aaa;
+            font-size: 14px;
+            margin: 12px 0 24px 0;
+        }
     </style>
 </head>
 
@@ -410,6 +455,42 @@
                 </div>
             </section>
 
+            <!-- Step 6: Share / Done -->
+            <section class="step-panel" data-step="6">
+                <div data-show-when="role!=satellite">
+                    <h2>Share with other devices</h2>
+                    <p class="step-help">
+                        On any other Mac on this Tailnet, open the link below and drag
+                        <code>DAPManager.app</code> into <code>/Applications</code>.
+                        It launches already pointed at this master.
+                    </p>
+
+                    <div class="form-group">
+                        <label class="field-label">Download link</label>
+                        <div class="share-link-row">
+                            <input type="text" id="share-link" readonly>
+                            <button type="button" id="copy-link">Copy</button>
+                        </div>
+                        <div class="copy-status" id="copy-status">&nbsp;</div>
+                    </div>
+
+                    <div id="qr-host">
+                        <label class="field-label">Or scan with a phone</label>
+                        <div class="qr-card" id="qr-card"></div>
+                    </div>
+
+                    <p class="help-text" id="share-warning" style="margin-top:16px;"></p>
+                </div>
+
+                <div data-show-when="role=satellite">
+                    <h2>You're set</h2>
+                    <p class="done-message">
+                        This satellite is configured. The next click drops you on
+                        the album grid and the catalog starts pulling from the master.
+                    </p>
+                </div>
+            </section>
+
             <div class="nav-row">
                 <button type="button" id="back-btn" class="secondary">Back</button>
                 <button type="button" id="next-btn">Next</button>
@@ -418,8 +499,11 @@
         </main>
     </div>
 
+    <!-- QR rendering: tiny browser-side encoder, ~50KB. Failure is
+         non-fatal — the link + Copy button still work without it. -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
     <script>
-        const TOTAL_STEPS = 5;
+        const TOTAL_STEPS = 6;
         const state = {
             currentStep: 1,
             role: 'master',
@@ -431,7 +515,7 @@
 
         // --------- Stepper rendering ---------
         function renderStepper() {
-            const labels = ['Role', 'Paths', 'URL', 'Integrations', 'Auth'];
+            const labels = ['Role', 'Paths', 'URL', 'Integrations', 'Auth', 'Share'];
             const html = labels.map((label, i) => {
                 const idx = i + 1;
                 let cls = 'pip';
@@ -463,12 +547,18 @@
             $$('.step-panel').forEach((el) => {
                 el.classList.toggle('active', Number(el.dataset.step) === n);
             });
-            $('#back-btn').disabled = n === 1;
-            $('#next-btn').textContent = n === TOTAL_STEPS ? 'Save & Finish' : 'Next';
+            // Once saved, Back from step 6 would let the user edit and
+            // re-submit. Disable it so the wizard ends cleanly.
+            $('#back-btn').disabled = n === 1 || n === 6;
+            $('#next-btn').textContent =
+                n === 5 ? 'Save & Continue' : n === 6 ? 'Finish' : 'Next';
             renderStepper();
             applyRoleVisibility();
             if (n === 3 && state.role !== 'satellite') {
                 tryDetectUrl(false);
+            }
+            if (n === 6) {
+                renderShareStep();
             }
         }
 
@@ -632,14 +722,18 @@
         async function submitConfig() {
             $('#next-btn').disabled = true;
             try {
+                const payload = collectPayload();
+                state.savedPublicUrl = payload.public_master_url || '';
+                state.savedToken = payload.api_token || '';
                 const res = await fetch('/api/save_config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(collectPayload()),
+                    body: JSON.stringify(payload),
                 });
                 const body = await res.json();
                 if (body.success) {
-                    window.location.href = '/';
+                    showStep(6);
+                    $('#next-btn').disabled = false;
                 } else {
                     flashError('Save failed: ' + (body.message || 'unknown error'));
                     $('#next-btn').disabled = false;
@@ -650,6 +744,70 @@
             }
         }
 
+        // --------- Step 6: share rendering ---------
+        function renderShareStep() {
+            if (state.role === 'satellite') return;
+
+            const url = (state.savedPublicUrl || '').replace(/\/$/, '');
+            const linkInput = $('#share-link');
+            const warning = $('#share-warning');
+            const qrHost = $('#qr-host');
+
+            if (!url) {
+                linkInput.value = '(public_master_url not set — open Settings to fill it in)';
+                warning.textContent =
+                    'Without a public URL, satellites can\'t reach this master. ' +
+                    'You can add it later from Settings.';
+                qrHost.style.display = 'none';
+                $('#copy-link').disabled = true;
+                return;
+            }
+
+            const shareUrl = url + '/download/mac' +
+                (state.savedToken
+                    ? '?token=' + encodeURIComponent(state.savedToken)
+                    : '');
+            linkInput.value = shareUrl;
+            warning.textContent = state.savedToken
+                ? 'The link includes the API token in the query string. Treat it like a credential.'
+                : 'Open mode (no token). Anyone on this Tailnet who can reach the link can download.';
+
+            $('#copy-link').disabled = false;
+            renderQr(shareUrl);
+        }
+
+        function renderQr(url) {
+            const card = $('#qr-card');
+            card.innerHTML = '';
+            if (typeof window.QRCode === 'undefined') {
+                $('#qr-host').style.display = 'none';
+                return;
+            }
+            window.QRCode.toString(
+                url,
+                { type: 'svg', margin: 0, errorCorrectionLevel: 'M' },
+                (err, svg) => {
+                    if (err) {
+                        $('#qr-host').style.display = 'none';
+                        return;
+                    }
+                    card.innerHTML = svg;
+                }
+            );
+        }
+
+        async function copyShareLink() {
+            const value = $('#share-link').value;
+            const status = $('#copy-status');
+            try {
+                await navigator.clipboard.writeText(value);
+                status.textContent = 'Copied.';
+            } catch {
+                status.textContent = 'Copy failed — select the text and copy manually.';
+            }
+            setTimeout(() => { status.innerHTML = '&nbsp;'; }, 2000);
+        }
+
         // --------- Wire up ---------
         function init() {
             bindRoleCards();
@@ -658,14 +816,19 @@
                 if (state.currentStep > 1) showStep(state.currentStep - 1);
             });
             $('#next-btn').addEventListener('click', async () => {
-                if (state.currentStep === TOTAL_STEPS) {
+                if (state.currentStep === 5) {
                     submitConfig();
+                    return;
+                }
+                if (state.currentStep === 6) {
+                    window.location.href = '/';
                     return;
                 }
                 if (await canAdvanceFrom(state.currentStep)) {
                     showStep(state.currentStep + 1);
                 }
             });
+            $('#copy-link').addEventListener('click', copyShareLink);
             $('#redetect-url').addEventListener('click', () => tryDetectUrl(true));
             $('#generate-token').addEventListener('click', generateToken);
             showStep(1);
