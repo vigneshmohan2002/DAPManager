@@ -26,6 +26,16 @@ def test_healthz_unauthenticated_with_token_set(client, _token_config):
     res = client.get('/api/healthz')
     assert res.status_code == 200
 
+
+def test_healthz_bypasses_setup_gate(client, monkeypatch, tmp_path):
+    # Pre-config liveness probe must not 302 to /setup, otherwise the
+    # Tauri desktop bootstrap reads the redirect as "backend down" and
+    # surfaces a fatal error.
+    monkeypatch.setattr('web_server.CONFIG_FILE', str(tmp_path / 'missing.json'))
+    res = client.get('/api/healthz', follow_redirects=False)
+    assert res.status_code == 503
+    assert res.get_json() == {"ok": False, "initialized": False}
+
 def test_api_stats(client, mock_config):
     """Test stats endpoint. Mocks DB interaction."""
     # We need to mock DatabaseManager within web_server context

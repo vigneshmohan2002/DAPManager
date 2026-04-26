@@ -303,6 +303,7 @@ def check_setup():
         "setup_validate_path",
         "setup_detect_public_url",
         "download_mac",
+        "healthz",
         "static",
     ):
         return redirect(url_for("setup"))
