@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { albumCoverUrl, backendUrl } from "../lib/api";
+import { albumCoverUrl, backendUrl, streamUrl } from "../lib/api";
+import { useWaveformPeaks } from "../lib/useWaveformPeaks";
 import { enterMiniPlayer } from "../lib/window";
 import { usePlayer } from "../player/PlayerContext";
+import WaveformSeeker from "./WaveformSeeker";
 
 function fmt(secs: number): string {
   if (!isFinite(secs) || secs < 0) return "0:00";
@@ -27,6 +29,10 @@ export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
   const progress = duration > 0 ? (position / duration) * 100 : 0;
   const cover =
     current?.albumId && base ? albumCoverUrl(base, current.albumId) : null;
+  const peaks = useWaveformPeaks(
+    current && base ? streamUrl(base, current.mbid) : null,
+    current?.mbid ?? null,
+  );
 
   return (
     <footer className="h-20 shrink-0 border-t border-[var(--color-border)] bg-[var(--color-bg-elevated)] flex items-center px-6 gap-4">
@@ -57,17 +63,26 @@ export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
         </div>
         <div className="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
           <span className="w-9 text-right tabular-nums">{fmt(position)}</span>
-          <input
-            type="range"
-            min={0}
-            max={duration || 0}
-            step={0.1}
-            value={position}
-            onChange={(e) => seek(Number(e.target.value))}
-            disabled={!current || !duration}
-            className="flex-1 accent-[var(--color-accent)]"
-            style={{ background: `linear-gradient(to right, var(--color-accent) ${progress}%, #3a3a3c ${progress}%)` }}
-          />
+          {peaks ? (
+            <WaveformSeeker
+              peaks={peaks}
+              position={position}
+              duration={duration}
+              onSeek={seek}
+            />
+          ) : (
+            <input
+              type="range"
+              min={0}
+              max={duration || 0}
+              step={0.1}
+              value={position}
+              onChange={(e) => seek(Number(e.target.value))}
+              disabled={!current || !duration}
+              className="flex-1 accent-[var(--color-accent)]"
+              style={{ background: `linear-gradient(to right, var(--color-accent) ${progress}%, #3a3a3c ${progress}%)` }}
+            />
+          )}
           <span className="w-9 tabular-nums">{fmt(duration)}</span>
         </div>
       </div>
