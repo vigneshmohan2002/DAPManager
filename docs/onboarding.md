@@ -186,7 +186,7 @@ step's required fields are valid.
 |---|---|---|---|
 | 1 | Role | role: master / satellite / standalone | Defaults to master. Changes which subsequent steps render. |
 | 2 | Library paths | music_library_path, downloads_path, dap_mount_point | Inline-validated via `POST /api/setup/validate-path`. |
-| 3 | Public URL | public_master_url (auto-filled from `MASTER_PUBLIC_URL` env, then in-container `tailscale status --json`, else blank) | Master + standalone only; satellite uses `dap_manager_host_url` instead. Help text explains the env-var path for Docker users. |
+| 3 | Public URL | public_master_url (auto-filled from `MASTER_PUBLIC_URL` env, then in-container `tailscale status --json`, else blank) | Master + standalone only; satellite uses `master_url` instead. Help text explains the env-var path for Docker users. |
 | 4 | Integrations | jellyfin_url + key + user_id, lidarr_url + key, spotify_client_id + secret, acoustid_api_key | All optional. Collapsed by default; expand-per-service. |
 | 5 | Auth | api_token (optional; "leave blank for open LAN mode") | Generates a default with a "regenerate" button if user wants one. |
 | 6 | Done — share with devices | (no fields) | Shows `/download/mac` URL, "Copy link" button, QR code. Master + standalone only. |
@@ -502,11 +502,6 @@ end-to-end flow once; until that happens the on-disk pieces work
 in isolation but the loop is unverified. Carryover for the next
 session:
 
-- **`master_url` / `dap_manager_host_url` unification.** The seed
-  writes both because `SuggestScreen.tsx` reads
-  `dap_manager_host_url` directly from `/api/config`. Folding that
-  field into `master_url` and pruning the duplicate from
-  `config_keys.py` is straightforward but out of onboarding scope.
 - **`DESKTOP_RELEASE_TAG` bump after first CI release.** The
   constant in `src/satellite_bundle.py` is `desktop-v0.1.0` —
   needs to match whatever tag the 9b workflow attaches its first
