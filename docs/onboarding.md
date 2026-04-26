@@ -352,17 +352,42 @@ Decisions worth preserving:
   the operator at outbound connectivity rather than the master's
   logs.
 
-### 9d — Tauri first-run pickup
+### 9d — Tauri first-run pickup — _Shipped (`97c8b0e`)_
 
-- `src-tauri/src/main.rs` setup hook: read resource files, write
-  `config.json` if absent. Tested by mocking
-  `app.path().resource_dir()`.
-- Existing api.ts wiring already routes `dap_manager_host_url` to
-  Settings — no React changes needed unless the seeded path differs.
-- Acceptance: launching the app from a `.app` whose
-  `Resources/master_url.txt` is `http://x.ts.net:5001` lands on the
-  album grid with that URL pre-filled in Settings, and the Sync
-  screen's status strip shows it as the live `master_url`.
+Decisions worth preserving:
+
+- **Pure helper + thin Tauri wrapper.** `seed_satellite_config`
+  takes `(config_path, resource_dir, home_dir)` as `&Path` so the
+  whole thing is unit-testable with `tempdir`s — no `AppHandle`
+  mocking required. The Tauri setup hook just resolves those three
+  paths and calls in. 6/6 cargo tests cover the seed paths.
+- **Seed writes a full satellite config**, not the 3-key shape the
+  doc originally proposed. The Python backend's REQUIRED_KEYS gate
+  rejects partial configs at boot, so a `{role, url, token}` seed
+  would have made the satellite immediately broken. Defaults for
+  paths land under `~/Music/DAPManager` and `~/Downloads/DAPManager`
+  — operators can edit from Settings if they want elsewhere.
+- **Dual-write `master_url` and `dap_manager_host_url`.** The two
+  are parallel names for the same value: `master_url` is what the
+  Python backend reads (sync, proxy-stream); `dap_manager_host_url`
+  is what `SuggestScreen.tsx` reads. Until those are unified in a
+  later cleanup, mirroring the URL into both keeps the satellite UI
+  fully functional out of the box. Note for that future cleanup.
+- **`DAPMANAGER_CONFIG` env var on spawn.** The Rust side computes
+  the platform config path once and passes it explicitly to the
+  Python child. This kills the timing window where the backend's
+  `resolve_config_path()` cwd fallback would land on a different
+  file than the one the Tauri seeder wrote to. One source of truth.
+- **One-shot seed, never re-applied.** First check is "does the
+  config file exist?" If yes, the resource files are ignored on
+  every subsequent launch. Means edits made from Settings stick;
+  re-running the same .app over and over doesn't clobber user
+  changes. The "but the resource file overrides me" footgun the
+  architecture doc warned about doesn't materialise.
+- **Trim trailing slash on the seeded URL.** Matches what
+  `build_initial_config` already does Python-side; otherwise a
+  master URL that came from a copy-paste with `/` at the end
+  produces `http://m:5001//api/...` calls.
 
 ### 9e — Wizard steps 1–5 — _Shipped (backend `b3820c1`, frontend `9018cd7`)_
 
