@@ -464,10 +464,62 @@ Decisions worth preserving:
   same whitelist) is doing double duty for now. Worth wiring vitest
   when a second pure-helper module appears in the desktop tree.
 
+### 9 / listening stats — _Shipped (`58391dc` + `dae4671`)_
+
+`play_events` table, `/api/library/plays` (POST) and
+`/api/library/play-stats` (GET), Tauri-side scrobble in
+`PlayerContext`, and a new "Listening" sidebar entry that shows top
+tracks / top artists / recent plays for a chosen window
+(30 days / 90 days / all time).
+
+Decisions worth preserving:
+
+- **No FK on `play_events.track_mbid`.** Stats are history.
+  Soft-deleting or purging a track shouldn't erase its
+  listening record. `LEFT JOIN tracks` on the read side keeps
+  orphan plays visible (rendered as "(unknown track)") rather
+  than silently dropping them from the count. Top-artists is
+  the exception — it INNER JOINs because an event with no
+  resolvable artist has nothing to attribute.
+- **Top artists groups on the *current* `tracks.artist`.** A tag
+  rewrite that renames an artist re-attributes their history.
+  That matches user intuition ("how much have I listened to X"
+  follows X's canonical name) and avoids the alternative —
+  duplicating artist on `play_events` at write time — which
+  would freeze a stale name into the stats forever.
+- **Single coalesced `play-stats` endpoint.** Total +
+  top tracks + top artists + recent are always wanted for the
+  same window; four endpoints would trade simplicity for
+  nothing. `limit` is clamped to [1, 200] so a stale dashboard
+  polling can't pull unbounded rows.
+- **Scrobble threshold = ≥30s OR ≥50% of duration.** Long-
+  established Last.fm convention; user expectations transfer.
+  The client owns the threshold; the backend just records.
+  Swap-out is one line in `PlayerContext` if research suggests
+  a better number later.
+- **Once-per-load via a `useRef`, not state.** A re-queue of the
+  same mbid is a fresh load → fresh recording, but a within-
+  track pause/resume or scrub is not. Using a ref keeps the
+  20× / sec `position` updates from re-rendering every
+  consumer of the player context.
+- **Fire-and-forget recording.** `recordPlay` catches its own
+  failures with `console.warn` rather than toasting. A missed
+  scrobble is invisible to the user, and a transient backend
+  hiccup mid-song shouldn't surface a red banner. Caller is
+  not responsible for error handling.
+- **Window cutoff serialized as `YYYY-MM-DD HH:MM:SS` UTC, no
+  `T`.** Matches sqlite's `CURRENT_TIMESTAMP` shape so the lex
+  compare in `played_at >= ?` is correct. Mixing ISO-with-T
+  and the space form in the same column's comparisons would
+  technically work but is the kind of subtle thing that breaks
+  later — emit the same shape sqlite is storing.
+- **Tagged `source: "desktop"` on every recording.** Free-form
+  string routed straight through to the DB. Per-source splits
+  ("how much did I listen on the desktop vs. the web client")
+  become a backend-only change when a second client lands.
+
 ### Remaining picks (not yet started)
 
-- Listening stats tab (needs a `play_events` table — schema change,
-  not trivial).
 - Discography timeline with release years (release-year column +
   MB release-group browse, gated on artist infoscreen having
   enough adoption to justify the schema work).
