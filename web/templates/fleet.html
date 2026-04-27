@@ -5,55 +5,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DAP Manager — Fleet</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <style>
-        .fleet-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-        .fleet-table th,
-        .fleet-table td {
-            padding: 8px 10px;
-            border-bottom: 1px solid #333;
-            text-align: left;
-        }
-        .fleet-table th {
-            background: #222;
-            color: #ddd;
-        }
-        .fleet-table tr:hover {
-            background: #1b1b1b;
-        }
-        .device-pill {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 10px;
-            background: #2a4a6a;
-            color: #cfe;
-            font-size: 12px;
-            margin: 0 4px 4px 0;
-        }
-        .muted {
-            color: #888;
-            font-size: 12px;
-        }
-        .empty {
-            padding: 20px;
-            color: #888;
-            text-align: center;
-            font-style: italic;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/tailwind.css">
 </head>
 
-<body>
-    <div class="container">
-        <header>
-            <h1>Fleet View</h1>
+<body class="bg-[var(--color-bg)] text-[var(--color-text)] min-h-screen p-5">
+    <div class="max-w-[900px] mx-auto">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-semibold text-[var(--color-text)] mb-2">Fleet View</h1>
             <div class="muted">
-                Per-device inventory reported via <code>/api/inventory</code>.
-                <a href="/" style="color:#8bd;">← Dashboard</a>
+                Per-device inventory reported via <code class="font-mono text-xs text-[var(--color-text)] bg-[var(--color-bg-elevated)] px-1 py-0.5 rounded">/api/inventory</code>.
+                <a href="/" class="text-[var(--color-accent)] hover:underline ml-2">← Dashboard</a>
             </div>
         </header>
 
@@ -65,13 +26,13 @@
                 </div>
             </section>
 
-            <section class="card" style="margin-top:20px;">
+            <section class="card">
                 <h2>Find a track across the fleet</h2>
-                <div style="display:flex; gap:10px; margin-bottom:10px;">
+                <div class="flex gap-2.5 mb-2.5">
                     <input type="text" id="fleet-search-input"
                         placeholder="Search artist / album / title…"
-                        style="flex:1; padding:8px; background:#333; color:#fff; border:1px solid #555; border-radius:4px;">
-                    <button onclick="searchFleet()">Search</button>
+                        class="flex-1">
+                    <button onclick="searchFleet()" class="btn btn-primary whitespace-nowrap">Search</button>
                 </div>
                 <div id="fleet-search-results">
                     <div class="muted">Type a query above to see which devices hold each match.</div>
