@@ -5,71 +5,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DAP Manager Web</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <style>
-        /* Modal styles */
-        .modal {
-            position: fixed;
-            z-index: 100;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.7);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal-content {
-            background-color: #222;
-            padding: 20px;
-            border: 1px solid #555;
-            width: 80%;
-            max-width: 600px;
-            border-radius: 8px;
-            position: relative;
-            color: #fff;
-            margin: 100px auto;
-            /* Fallback centering */
-        }
-
-        .close {
-            color: #aaa;
-            float: right;
-            font-size: 28px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-
-        .close:hover {
-            color: #fff;
-        }
-
-        .sync-cursor {
-            font-size: 11px;
-            color: #9ad;
-            margin-left: 4px;
-            font-weight: normal;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/tailwind.css">
 </head>
 
-<body>
-    <div class="container">
-        <header>
-            <h1>DAP Manager Dashboard</h1>
+<body class="bg-[var(--color-bg)] text-[var(--color-text)] min-h-screen p-5">
+    <div class="max-w-[900px] mx-auto">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-semibold text-[var(--color-text)] mb-2">DAP Manager Dashboard</h1>
             <div id="status-bar" class="status-idle">Status: Idle</div>
         </header>
 
         <!-- Stats Dashboard -->
         <div id="stats-dashboard"
-            style="display: flex; justify-content: space-between; background: #222; padding: 10px; border-radius: 8px; margin-bottom: 20px; font-size: 14px;">
-            <div>Tracks: <span id="stat-tracks">0</span></div>
-            <div>Albums: <span id="stat-albums">0</span></div>
-            <div>Artists: <span id="stat-artists">0</span></div>
-            <div>Incomplete: <span id="stat-incomplete">0</span></div>
-            <div>Disk Free: <span id="stat-disk">0 GB</span></div>
+            class="flex flex-wrap justify-between gap-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border)] p-3 rounded-lg mb-5 text-sm">
+            <div>Tracks: <span id="stat-tracks" class="font-medium text-[var(--color-text)]">0</span></div>
+            <div>Albums: <span id="stat-albums" class="font-medium text-[var(--color-text)]">0</span></div>
+            <div>Artists: <span id="stat-artists" class="font-medium text-[var(--color-text)]">0</span></div>
+            <div>Incomplete: <span id="stat-incomplete" class="font-medium text-[var(--color-text)]">0</span></div>
+            <div>Disk Free: <span id="stat-disk" class="font-medium text-[var(--color-text)]">0 GB</span></div>
         </div>
 
         <main>
@@ -77,21 +30,20 @@
                 <h2>Library Management</h2>
 
                 <!-- Search Block -->
-                <div style="margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #444;">
-                    <h3>Library Explorer</h3>
-                    <div style="display:flex; gap:10px;">
-                        <input type="text" id="lib-search-input" placeholder="Search Artist, Album, or Title..."
-                            style="flex:1; padding:8px; background:#333; color:#fff; border:1px solid #555; border-radius:4px;">
-                        <button onclick="searchLibrary()">Search</button>
+                <div class="mb-5 pb-4 border-b border-[var(--color-border)]">
+                    <h3 class="text-base font-semibold mb-2">Library Explorer</h3>
+                    <div class="flex gap-2.5">
+                        <input type="text" id="lib-search-input" placeholder="Search Artist, Album, or Title…" class="flex-1">
+                        <button onclick="searchLibrary()" class="btn btn-primary whitespace-nowrap">Search</button>
                     </div>
                     <div id="search-results"
-                        style="margin-top:10px; max-height:200px; overflow-y:auto; display:none; background:#222; border:1px solid #444;">
-                        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        class="mt-2.5 max-h-[200px] overflow-y-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md hidden">
+                        <table class="w-full border-collapse text-[13px]">
                             <thead>
-                                <tr style="background:#333; text-align:left;">
-                                    <th style="padding:5px;">Artist</th>
-                                    <th style="padding:5px;">Album</th>
-                                    <th style="padding:5px;">Title</th>
+                                <tr class="bg-[var(--color-bg-elevated)] text-left">
+                                    <th class="p-1.5">Artist</th>
+                                    <th class="p-1.5">Album</th>
+                                    <th class="p-1.5">Title</th>
                                 </tr>
                             </thead>
                             <tbody id="search-results-body"></tbody>
@@ -100,67 +52,69 @@
                 </div>
 
                 <div class="actions">
-                    <button onclick="triggerAction('/api/scan', 'Scanning Library...')">Scan Library</button>
-                    <button onclick="triggerAction('/api/audit', 'Auditing Albums...')">Audit Albums</button>
+                    <button onclick="triggerAction('/api/scan', 'Scanning Library...')" class="btn btn-secondary">Scan Library</button>
+                    <button onclick="triggerAction('/api/audit', 'Auditing Albums...')" class="btn btn-secondary">Audit Albums</button>
                 </div>
 
-                <div style="margin-top: 15px;">
-                    <h3>Queue Spotify Playlists</h3>
+                <div class="mt-4">
+                    <h3 class="text-base font-semibold mb-2">Queue Spotify Playlists</h3>
                     <textarea id="playlist-urls" rows="3"
-                        placeholder="Paste Spotify Playlist URLs here (one per line)..."
-                        style="width: 100%; background: #333; color: white; border: 1px solid #555; padding: 5px;"></textarea>
-                    <button onclick="queuePlaylists()" style="margin-top: 5px;">Queue Playlists</button>
+                        placeholder="Paste Spotify Playlist URLs here (one per line)…"></textarea>
+                    <button onclick="queuePlaylists()" class="btn btn-secondary mt-2">Queue Playlists</button>
                 </div>
 
-                <div style="margin-top: 15px; border-top: 1px solid #444; padding-top: 15px;">
-                    <h3>Library Audit</h3>
-                    <button onclick="loadAuditResults()">Scan for Incomplete Albums</button>
-                    <div id="audit-container" style="margin-top: 10px; display: none;">
-                        <p id="audit-status">Loading...</p>
+                <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
+                    <h3 class="text-base font-semibold mb-2">Library Audit</h3>
+                    <button onclick="loadAuditResults()" class="btn btn-secondary">Scan for Incomplete Albums</button>
+                    <div id="audit-container" class="mt-2.5 hidden">
+                        <p id="audit-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
                         <div id="audit-list" class="grid-container"></div>
                     </div>
                 </div>
 
-                <div id="audit-modal" class="modal" style="display:none;">
-                    <div class="modal-content">
-                        <span class="close" onclick="closeAuditModal()">&times;</span>
-                        <h2 id="modal-title">Album Details</h2>
-                        <p id="modal-subtitle">Missing Tracks:</p>
-                        <div id="modal-tracks" style="max-height: 300px; overflow-y: auto; text-align: left;"></div>
-                        <div style="margin-top: 15px; text-align: right;">
-                            <button onclick="queueSelectedTracks()">Queue Selected Tracks</button>
+                <div id="audit-modal"
+                    class="fixed inset-0 z-[100] bg-black/70 hidden items-center justify-center"
+                    style="display:none;">
+                    <div class="bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-lg p-5 w-4/5 max-w-[600px] text-[var(--color-text)] relative">
+                        <span class="float-right text-3xl leading-none font-bold cursor-pointer text-[var(--color-text-muted)] hover:text-[var(--color-text)]" onclick="closeAuditModal()">&times;</span>
+                        <h2 id="modal-title" class="text-lg font-semibold mb-1">Album Details</h2>
+                        <p id="modal-subtitle" class="text-sm text-[var(--color-text-muted)] mb-3">Missing Tracks:</p>
+                        <div id="modal-tracks" class="max-h-[300px] overflow-y-auto text-left"></div>
+                        <div class="mt-4 text-right">
+                            <button onclick="queueSelectedTracks()" class="btn btn-primary">Queue Selected Tracks</button>
                         </div>
                     </div>
                 </div>
 
-                <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 15px;">
-                    <h3>Duplicates</h3>
-                    <button onclick="loadDuplicates()">Check for Duplicates</button>
-                    <div id="duplicates-container" style="margin-top: 10px; display: none;">
-                        <p id="dupe-status">Loading...</p>
+                <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
+                    <h3 class="text-base font-semibold mb-2">Duplicates</h3>
+                    <button onclick="loadDuplicates()" class="btn btn-secondary">Check for Duplicates</button>
+                    <div id="duplicates-container" class="mt-2.5 hidden">
+                        <p id="dupe-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
                         <div id="dupe-list"></div>
                     </div>
                 </div>
 
-                <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 15px;">
-                    <h3>Tag Review Queue</h3>
-                    <p style="color:#aaa; font-size:12px; margin:4px 0 8px;">
+                <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
+                    <h3 class="text-base font-semibold mb-1">Tag Review Queue</h3>
+                    <p class="text-xs text-[var(--color-text-muted)] mb-2">
                         Tracks the auto-tagger flagged as yellow or red. Identify to see
                         the MusicBrainz candidate, then Apply to confirm.
                     </p>
-                    <button onclick="loadTagReview()">Load Flagged Tracks</button>
-                    <div id="tag-review-container" style="margin-top:10px; display:none;">
-                        <p id="tag-review-status">Loading...</p>
+                    <button onclick="loadTagReview()" class="btn btn-secondary">Load Flagged Tracks</button>
+                    <div id="tag-review-container" class="mt-2.5 hidden">
+                        <p id="tag-review-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
                         <div id="tag-review-list"></div>
                     </div>
                 </div>
             </section>
 
             <section class="card">
-                <h2>Download & Sync</h2>
+                <h2>Download &amp; Sync</h2>
                 <div class="actions">
-                    <button onclick="triggerAction('/api/download', 'Processing Downloads...')">Process
-                        Downloads</button>
+                    <button onclick="triggerAction('/api/download', 'Processing Downloads...')" class="btn btn-secondary">
+                        Process Downloads
+                    </button>
 
                     <div class="sync-group">
                         <h3>Sync to DAP</h3>
@@ -181,86 +135,85 @@
                                 <option value="aac">AAC</option>
                             </select>
                         </label>
-                        <button onclick="triggerSync()">Start Sync</button>
+                        <button onclick="triggerSync()" class="btn btn-secondary">Start Sync</button>
                     </div>
 
-                    <div class="sync-group" style="margin-top: 15px;">
+                    <div class="sync-group">
                         <h3>Pull from Jellyfin</h3>
-                        <div class="help-text" style="font-size:12px; color:#888; margin-bottom:8px;">
+                        <div class="text-xs text-[var(--color-text-muted)] mb-2">
                             Pull audio + playlists from your Jellyfin server into the local library. Requires
                             Jellyfin URL + API key in config.
                         </div>
-                        <button onclick="triggerAction('/api/jellyfin/pull', 'Pulling from Jellyfin...')">
+                        <button onclick="triggerAction('/api/jellyfin/pull', 'Pulling from Jellyfin...')" class="btn btn-secondary">
                             Start Jellyfin Pull
                         </button>
                     </div>
 
-                    <div class="sync-group" style="margin-top: 15px;">
+                    <div class="sync-group">
                         <h3>Multi-Device Sync</h3>
-                        <div class="help-text" style="font-size:12px; color:#888; margin-bottom:8px;">
+                        <div class="text-xs text-[var(--color-text-muted)] mb-2">
                             Keep this device's catalog in sync with the master DAPManager. Pull the
-                            catalog first so playlist membership resolves. Requires <code>master_url</code> in config.
+                            catalog first so playlist membership resolves. Requires <code class="font-mono text-xs text-[var(--color-text)] bg-[var(--color-bg-elevated)] px-1 py-0.5 rounded">master_url</code> in config.
                         </div>
-                        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                        <div class="flex flex-wrap gap-2 items-center">
                             <button onclick="triggerAction('/api/sync/all', 'Running full sync...'); setTimeout(loadSyncState, 2000);"
-                                style="background:#2a6; color:#fff; font-weight:bold;">
+                                class="btn btn-primary">
                                 Sync All
                             </button>
-                            <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...'); setTimeout(loadSyncState, 2000);">
+                            <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
                                 Pull Catalog <span class="sync-cursor" data-step="catalog_pull"></span>
                             </button>
-                            <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...'); setTimeout(loadSyncState, 2000);">
+                            <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
                                 Pull Playlists <span class="sync-cursor" data-step="playlist_pull"></span>
                             </button>
-                            <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...'); setTimeout(loadSyncState, 2000);">
+                            <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
                                 Push Playlists <span class="sync-cursor" data-step="playlist_push"></span>
                             </button>
                             <button onclick="triggerAction('/api/inventory/report', 'Reporting inventory...'); setTimeout(loadSyncState, 2000);"
+                                class="btn btn-secondary"
                                 title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
                                 Report Inventory <span class="sync-cursor" data-step="inventory_report"></span>
                             </button>
                             <button onclick="triggerAction('/api/catalog/link-local', 'Scanning library to link catalog rows...');"
+                                class="btn btn-secondary"
                                 title="Scan music_library_path and bind unlinked catalog rows to on-disk files by MBID / ISRC / artist+title. Safe to re-run.">
                                 Link Local Files
                             </button>
-                            <a href="/library" style="align-self:center; color:#8bd; margin-left:8px;">Library →</a>
-                            <a href="/fleet" style="align-self:center; color:#8bd; margin-left:8px;">Fleet view →</a>
-                            <a href="/orphans" style="align-self:center; color:#8bd; margin-left:8px;">Orphans →</a>
+                            <a href="/library" class="self-center text-[var(--color-accent)] hover:underline ml-2 text-sm">Library →</a>
+                            <a href="/fleet" class="self-center text-[var(--color-accent)] hover:underline ml-2 text-sm">Fleet view →</a>
+                            <a href="/orphans" class="self-center text-[var(--color-accent)] hover:underline ml-2 text-sm">Orphans →</a>
                         </div>
+                    </div>
+                </div>
+
+                <div class="mt-5">
+                    <h3 class="text-base font-semibold mb-2">All Downloads</h3>
+                    <button onclick="loadDownloadList()" class="btn btn-secondary">Refresh Queue List</button>
+                    <div id="download-list-container"
+                        class="mt-2.5 max-h-[200px] overflow-y-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md hidden">
+                        <table class="w-full border-collapse text-[13px]">
+                            <thead>
+                                <tr class="bg-[var(--color-bg-elevated)] text-left">
+                                    <th class="p-1.5">ID</th>
+                                    <th class="p-1.5">Query</th>
+                                    <th class="p-1.5">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="download-table-body"></tbody>
+                        </table>
                     </div>
                 </div>
             </section>
 
-            <div style="margin-top:20px;">
-                <h3>All Downloads</h3>
-                <button onclick="loadDownloadList()">Refresh Queue List</button>
-                <div id="download-list-container"
-                    style="margin-top:10px; max-height: 200px; overflow-y: auto; background: #222; border: 1px solid #444; display: none;">
-                    <table style="width:100%; border-collapse: collapse; font-size: 13px;">
-                        <thead>
-                            <tr style="background:#333; text-align:left;">
-                                <th style="padding:5px;">ID</th>
-                                <th style="padding:5px;">Query</th>
-                                <th style="padding:5px;">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="download-table-body"></tbody>
-                    </table>
-                </div>
-            </div>
-            </section>
-
             <section class="card">
                 <details>
-                    <summary style="cursor:pointer; font-size:18px; font-weight:bold; padding:4px 0;">
-                        Settings
-                    </summary>
-                    <div id="settings-status" style="color:#8bd; font-size:12px; margin-bottom:10px;"></div>
+                    <summary class="cursor-pointer text-lg font-semibold py-1 select-none">Settings</summary>
+                    <div id="settings-status" class="text-[var(--color-accent)] text-xs my-2.5"></div>
                     <div id="settings-groups"></div>
-                    <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
-                        <button onclick="saveSettings()">Save</button>
-                        <button onclick="loadSettings()" style="background:#444;">Reload</button>
-                        <span class="muted" style="color:#888; font-size:12px;">
+                    <div class="mt-3 flex gap-2.5 items-center">
+                        <button onclick="saveSettings()" class="btn btn-primary">Save</button>
+                        <button onclick="loadSettings()" class="btn btn-secondary">Reload</button>
+                        <span class="muted">
                             Secret fields (passwords / API keys) are masked — leave blank to keep current value.
                         </span>
                     </div>
@@ -269,12 +222,12 @@
 
             <section class="card">
                 <h2>Logs / Output</h2>
-                <div id="log-display">
+                <div id="log-display" class="font-mono text-sm text-[var(--color-text-muted)]">
                     Last Message: <span id="last-message">None</span>
                 </div>
                 <div id="progress-console"
-                    style="background:#000; color:#0f0; font-family:monospace; padding:10px; height:150px; overflow-y:auto; margin-top:10px; border:1px solid #333; font-size:12px;">
-                    <div style="color:#666">Waiting for updates...</div>
+                    class="bg-black text-[#0f0] font-mono p-2.5 h-[150px] overflow-y-auto mt-2.5 border border-[var(--color-border)] text-xs rounded-md">
+                    <div class="text-[var(--color-text-muted)]">Waiting for updates…</div>
                 </div>
             </section>
         </main>
@@ -336,12 +289,12 @@
             const container = document.getElementById('settings-groups');
             let html = '';
             for (const group of SETTINGS_GROUPS) {
-                html += `<fieldset style="border:1px solid #444; padding:10px; margin-bottom:10px;">
-                    <legend style="padding:0 6px; color:#aaa;">${group.label}</legend>`;
+                html += `<fieldset style="border:1px solid var(--color-border); padding:12px; margin-bottom:10px; border-radius:6px;">
+                    <legend style="padding:0 6px; color:var(--color-text-muted); font-size:13px;">${group.label}</legend>`;
                 for (const key of group.keys) {
                     const value = settingsCurrent[key];
-                    html += `<div style="display:flex; align-items:center; gap:10px; margin:4px 0;">
-                        <label style="width:220px; color:#bbb; font-size:13px;" title="${key}">${key}</label>
+                    html += `<div style="display:flex; align-items:center; gap:10px; margin:6px 0;">
+                        <label style="width:220px; color:var(--color-text-muted); font-size:13px;" title="${key}">${key}</label>
                         ${renderField(key, value)}
                     </div>`;
                 }
@@ -353,14 +306,13 @@
         function renderField(key, value) {
             if (SETTINGS_BOOL_KEYS.has(key)) {
                 const checked = value === true ? 'checked' : '';
-                return `<input type="checkbox" data-config-key="${key}" ${checked}>`;
+                return `<input type="checkbox" data-config-key="${key}" ${checked} style="accent-color: var(--color-accent);">`;
             }
             const type = SETTINGS_SECRET_KEYS.has(key) ? 'password' : 'text';
             const placeholder = SETTINGS_SECRET_KEYS.has(key) ? '(leave blank to keep current)' : '';
             const safe = value == null ? '' : String(value).replace(/"/g, '&quot;');
             return `<input type="${type}" data-config-key="${key}" value="${safe}"
-                placeholder="${placeholder}"
-                style="flex:1; padding:5px; background:#222; color:#fff; border:1px solid #555; border-radius:3px;">`;
+                placeholder="${placeholder}" style="flex:1;">`;
         }
 
         async function saveSettings() {
@@ -445,12 +397,7 @@
                     statusDiv.className = data.running ? 'status-running' : 'status-idle';
                     msgSpan.textContent = data.message;
 
-                    // console update
                     if (data.running && data.detail) {
-                        // Simple append or replacement strategy?
-                        // Ideally we append new lines. But polling might miss lines or repeat.
-                        // For simplicity: Show the LATEST detail as a new line if it changed.
-                        // Helper: Store last detail locally.
                         if (window.lastDetail !== data.detail) {
                             const line = document.createElement('div');
                             line.textContent = `> ${data.detail}`;
@@ -509,7 +456,7 @@
             const list = document.getElementById('dupe-list');
             const status = document.getElementById('dupe-status');
 
-            container.style.display = 'block';
+            container.classList.remove('hidden');
             status.textContent = 'Searching for duplicates...';
             list.innerHTML = '';
 
@@ -532,33 +479,28 @@
                     dupes.forEach(group => {
                         const div = document.createElement('div');
                         div.className = 'dupe-group';
-                        div.style.marginBottom = '15px';
-                        div.style.padding = '10px';
-                        div.style.background = '#2a2a2a';
-                        div.style.border = '1px solid #444';
-                        div.style.borderRadius = '5px';
+                        div.style.cssText = 'margin-bottom:14px; padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:6px;';
 
                         let html = `<strong>${group.artist} - ${group.title}</strong><br>`;
-                        html += `<table style="width:100%; margin-top:5px; text-align:left;">`;
+                        html += `<table style="width:100%; margin-top:6px; text-align:left;">`;
 
                         group.candidates.forEach((cand, idx) => {
                             const isRec = cand.is_recommended;
-                            const color = isRec ? '#4caf50' : '#ff5252';
+                            const color = isRec ? '#4caf50' : '#e57373';
                             html += `
         <tr>
             <td>
                 <input type="radio" name="keep_${group.mbid}" value="${cand.path}" ${isRec ? 'checked' : ''}
-                    id="radio_${group.mbid}_${idx}">
+                    id="radio_${group.mbid}_${idx}" style="accent-color: var(--color-accent);">
             </td>
             <td><label for="radio_${group.mbid}_${idx}" style="color:${color}">${cand.path}</label></td>
             <td>Score: ${cand.score}</td>
         </tr>
         `;
                         });
-                        html += `
-    </table>`;
-                        html += `<button onclick="resolveDuplicate('${group.mbid}')"
-        style="margin-top:5px; padding: 3px 10px; font-size: 12px;">Resolve (Keep Selected)</button>`;
+                        html += `</table>`;
+                        html += `<button onclick="resolveDuplicate('${group.mbid}')" class="btn btn-secondary"
+        style="margin-top:8px; padding: 4px 12px; font-size: 12px;">Resolve (Keep Selected)</button>`;
                         div.innerHTML = html;
                         list.appendChild(div);
                     });
@@ -567,14 +509,11 @@
         }
 
         function resolveDuplicate(mbid) {
-            // Find selected radio
             const selected = document.querySelector(`input[name="keep_${mbid}"]:checked`);
             if (!selected) return;
 
             const keepPath = selected.value;
 
-            // Gather all paths for this group (to find which to delete)
-            // We can re-fetch or look at DOM. DOM is easier here.
             const allInputs = document.querySelectorAll(`input[name="keep_${mbid}"]`);
             const deletePaths = [];
             allInputs.forEach(input => {
@@ -598,11 +537,9 @@
                 .then(data => {
                     if (data.success) {
                         alert('Resolved!');
-                        // Remove the UI element
                         const btn = selected.closest('.dupe-group');
                         if (btn) btn.remove();
 
-                        // Update count
                         const remaining = document.querySelectorAll('.dupe-group').length;
                         document.getElementById('dupe-status').textContent = `Found ${remaining} duplicate groups.`;
                     } else {
@@ -618,7 +555,7 @@
             const container = document.getElementById('tag-review-container');
             const list = document.getElementById('tag-review-list');
             const status = document.getElementById('tag-review-status');
-            container.style.display = 'block';
+            container.classList.remove('hidden');
             status.textContent = 'Loading flagged tracks...';
             list.innerHTML = '';
 
@@ -643,7 +580,7 @@
             const row = document.createElement('div');
             row.className = 'tag-review-row';
             row.dataset.mbid = t.mbid;
-            row.style.cssText = 'margin-bottom:10px; padding:10px; background:#2a2a2a; border:1px solid #444; border-radius:5px;';
+            row.style.cssText = 'margin-bottom:10px; padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:6px;';
             const colour = TAG_TIER_COLOURS[t.tag_tier] || '#888';
             const scoreTxt = t.tag_score != null ? ` (score ${Number(t.tag_score).toFixed(2)})` : '';
             row.innerHTML = `
@@ -651,9 +588,9 @@
                     <span style="color:${colour}; font-size:18px;" title="${t.tag_tier}${scoreTxt}">●</span>
                     <div style="flex:1;">
                         <strong>${escapeHtml(t.artist || '?')} — ${escapeHtml(t.title || '?')}</strong>
-                        <div style="font-size:12px; color:#aaa;">${escapeHtml(t.album || '')}</div>
+                        <div style="font-size:12px; color:var(--color-text-muted);">${escapeHtml(t.album || '')}</div>
                     </div>
-                    <button onclick="identifyTagRow('${t.mbid}')">Identify</button>
+                    <button onclick="identifyTagRow('${t.mbid}')" class="btn btn-secondary" style="padding:4px 12px; font-size:12px;">Identify</button>
                 </div>
                 <div class="tag-review-candidate" style="display:none; margin-top:8px;"></div>
             `;
@@ -677,7 +614,7 @@
                 .then(res => res.json())
                 .then(data => {
                     if (!data.success) {
-                        panel.innerHTML = `<span style="color:#ff5252;">${escapeHtml(data.message)}</span>`;
+                        panel.innerHTML = `<span style="color:#e57373;">${escapeHtml(data.message)}</span>`;
                         return;
                     }
                     if (!data.candidate) {
@@ -702,21 +639,21 @@
                             ${tagDiffRow('track_number', cur, meta)}
                             ${tagDiffRow('mbid', cur, meta)}
                         </table>
-                        <div style="margin-top:8px;">
-                            <button onclick='applyTagRow("${mbid}", ${JSON.stringify(meta).replace(/"/g, '&quot;')}, ${c.score || 'null'})'>Apply</button>
-                            <button onclick='this.closest(".tag-review-candidate").style.display="none"'>Cancel</button>
+                        <div style="margin-top:10px; display:flex; gap:8px;">
+                            <button class="btn btn-primary" style="padding:4px 12px; font-size:12px;" onclick='applyTagRow("${mbid}", ${JSON.stringify(meta).replace(/"/g, '&quot;')}, ${c.score || 'null'})'>Apply</button>
+                            <button class="btn btn-secondary" style="padding:4px 12px; font-size:12px;" onclick='this.closest(".tag-review-candidate").style.display="none"'>Cancel</button>
                         </div>
                     `;
                 })
-                .catch(err => panel.innerHTML = `<span style="color:#ff5252;">Network error: ${err}</span>`);
+                .catch(err => panel.innerHTML = `<span style="color:#e57373;">Network error: ${err}</span>`);
         }
 
         function tagDiffRow(field, cur, meta) {
             const c = cur[field] || '';
             const m = meta[field] || '';
             const changed = c !== m;
-            const color = changed ? '#d6a01d' : '#888';
-            return `<tr><td style="color:#aaa;">${field}</td><td>${escapeHtml(c)}</td><td style="color:${color};">${escapeHtml(m)}</td></tr>`;
+            const color = changed ? '#d6a01d' : 'var(--color-text-muted)';
+            return `<tr><td style="color:var(--color-text-muted);">${field}</td><td>${escapeHtml(c)}</td><td style="color:${color};">${escapeHtml(m)}</td></tr>`;
         }
 
         function applyTagRow(mbid, meta, score) {
@@ -731,7 +668,6 @@
                         alert('Apply failed: ' + data.message);
                         return;
                     }
-                    // Clear the row — tag is now green.
                     const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
                     if (row) row.remove();
                     const remaining = document.querySelectorAll('.tag-review-row').length;
@@ -767,7 +703,7 @@
             const list = document.getElementById('audit-list');
             const status = document.getElementById('audit-status');
 
-            container.style.display = 'block';
+            container.classList.remove('hidden');
             status.textContent = 'Searching for incomplete albums...';
             list.innerHTML = '';
 
@@ -787,7 +723,6 @@
 
                     status.textContent = `Found ${results.length} incomplete albums.`;
 
-                    // CSS for Grid
                     list.style.display = 'grid';
                     list.style.gridTemplateColumns = 'repeat(auto-fill, minmax(150px, 1fr))';
                     list.style.gap = '15px';
@@ -795,25 +730,20 @@
                     results.forEach((item, idx) => {
                         const div = document.createElement('div');
                         div.className = 'album-card';
-                        div.style.background = '#2a2a2a';
-                        div.style.padding = '10px';
-                        div.style.borderRadius = '5px';
-                        div.style.textAlign = 'center';
-                        div.style.cursor = 'pointer';
+                        div.style.cssText = 'background:var(--color-surface); padding:10px; border-radius:6px; border:1px solid var(--color-border); text-align:center; cursor:pointer;';
 
-                        // Fallback image handling
                         div.onclick = () => showAuditDetails(item.mbid);
 
                         div.innerHTML = `
     <img src="${item.cover_art || 'img/no-cover.png'}" alt="Cover"
-        style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover; background-color: #333;"
+        style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover; background-color: var(--color-bg);"
         onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjNDQ0Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiNhYWEiIGR5PSIuM2VtIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5ObyBDb3ZlcjwvdGV4dD48L3N2Zz4=';">
     <div
-        style="margin-top:5px; font-weight:bold; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+        style="margin-top:6px; font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--color-text);">
         ${item.album}</div>
-    <div style="font-size:12px; color:#aaa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}
+    <div style="font-size:12px; color:var(--color-text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}
     </div>
-    <div style="font-size:12px; color:#f44336; margin-top:2px;">Missing: ${item.missing}</div>
+    <div style="font-size:12px; color:var(--color-accent); margin-top:2px;">Missing: ${item.missing}</div>
     `;
                         list.appendChild(div);
                     });
@@ -821,7 +751,6 @@
                 .catch(err => status.textContent = 'Network error: ' + err);
         }
 
-        // Store current audit details globally for queueing
         let currentAuditDetails = null;
 
         function showAuditDetails(mbid) {
@@ -830,7 +759,7 @@
             const title = document.getElementById('modal-title');
             const subtitle = document.getElementById('modal-subtitle');
 
-            modal.style.display = 'block';
+            modal.style.display = 'flex';
             title.textContent = "Loading...";
 
             fetch(`/api/audit/details?mbid=${mbid}`)
@@ -851,11 +780,10 @@
                     let html = '<table style="width:100%; border-collapse: collapse;">';
 
                     info.missing_tracks.forEach((t, idx) => {
-                        // CHECKED by default as requested
                         html += `
-        <tr style="border-bottom:1px solid #444;">
+        <tr style="border-bottom:1px solid var(--color-border);">
             <td style="padding:8px; width:30px;">
-                <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}">
+                <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}" style="accent-color: var(--color-accent);">
             </td>
             <td style="padding:8px;">${t.disc}-${t.track}</td>
             <td style="padding:8px;">${t.title}</td>
@@ -889,12 +817,6 @@
                     title: track.title
                 });
             });
-
-            // Check if ALL are selected (heuristic for full album queue, though user flow is explicit)
-            // But user said "I will only want to complete specific albums though".
-            // If they modify selection, we queue specific tracks.
-            // If they select all, we can queue individual tracks (safer) OR full album query if we trust it.
-            // For now, simple list.
 
             const btn = document.querySelector('#audit-modal button');
             const originalText = btn.textContent;
@@ -940,9 +862,8 @@
                         document.getElementById('stat-incomplete').textContent = s.incomplete_albums;
                         document.getElementById('stat-disk').textContent = `${s.disk_free_gb} GB`;
 
-                        // Color code disk usage?
                         if (s.disk_used_percent > 90) {
-                            document.getElementById('stat-disk').style.color = 'red';
+                            document.getElementById('stat-disk').style.color = 'var(--color-accent)';
                         }
                     } else {
                         console.error("Stats Error:", data.message);
@@ -957,38 +878,36 @@
             const container = document.getElementById('download-list-container');
             const tbody = document.getElementById('download-table-body');
 
-            // Only show if initially hidden or requested?
-            // The button toggles/shows it. If this is auto-refresh, keep it visible.
-            if (container.style.display === 'none') return;
-
-            container.style.display = 'block';
-            tbody.innerHTML = '<tr><td colspan="3">Loading...</td></tr>';
+            if (container.classList.contains('hidden')) {
+                container.classList.remove('hidden');
+            }
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">Loading...</td></tr>';
 
             fetch('/api/downloads/list')
                 .then(res => res.json())
                 .then(data => {
                     if (!data.success) {
-                        tbody.innerHTML = `<tr><td colspan="3">Error: ${data.message}</td></tr>`;
+                        tbody.innerHTML = `<tr><td colspan="3" style="padding:8px;">Error: ${data.message}</td></tr>`;
                         return;
                     }
                     if (data.items.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#666;">No items in queue.</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:8px; color:var(--color-text-muted);">No items in queue.</td></tr>';
                         return;
                     }
 
                     tbody.innerHTML = '';
                     data.items.forEach(item => {
                         const tr = document.createElement('tr');
-                        tr.style.borderBottom = '1px solid #333';
+                        tr.style.borderBottom = '1px solid var(--color-border)';
 
-                        let statusColor = '#fff';
+                        let statusColor = 'var(--color-text)';
                         if (item.status === 'success') statusColor = '#4caf50';
-                        if (item.status === 'failed') statusColor = '#f44336';
+                        if (item.status === 'failed') statusColor = '#e57373';
 
                         tr.innerHTML = `
-                            <td style="padding:5px;">${item.id}</td>
-                            <td style="padding:5px;">${item.query}</td>
-                            <td style="padding:5px; color:${statusColor}">${item.status}</td>
+                            <td style="padding:6px;">${item.id}</td>
+                            <td style="padding:6px;">${item.query}</td>
+                            <td style="padding:6px; color:${statusColor}">${item.status}</td>
                         `;
                         tbody.appendChild(tr);
                     });
@@ -1007,44 +926,40 @@
             const container = document.getElementById('search-results');
             const tbody = document.getElementById('search-results-body');
 
-            container.style.display = 'block';
-            tbody.innerHTML = '<tr><td colspan="3">Searching...</td></tr>';
+            container.classList.remove('hidden');
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">Searching...</td></tr>';
 
             fetch(`/api/library/search?q=${encodeURIComponent(query)}`)
                 .then(res => res.json())
                 .then(data => {
                     if (!data.success) {
-                        tbody.innerHTML = `<tr><td colspan="3">Error: ${data.message}</td></tr>`;
+                        tbody.innerHTML = `<tr><td colspan="3" style="padding:8px;">Error: ${data.message}</td></tr>`;
                         return;
                     }
                     if (data.results.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="3" style="padding:5px; color:#aaa;">No matches found.</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">No matches found.</td></tr>';
                         return;
                     }
 
                     tbody.innerHTML = '';
                     data.results.forEach(t => {
                         const tr = document.createElement('tr');
-                        tr.style.borderBottom = '1px solid #333';
+                        tr.style.borderBottom = '1px solid var(--color-border)';
                         tr.innerHTML = `
-                            <td style="padding:5px;">${t.artist}</td>
-                            <td style="padding:5px;">${t.album || '-'}</td>
-                            <td style="padding:5px;">${t.title}</td>
+                            <td style="padding:6px;">${t.artist}</td>
+                            <td style="padding:6px;">${t.album || '-'}</td>
+                            <td style="padding:6px;">${t.title}</td>
                         `;
-                        // Optional: Add click to view details or play?
                         tbody.appendChild(tr);
                     });
                 });
         }
 
-        // Allow Enter key
         document.getElementById('lib-search-input').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') searchLibrary();
         });
 
-        // Initial Stats Load
         loadStats();
-        // Refresh Stats periodically (every 30s)
         setInterval(loadStats, 30000);
     </script>
 </body>

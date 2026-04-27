@@ -260,4 +260,150 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
+
+  /* Shared chrome — used both in the static templates and emitted
+   * by inline JS strings (loadAuditResults, fleet/orphans tables,
+   * etc.). Keep these names stable so the existing scripts paint
+   * correctly without per-template rule duplication. */
+  .card {
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    margin-top: 0;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text);
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  .muted {
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+  .empty {
+    padding: 24px 20px;
+    color: var(--color-text-muted);
+    text-align: center;
+    font-style: italic;
+  }
+
+  /* Status bar — JS swaps the className wholesale between
+   * .status-idle and .status-running, so each variant has to be
+   * self-contained (no shared base on top). The id rule provides
+   * shape; the modifier class supplies background + text. */
+  #status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 16px;
+    margin-top: 6px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+  }
+  .status-idle {
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+  }
+  .status-running {
+    background: var(--color-accent);
+    color: #fff;
+    border: 1px solid var(--color-accent);
+    animation: dap-pulse 2s infinite;
+  }
+  @keyframes dap-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.65;
+    }
+  }
+
+  /* Sub-card used inside index.html's Download & Sync card to group
+   * related controls (Sync to DAP, Pull from Jellyfin, Multi-Device). */
+  .sync-group {
+    width: 100%;
+    margin-top: 12px;
+    padding: 14px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+  }
+  .sync-group h3 {
+    margin: 0 0 8px 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .sync-group label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 14px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: var(--color-text);
+  }
+  .sync-cursor {
+    font-size: 11px;
+    color: color-mix(
+      in srgb,
+      var(--color-accent) 70%,
+      var(--color-text-muted)
+    );
+    margin-left: 4px;
+    font-weight: normal;
+  }
+
+  /* <select> chrome — style.css used to style it; without that we
+   * fall back to UA defaults. Match the input shape so the Sync to
+   * DAP dropdowns sit consistently next to Start Sync. */
+  select {
+    padding: 8px 10px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 14px;
+  }
+
+  /* <textarea> shares the input shape but allows resize-y. Used in
+   * the Spotify-playlists field on the dashboard. */
+  textarea {
+    width: 100%;
+    padding: 9px 10px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+  }
+  textarea::placeholder {
+    color: var(--color-text-muted);
+  }
+  textarea:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow:
+      0 0 0 2px
+      color-mix(in srgb, var(--color-accent) 25%, transparent);
+  }
 }
