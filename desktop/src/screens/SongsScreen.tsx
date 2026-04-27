@@ -319,11 +319,17 @@ export default function SongsScreen({
           kind: "list",
           heading: "Add to playlist",
           emptyText: "(no playlists — create one from the sidebar)",
-          items: allPlaylists.map((p) => ({
-            key: p.playlist_id,
-            label: p.name,
-            onSelect: () => handleAddToPlaylist(p.playlist_id, menu.track),
-          })),
+          // Smart playlists derive their membership from rules, so
+          // adding a track manually to one would just store a row the
+          // read path ignores. Hide them rather than letting the user
+          // "succeed" at a no-op.
+          items: allPlaylists
+            .filter((p) => !p.smart_rules)
+            .map((p) => ({
+              key: p.playlist_id,
+              label: p.name,
+              onSelect: () => handleAddToPlaylist(p.playlist_id, menu.track),
+            })),
         },
         { kind: "separator" },
         {

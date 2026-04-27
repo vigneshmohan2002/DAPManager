@@ -4,9 +4,12 @@ import {
   deletePlaylist,
   fetchPlaylists,
   renamePlaylist,
+  updatePlaylistSmartRules,
   type Playlist,
+  type SmartRuleset,
 } from "../lib/api";
 import ContextMenu, { type ContextMenuEntry } from "./ContextMenu";
+import SmartPlaylistDialog from "./SmartPlaylistDialog";
 import { useToast } from "./Toast";
 
 type SidebarItem = {
@@ -16,6 +19,9 @@ type SidebarItem = {
   // Attached only to playlist items so right-click can open the
   // rename/delete menu. Static items leave this unset.
   playlistId?: string;
+  // Truthy on smart playlists so the row can render a badge and the
+  // context menu can offer "Edit rules…".
+  smartRules?: SmartRuleset | null;
 };
 
 type SidebarSection = {
@@ -89,7 +95,21 @@ export default function Sidebar({
     y: number;
     pid: string;
     name: string;
+    smartRules: SmartRuleset | null;
   } | null>(null);
+  // Dialog state: undefined = closed; { kind: "create" } = new playlist;
+  // { kind: "edit", ... } = editing an existing smart playlist's rules.
+  const [dialog, setDialog] = useState<
+    | { kind: "create" }
+    | {
+        kind: "edit";
+        playlistId: string;
+        name: string;
+        rules: SmartRuleset | null;
+      }
+    | null
+  >(null);
+  const [saving, setSaving] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -111,16 +131,42 @@ export default function Sidebar({
     };
   }, [ready, playlistsVersion]);
 
-  const handleNewPlaylist = async () => {
-    const name = (window.prompt("New playlist name:") ?? "").trim();
-    if (!name) return;
-    const result = await createPlaylist(name);
-    if (!result.success || !result.playlist_id) {
-      toast.show(result.message ?? "Failed to create playlist", "err");
-      return;
+  const handleCreate = async (name: string, rules: SmartRuleset | null) => {
+    setSaving(true);
+    try {
+      const result = await createPlaylist(name, rules);
+      if (!result.success || !result.playlist_id) {
+        toast.show(result.message ?? "Failed to create playlist", "err");
+        return;
+      }
+      toast.show(
+        `Created ${rules ? "smart " : ""}playlist "${result.name ?? name}".`,
+      );
+      onPlaylistCreated(result.playlist_id);
+      setDialog(null);
+    } finally {
+      setSaving(false);
     }
-    toast.show(`Created "${result.name ?? name}".`);
-    onPlaylistCreated(result.playlist_id);
+  };
+
+  const handleEditRules = async (
+    playlistId: string,
+    _name: string,
+    rules: SmartRuleset | null,
+  ) => {
+    setSaving(true);
+    try {
+      const result = await updatePlaylistSmartRules(playlistId, rules);
+      if (!result.success) {
+        toast.show(result.message || "Save rules failed", "err");
+        return;
+      }
+      toast.show(rules ? "Rules updated." : "Rules cleared.");
+      onPlaylistsChanged();
+      setDialog(null);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleRename = async (pid: string, currentName: string) => {
@@ -157,7 +203,7 @@ export default function Sidebar({
     title: "Playlists",
     accessory: (
       <button
-        onClick={handleNewPlaylist}
+        onClick={() => setDialog({ kind: "create" })}
         disabled={!ready}
         title="New playlist"
         className="text-lg leading-none px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40"
@@ -166,17 +212,36 @@ export default function Sidebar({
       </button>
     ),
     items: playlists.map((p) => ({
+      // Smart playlists carry their (decoded) ruleset so the right-
+      // click handler can prefill the edit dialog without re-fetching.
       id: playlistSidebarId(p.playlist_id),
       label: p.name,
       count: p.track_count,
       playlistId: p.playlist_id,
+      smartRules: p.smart_rules,
     })),
   };
 
+  const isSmart = Boolean(menu?.smartRules);
   const menuEntries: ContextMenuEntry[] | null = menu
     ? [
         { kind: "label", text: menu.name },
         { kind: "separator" },
+        ...(isSmart
+          ? [
+              {
+                kind: "item" as const,
+                label: "Edit rules…",
+                onSelect: () =>
+                  setDialog({
+                    kind: "edit",
+                    playlistId: menu.pid,
+                    name: menu.name,
+                    rules: menu.smartRules,
+                  }),
+              },
+            ]
+          : []),
         {
           kind: "item",
           label: "Rename…",
@@ -226,6 +291,7 @@ export default function Sidebar({
               y: e.clientY,
               pid: item.playlistId,
               name: item.label,
+              smartRules: item.smartRules ?? null,
             });
           }}
           footer={
@@ -250,6 +316,24 @@ export default function Sidebar({
           y={menu.y}
           entries={menuEntries}
           onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {dialog ? (
+        <SmartPlaylistDialog
+          mode={
+            dialog.kind === "edit"
+              ? { kind: "edit", playlistId: dialog.playlistId, nameLocked: true }
+              : { kind: "create" }
+          }
+          initialName={dialog.kind === "edit" ? dialog.name : ""}
+          initialRules={dialog.kind === "edit" ? dialog.rules : null}
+          saving={saving}
+          onSave={(name, rules) =>
+            dialog.kind === "edit"
+              ? handleEditRules(dialog.playlistId, name, rules)
+              : handleCreate(name, rules)
+          }
+          onCancel={() => (saving ? undefined : setDialog(null))}
         />
       ) : null}
     </aside>
@@ -289,6 +373,14 @@ function Section({
                     : "text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)]/50"
                 }`}
               >
+                {item.smartRules ? (
+                  <span
+                    title="Smart playlist (rule-based)"
+                    className="mr-1 shrink-0 text-[var(--color-accent)]"
+                  >
+                    ★
+                  </span>
+                ) : null}
                 <span className="truncate">{item.label}</span>
                 {item.count !== undefined ? (
                   <span className="ml-auto shrink-0 text-xs text-[var(--color-text-muted)]">
