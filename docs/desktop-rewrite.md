@@ -411,11 +411,61 @@ Decisions worth preserving:
   Wikipedia's etiquette is satisfied either way and config-key
   surface stays small.
 
+### 9 / smart playlists — _Shipped (`5312d16` + `0111960` + `8747fb8`)_
+
+Rule-based playlists, evaluated server-side at fetch time. Three
+commits: DB schema + clause builder, web API, desktop UI.
+
+Decisions worth preserving:
+
+- **JSON column on `playlists`, not a separate `smart_playlist_rules`
+  table.** A ruleset is small (≤ a handful of rows), always loaded
+  with the playlist, and never queried independently — a side table
+  would be all join with no payoff. The downside (no per-rule
+  history) doesn't matter here because edits are rare and the whole
+  ruleset is replaced atomically.
+- **Field/op whitelist enforced in `src/smart_playlist.py`, never
+  string-interpolated.** Unknown identifiers raise before reaching
+  SQL; values are always parameters; LIKE values are escaped and the
+  clause uses `ESCAPE '\'` so user-typed `%` / `_` behave as
+  literals. The smart-playlists feature would be a SQL-injection
+  surface if any of those guards were skipped, so the contract is
+  enforced at the lowest layer (the clause builder) rather than at
+  the endpoint, and `coerce_ruleset` is the single validation
+  funnel both create and update flows go through.
+- **Empty rules → `("0", [])`, not the full library.** Safer fallback
+  if a future caller skips coercion. A misconfigured smart playlist
+  resolves to zero tracks, never to "everything in the library".
+- **`smart_rules` ships through the playlists delta feed.** Smart
+  playlists are sync'd between master and satellites the same way
+  static ones are; satellites pull the JSON and re-evaluate locally
+  against their own tracks. No special-casing in the sync layer.
+- **Mixing `track_mbids` and `smart_rules` in one PUT is a 400.**
+  Manual membership and rule-driven membership in one request have
+  no coherent outcome (the read path picks one or the other based
+  on whether `smart_rules` is set), so reject up front rather than
+  silently dropping one side.
+- **Client whitelist mirrors server, but is for UX gating only.**
+  `desktop/src/lib/smartRules.ts` exists so the dialog can disable
+  Save and reconcile op when the user changes field. Don't expand
+  the client list past what the server accepts — out-of-whitelist
+  ops would surface as a 400 with no UI feedback.
+- **Single dialog for static-and-smart create, toggle in the form.**
+  The "+" button stays one button; the dialog's "Smart playlist"
+  checkbox gates the rule editor inside the same modal. Splitting
+  into a popover would have made static creation (the common case)
+  worse for a feature most users won't reach for.
+- **Smart playlists hide from "Add to playlist" submenu.**
+  Manually adding a track to a smart playlist would store a row the
+  read path ignores. `SongsScreen` filters smart playlists out of
+  the submenu so the user can't "succeed" at a no-op.
+- **No vitest yet.** `lib/smartRules.ts` is pure and small enough
+  that the server-side test coverage (`tests/test_smart_playlist.py`,
+  same whitelist) is doing double duty for now. Worth wiring vitest
+  when a second pure-helper module appears in the desktop tree.
+
 ### Remaining picks (not yet started)
 
-- Smart playlists (rule-based, evaluated server-side). Needs new
-  schema: `smart_playlist_rules` table or a JSON column on
-  `playlists`.
 - Listening stats tab (needs a `play_events` table — schema change,
   not trivial).
 - Discography timeline with release years (release-year column +
