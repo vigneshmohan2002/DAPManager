@@ -8,7 +8,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { albumCoverUrl, backendUrl, streamUrl, type Track } from "../lib/api";
+import {
+  albumCoverUrl,
+  backendUrl,
+  recordPlay,
+  streamUrl,
+  type Track,
+} from "../lib/api";
 
 export type PlayerTrack = Track & { albumId: string | null };
 
@@ -57,14 +63,36 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const current = queue[index] ?? null;
 
+  // Tracks the mbid we've already scrobbled for the current load. A new
+  // load (track change in the queue) clears it; a replay of the same
+  // track via re-queueing will re-record because the load effect runs
+  // again. Using a ref so timeupdate-rate state changes don't re-render.
+  const scrobbledRef = useRef<string | null>(null);
+
   // Load new src when current track changes.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !current || !base) return;
     audio.src = streamUrl(base, current.mbid);
+    scrobbledRef.current = null;
     audio.play().catch(() => setIsPlaying(false));
     setIsPlaying(true);
   }, [current?.mbid, base]);
+
+  // Scrobble — record one play event per loaded track once the user
+  // has heard enough of it. The threshold mirrors the long-standing
+  // Last.fm convention so user expectations transfer: ≥30 seconds
+  // listened, OR ≥50% of the track's duration, whichever comes first.
+  // Scrubbing past the threshold counts; that's fine — the user did
+  // engage with the track to that extent. Fire-and-forget on the
+  // network side; the recordPlay helper swallows transient failures.
+  useEffect(() => {
+    if (!current) return;
+    if (scrobbledRef.current === current.mbid) return;
+    if (position < 30 && (duration <= 0 || position / duration < 0.5)) return;
+    scrobbledRef.current = current.mbid;
+    recordPlay(current.mbid);
+  }, [current, position, duration]);
 
   // Wire <audio> events → state.
   useEffect(() => {

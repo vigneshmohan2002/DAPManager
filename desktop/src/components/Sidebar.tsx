@@ -48,6 +48,7 @@ const STATIC_SECTIONS: SidebarSection[] = [
       { id: "albums", label: "Albums" },
       { id: "artists", label: "Artists" },
       { id: "songs", label: "Songs" },
+      { id: "stats", label: "Listening" },
     ],
   },
   {
