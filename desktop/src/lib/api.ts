@@ -104,11 +104,43 @@ export async function fetchAllTracks(
   return (data.tracks ?? []) as LibraryTrack[];
 }
 
+// Mirrors the server-side whitelist in src/smart_playlist.py. Keep
+// these in sync; the dialog uses them to gate which ops are offered
+// per field, and the server re-validates either way.
+export type SmartField =
+  | "artist"
+  | "album"
+  | "title"
+  | "tag_tier"
+  | "tag_score";
+
+export type SmartOp =
+  | "contains"
+  | "equals"
+  | "starts_with"
+  | "ends_with"
+  | "gt"
+  | "lt";
+
+export type SmartRule = {
+  field: SmartField;
+  op: SmartOp;
+  value: string | number;
+};
+
+export type SmartRuleset = {
+  match: "all" | "any";
+  rules: SmartRule[];
+};
+
 export type Playlist = {
   playlist_id: string;
   name: string;
   track_count: number;
   updated_at: string;
+  // Decoded by the GET endpoint; null means "static playlist". Static
+  // and smart are distinguished only by truthiness of this field.
+  smart_rules: SmartRuleset | null;
 };
 
 export async function fetchPlaylists(): Promise<Playlist[]> {
@@ -674,14 +706,44 @@ export type CreatePlaylistResult = {
 
 export async function createPlaylist(
   name: string,
+  smartRules?: SmartRuleset | null,
 ): Promise<CreatePlaylistResult> {
   const url = await backendUrl();
+  const body: { name: string; smart_rules?: SmartRuleset | null } = { name };
+  // Only include the key when caller passed something — the server
+  // distinguishes "missing" from "explicit null" elsewhere, and
+  // create has no use for null (a fresh playlist with null rules is
+  // just a static playlist).
+  if (smartRules !== undefined) body.smart_rules = smartRules;
   const r = await fetch(`${url}/api/library/playlists`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(body),
   });
   return (await r.json()) as CreatePlaylistResult;
+}
+
+// Replace the smart-rules ruleset on an existing playlist. Pass null
+// to clear (turning a smart playlist back into a static one); the
+// server is happy with either an object or explicit null.
+export async function updatePlaylistSmartRules(
+  playlistId: string,
+  smartRules: SmartRuleset | null,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ smart_rules: smartRules }),
+    },
+  );
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
 }
 
 export async function renamePlaylist(
