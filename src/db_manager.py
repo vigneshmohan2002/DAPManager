@@ -179,12 +179,33 @@ class DatabaseManager:
                     PRIMARY KEY (device_id, mbid)
                 );
             """,
+            "play_events": """
+                CREATE TABLE IF NOT EXISTS play_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    track_mbid TEXT NOT NULL,
+                    played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    source TEXT
+                );
+            """,
         }
+
+        # Indexes that pay off the common stats queries (group-by-mbid for
+        # top tracks; time-window filter for "since"). Created alongside the
+        # table so a fresh DB has them; existing DBs pick them up via
+        # _migrate_schema's CREATE INDEX IF NOT EXISTS.
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_play_events_played_at "
+            "ON play_events(played_at)",
+            "CREATE INDEX IF NOT EXISTS idx_play_events_track_mbid "
+            "ON play_events(track_mbid)",
+        ]
 
         try:
             cursor = self.conn.cursor()
             for table_name, create_sql in tables.items():
                 cursor.execute(create_sql)
+            for idx_sql in indexes:
+                cursor.execute(idx_sql)
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"Error creating tables: {e}")
@@ -1373,6 +1394,149 @@ class DatabaseManager:
             "ORDER BY device_count DESC, t.artist, t.album, t.title "
             "LIMIT ?",
             (term, term, term, int(limit)),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    # --- Play events (listening history) ---
+    #
+    # Appendable log: one row per "this track played long enough to count"
+    # event. Client decides the threshold (e.g., 30s or 50% of duration);
+    # the backend just records. Rows survive track soft-delete / purge so
+    # historical stats remain meaningful — there's no FK constraint to
+    # tracks.mbid for that reason.
+
+    def record_play_event(
+        self, track_mbid: str, source: Optional[str] = None
+    ) -> int:
+        """Append one play event. Returns the new event id.
+
+        ``source`` is a free-form tag (e.g., "desktop", "web") so future
+        stats can split per surface. None is fine and stays NULL.
+        """
+        if not track_mbid or not str(track_mbid).strip():
+            raise ValueError("track_mbid is required")
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO play_events (track_mbid, source) VALUES (?, ?)",
+            (track_mbid, source),
+        )
+        event_id = cursor.lastrowid
+        self.conn.commit()
+        cursor.close()
+        return event_id
+
+    def play_count_since(self, since_iso: Optional[str] = None) -> int:
+        """Total play events recorded since ``since_iso`` (None = all time)."""
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute(
+                "SELECT COUNT(*) FROM play_events WHERE played_at >= ?",
+                (since_iso,),
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) FROM play_events")
+        n = cursor.fetchone()[0]
+        cursor.close()
+        return int(n or 0)
+
+    def top_tracks_since(
+        self, since_iso: Optional[str] = None, limit: int = 20
+    ) -> List[dict]:
+        """Top-played tracks in the window, joined to tracks for display.
+
+        LEFT JOIN so events for tracks since deleted/purged still appear
+        — the row carries the title/artist/album as currently known
+        (NULLs if the track row is gone). The UI treats those as
+        "(unknown)" rather than dropping them silently.
+        """
+        cursor = self.conn.cursor()
+        params: tuple
+        if since_iso:
+            sql = (
+                "SELECT pe.track_mbid AS mbid, t.title, t.artist, t.album, "
+                "       COUNT(*) AS plays "
+                "FROM play_events pe "
+                "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
+                "WHERE pe.played_at >= ? "
+                "GROUP BY pe.track_mbid "
+                "ORDER BY plays DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE "
+                "LIMIT ?"
+            )
+            params = (since_iso, int(limit))
+        else:
+            sql = (
+                "SELECT pe.track_mbid AS mbid, t.title, t.artist, t.album, "
+                "       COUNT(*) AS plays "
+                "FROM play_events pe "
+                "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
+                "GROUP BY pe.track_mbid "
+                "ORDER BY plays DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE "
+                "LIMIT ?"
+            )
+            params = (int(limit),)
+        cursor.execute(sql, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def top_artists_since(
+        self, since_iso: Optional[str] = None, limit: int = 20
+    ) -> List[dict]:
+        """Top artists by play count in the window.
+
+        Groups on the *current* tracks.artist value, so a tag rewrite that
+        renames an artist re-attributes their historical plays — that's
+        the desired behaviour ("show me how much I've listened to X" should
+        track X's current canonical name). Plays whose track row has been
+        purged drop out of this view (the artist is unknown); they still
+        count toward the global ``play_count_since`` total.
+        """
+        cursor = self.conn.cursor()
+        params: tuple
+        if since_iso:
+            sql = (
+                "SELECT t.artist, COUNT(*) AS plays, "
+                "       COUNT(DISTINCT pe.track_mbid) AS distinct_tracks "
+                "FROM play_events pe "
+                "JOIN tracks t ON t.mbid = pe.track_mbid "
+                "WHERE pe.played_at >= ? "
+                "GROUP BY t.artist "
+                "ORDER BY plays DESC, t.artist COLLATE NOCASE "
+                "LIMIT ?"
+            )
+            params = (since_iso, int(limit))
+        else:
+            sql = (
+                "SELECT t.artist, COUNT(*) AS plays, "
+                "       COUNT(DISTINCT pe.track_mbid) AS distinct_tracks "
+                "FROM play_events pe "
+                "JOIN tracks t ON t.mbid = pe.track_mbid "
+                "GROUP BY t.artist "
+                "ORDER BY plays DESC, t.artist COLLATE NOCASE "
+                "LIMIT ?"
+            )
+            params = (int(limit),)
+        cursor.execute(sql, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def recent_plays(self, limit: int = 20) -> List[dict]:
+        """Reverse-chronological feed of recent play events. Joined to
+        tracks for display. Soft-deleted / purged tracks come back with
+        NULL title/artist; the UI surfaces those as "(unknown track)".
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT pe.id, pe.track_mbid AS mbid, pe.played_at, pe.source, "
+            "       t.title, t.artist, t.album "
+            "FROM play_events pe "
+            "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
+            "ORDER BY pe.played_at DESC, pe.id DESC "
+            "LIMIT ?",
+            (int(limit),),
         )
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.close()

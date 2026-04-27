@@ -1378,3 +1378,143 @@ def test_list_playlists_with_counts_exposes_smart_rules(db):
     rows = db.list_playlists_with_counts()
     smart_row = next(r for r in rows if r["name"] == "OK Computer pin")
     assert smart_row["smart_rules"] == rules
+
+
+# --- Play events ---
+
+
+def _seed_tracks_for_play_events(db):
+    db.add_or_update_track(Track(
+        mbid="t1", title="Yellow", artist="Coldplay", album="Parachutes",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t2", title="Clocks", artist="Coldplay", album="A Rush of Blood",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t3", title="Karma Police", artist="Radiohead", album="OK Computer",
+    ))
+
+
+def test_record_play_event_returns_increasing_ids(db):
+    _seed_tracks_for_play_events(db)
+    a = db.record_play_event("t1", source="desktop")
+    b = db.record_play_event("t1")  # source is optional / NULL
+    assert a >= 1
+    assert b > a
+
+
+def test_record_play_event_rejects_blank_mbid(db):
+    with pytest.raises(ValueError):
+        db.record_play_event("")
+    with pytest.raises(ValueError):
+        db.record_play_event("   ")
+
+
+def test_play_count_since_counts_all_when_no_filter(db):
+    _seed_tracks_for_play_events(db)
+    db.record_play_event("t1")
+    db.record_play_event("t2")
+    db.record_play_event("t1")
+    assert db.play_count_since() == 3
+
+
+def test_play_count_since_filters_by_iso_window(db):
+    _seed_tracks_for_play_events(db)
+    db.record_play_event("t1")
+    # ISO timestamps compare lexically when stored as strings; CURRENT_TIMESTAMP
+    # is "YYYY-MM-DD HH:MM:SS" UTC, so a 9999 cutoff excludes everything.
+    assert db.play_count_since("9999-01-01 00:00:00") == 0
+    assert db.play_count_since("0001-01-01 00:00:00") == 1
+
+
+def test_top_tracks_orders_by_play_count_desc(db):
+    _seed_tracks_for_play_events(db)
+    # t1 → 3 plays, t3 → 2, t2 → 1.
+    for _ in range(3):
+        db.record_play_event("t1")
+    for _ in range(2):
+        db.record_play_event("t3")
+    db.record_play_event("t2")
+
+    top = db.top_tracks_since(limit=10)
+    assert [r["mbid"] for r in top] == ["t1", "t3", "t2"]
+    assert top[0] == {
+        "mbid": "t1", "title": "Yellow", "artist": "Coldplay",
+        "album": "Parachutes", "plays": 3,
+    }
+
+
+def test_top_tracks_keeps_orphan_events_with_null_metadata(db):
+    # A play event whose track row has been purged still surfaces — the
+    # mbid is preserved so the UI can show "(unknown)" rather than
+    # silently dropping plays from the count.
+    _seed_tracks_for_play_events(db)
+    db.record_play_event("t1")
+    db.record_play_event("ghost-mbid")
+    db.record_play_event("t1")
+
+    top = db.top_tracks_since(limit=10)
+    by_mbid = {r["mbid"]: r for r in top}
+    assert by_mbid["t1"]["plays"] == 2
+    assert by_mbid["ghost-mbid"]["plays"] == 1
+    assert by_mbid["ghost-mbid"]["title"] is None
+    assert by_mbid["ghost-mbid"]["artist"] is None
+
+
+def test_top_artists_groups_and_counts_distinct(db):
+    _seed_tracks_for_play_events(db)
+    # Coldplay: 3 plays across 2 distinct tracks. Radiohead: 1 play / 1 track.
+    db.record_play_event("t1")
+    db.record_play_event("t1")
+    db.record_play_event("t2")
+    db.record_play_event("t3")
+
+    artists = db.top_artists_since(limit=10)
+    assert artists[0] == {"artist": "Coldplay", "plays": 3, "distinct_tracks": 2}
+    assert artists[1] == {"artist": "Radiohead", "plays": 1, "distinct_tracks": 1}
+
+
+def test_top_artists_drops_events_for_purged_tracks(db):
+    # Inner JOIN on tracks — events for deleted tracks have no artist
+    # we can attribute, so they fall out of the artist breakdown
+    # (they still count toward play_count_since).
+    _seed_tracks_for_play_events(db)
+    db.record_play_event("t1")
+    db.record_play_event("ghost-mbid")
+    artists = db.top_artists_since(limit=10)
+    assert [a["artist"] for a in artists] == ["Coldplay"]
+    assert db.play_count_since() == 2
+
+
+def test_recent_plays_returns_reverse_chronological(db):
+    _seed_tracks_for_play_events(db)
+    db.record_play_event("t1", source="desktop")
+    db.record_play_event("t2", source="desktop")
+    db.record_play_event("t3")
+    recent = db.recent_plays(limit=10)
+    # CURRENT_TIMESTAMP can collide within a second; the SQL uses id DESC
+    # as a tiebreaker so insertion order is preserved within a tied second.
+    assert [r["mbid"] for r in recent] == ["t3", "t2", "t1"]
+    assert recent[0]["title"] == "Karma Police"
+    assert recent[0]["source"] is None
+    assert recent[1]["source"] == "desktop"
+
+
+def test_recent_plays_respects_limit(db):
+    _seed_tracks_for_play_events(db)
+    for _ in range(5):
+        db.record_play_event("t1")
+    assert len(db.recent_plays(limit=3)) == 3
+
+
+def test_play_events_survive_track_soft_delete(db):
+    # Stats are history; soft-deleting a track shouldn't erase the
+    # listening record. The LEFT JOIN in top_tracks_since means the row
+    # still appears (with metadata from tracks that's still present
+    # since soft-delete only sets deleted_at — the row itself stays).
+    _seed_tracks_for_play_events(db)
+    db.record_play_event("t1")
+    db.soft_delete_track("t1")
+    top = db.top_tracks_since(limit=10)
+    assert any(r["mbid"] == "t1" for r in top)
+    assert db.play_count_since() == 1

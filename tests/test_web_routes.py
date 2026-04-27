@@ -1712,3 +1712,110 @@ def test_request_download_rejects_missing_body(client, mock_config):
     mock_config.is_master = True
     res = client.post('/api/download/request', json={})
     assert res.status_code == 400
+
+
+# --- Play events / listening stats ---
+
+
+def test_record_play_returns_event_id(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.record_play_event.return_value = 42
+        res = client.post(
+            '/api/library/plays',
+            json={"mbid": "abc", "source": "desktop"},
+        )
+
+    assert res.status_code == 201
+    assert res.get_json() == {"success": True, "event_id": 42}
+    inst.record_play_event.assert_called_once_with("abc", source="desktop")
+
+
+def test_record_play_accepts_omitted_source(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.record_play_event.return_value = 1
+        res = client.post('/api/library/plays', json={"mbid": "xyz"})
+
+    assert res.status_code == 201
+    inst.record_play_event.assert_called_once_with("xyz", source=None)
+
+
+def test_record_play_rejects_blank_mbid(client, mock_config):
+    res = client.post('/api/library/plays', json={"mbid": "  "})
+    assert res.status_code == 400
+    assert "mbid" in res.get_json()["message"]
+
+
+def test_record_play_rejects_non_string_source(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        res = client.post(
+            '/api/library/plays',
+            json={"mbid": "abc", "source": 123},
+        )
+    assert res.status_code == 400
+    assert not inst.record_play_event.called
+
+
+def test_play_stats_aggregates_db_helpers(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.play_count_since.return_value = 7
+        inst.top_tracks_since.return_value = [
+            {"mbid": "t1", "title": "Yellow", "artist": "Coldplay", "album": "P", "plays": 3},
+        ]
+        inst.top_artists_since.return_value = [
+            {"artist": "Coldplay", "plays": 3, "distinct_tracks": 2},
+        ]
+        inst.recent_plays.return_value = [
+            {"id": 9, "mbid": "t1", "played_at": "2026-04-27 10:00:00",
+             "source": "desktop", "title": "Yellow", "artist": "Coldplay", "album": "P"},
+        ]
+        res = client.get('/api/library/play-stats?since=2026-01-01&limit=5')
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["total"] == 7
+    assert data["top_tracks"][0]["plays"] == 3
+    assert data["top_artists"][0]["distinct_tracks"] == 2
+    assert data["recent"][0]["mbid"] == "t1"
+    inst.play_count_since.assert_called_once_with("2026-01-01")
+    inst.top_tracks_since.assert_called_once_with("2026-01-01", limit=5)
+    inst.top_artists_since.assert_called_once_with("2026-01-01", limit=5)
+    inst.recent_plays.assert_called_once_with(limit=5)
+
+
+def test_play_stats_defaults_to_no_since_and_limit_20(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.play_count_since.return_value = 0
+        inst.top_tracks_since.return_value = []
+        inst.top_artists_since.return_value = []
+        inst.recent_plays.return_value = []
+        res = client.get('/api/library/play-stats')
+
+    assert res.status_code == 200
+    inst.play_count_since.assert_called_once_with(None)
+    inst.top_tracks_since.assert_called_once_with(None, limit=20)
+
+
+def test_play_stats_clamps_limit_to_safe_range(client, mock_config):
+    # Big limits would let a stale dashboard pull thousands of rows on
+    # every poll; clamp so the worst-case payload is bounded.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.play_count_since.return_value = 0
+        inst.top_tracks_since.return_value = []
+        inst.top_artists_since.return_value = []
+        inst.recent_plays.return_value = []
+        client.get('/api/library/play-stats?limit=99999')
+
+    inst.top_tracks_since.assert_called_once_with(None, limit=200)
+
+
+def test_play_stats_rejects_non_integer_limit(client, mock_config):
+    res = client.get('/api/library/play-stats?limit=abc')
+    assert res.status_code == 400
+    assert "limit" in res.get_json()["message"]
