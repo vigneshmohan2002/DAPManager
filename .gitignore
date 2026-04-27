@@ -10,3 +10,5 @@
 /*.zip
 src/__pycache__/
 tests/__pycache__/
+.claude/settings.local.json
+desktop/.claude/settings.local.json
