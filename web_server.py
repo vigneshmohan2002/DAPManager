@@ -1026,6 +1026,78 @@ def api_library_album_tracks(album_id: str):
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/plays", methods=["POST"])
+def api_library_record_play():
+    """Append one play event. Body: ``{"mbid": "...", "source": "desktop"?}``.
+
+    The client decides what counts as a "play" (e.g., 30s elapsed or 50%
+    of duration); this endpoint just records. Unknown / soft-deleted /
+    purged mbids are still accepted — the stats path tolerates dangling
+    events so historical counts survive a track being purged.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    mbid = (data.get("mbid") or "").strip()
+    if not mbid:
+        return jsonify({"success": False, "message": "mbid is required"}), 400
+    source = data.get("source")
+    if source is not None and not isinstance(source, str):
+        return jsonify({
+            "success": False,
+            "message": "source must be a string when provided",
+        }), 400
+    try:
+        with DatabaseManager(config.db_path) as db:
+            event_id = db.record_play_event(mbid, source=source)
+    except ValueError as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+    except Exception as e:
+        logger.exception("api_library_record_play failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, "event_id": event_id}), 201
+
+
+@app.route("/api/library/play-stats", methods=["GET"])
+def api_library_play_stats():
+    """Aggregated listening stats for the desktop's stats screen.
+
+    Query params (all optional):
+      since:      ISO-8601 cutoff (inclusive). Omit for all-time.
+      limit:      cap on top_tracks / top_artists / recent items.
+                  Defaults to 20; clamped to [1, 200].
+
+    Returns ``{success, total, top_tracks, top_artists, recent}``.
+    A single endpoint rather than four because the stats screen
+    always wants all four for the same window — coalescing avoids
+    four serial roundtrips on screen mount.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    since = (request.args.get("since") or "").strip() or None
+    try:
+        limit = int(request.args.get("limit", "20"))
+    except ValueError:
+        return jsonify({"success": False, "message": "limit must be an integer"}), 400
+    limit = max(1, min(200, limit))
+    try:
+        with DatabaseManager(config.db_path) as db:
+            total = db.play_count_since(since)
+            top_tracks = db.top_tracks_since(since, limit=limit)
+            top_artists = db.top_artists_since(since, limit=limit)
+            recent = db.recent_plays(limit=limit)
+    except Exception as e:
+        logger.exception("api_library_play_stats failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({
+        "success": True,
+        "total": total,
+        "top_tracks": top_tracks,
+        "top_artists": top_artists,
+        "recent": recent,
+    })
+
+
 @app.route("/api/stream/<path:mbid>")
 def api_stream_track(mbid: str):
     """Stream a track's audio bytes, resolving source in priority order.
