@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:web": "tailwindcss -i src/master-web.css -o ../web/static/tailwind.css --minify",
+    "watch:web": "tailwindcss -i src/master-web.css -o ../web/static/tailwind.css --watch"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",
@@ -18,6 +20,7 @@
     "tailwindcss": "^4.2.2"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.2.4",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
