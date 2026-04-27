@@ -587,8 +587,8 @@ def test_library_tracks_include_orphans_keeps_unavailable_rows(client, mock_conf
 def test_library_playlists_lists_live_playlists(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         MockDB.return_value.__enter__.return_value.list_playlists_with_counts.return_value = [
-            {"playlist_id": "pl-1", "name": "Alpha", "track_count": 12, "updated_at": "2026-04-20 10:00:00"},
-            {"playlist_id": "pl-2", "name": "Bravo", "track_count": 0, "updated_at": "2026-04-20 11:00:00"},
+            {"playlist_id": "pl-1", "name": "Alpha", "track_count": 12, "updated_at": "2026-04-20 10:00:00", "smart_rules": None},
+            {"playlist_id": "pl-2", "name": "Bravo", "track_count": 0, "updated_at": "2026-04-20 11:00:00", "smart_rules": None},
         ]
         res = client.get('/api/library/playlists')
 
@@ -597,6 +597,30 @@ def test_library_playlists_lists_live_playlists(client, mock_config):
     assert data["success"] is True
     assert [p["name"] for p in data["playlists"]] == ["Alpha", "Bravo"]
     assert data["playlists"][0]["track_count"] == 12
+    # Static playlists surface smart_rules as null so the client can
+    # branch on truthy / falsy without a separate "is_smart" flag.
+    assert data["playlists"][0]["smart_rules"] is None
+
+
+def test_library_playlists_decodes_smart_rules_json(client, mock_config):
+    # Stored as a JSON string in the column; the GET endpoint decodes it
+    # so the client doesn't have to JSON.parse a field nested in JSON.
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_playlists_with_counts.return_value = [
+            {
+                "playlist_id": "pl-smart",
+                "name": "Smart",
+                "track_count": 0,
+                "updated_at": "2026-04-26 09:00:00",
+                "smart_rules": '{"match":"all","rules":[{"field":"artist","op":"contains","value":"beatles"}]}',
+            },
+        ]
+        res = client.get('/api/library/playlists')
+    rules = res.get_json()["playlists"][0]["smart_rules"]
+    assert rules == {
+        "match": "all",
+        "rules": [{"field": "artist", "op": "contains", "value": "beatles"}],
+    }
 
 
 def test_library_playlists_create_returns_generated_id(client, mock_config):
@@ -613,6 +637,54 @@ def test_library_playlists_create_rejects_empty_name(client, mock_config):
     res = client.post('/api/library/playlists', json={"name": "  "})
     assert res.status_code == 400
     assert res.get_json()["success"] is False
+
+
+def test_library_playlists_create_with_smart_rules(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.create_playlist.return_value = "smart-uuid"
+        res = client.post(
+            '/api/library/playlists',
+            json={
+                "name": "Beatles deep cuts",
+                "smart_rules": {
+                    "match": "all",
+                    "rules": [{"field": "artist", "op": "contains", "value": "beatles"}],
+                },
+            },
+        )
+
+    assert res.status_code == 201
+    data = res.get_json()
+    assert data["playlist_id"] == "smart-uuid"
+    args, kwargs = inst.create_playlist.call_args
+    # Name is positional, smart_rules is keyword-passed as a JSON string.
+    assert args[0] == "Beatles deep cuts"
+    stored = json.loads(kwargs["smart_rules"])
+    assert stored == {
+        "match": "all",
+        "rules": [{"field": "artist", "op": "contains", "value": "beatles"}],
+    }
+
+
+def test_library_playlists_create_rejects_bad_rules(client, mock_config):
+    # Unknown field — coerce_ruleset must raise so the endpoint returns
+    # 400 and never calls create_playlist with garbage.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        res = client.post(
+            '/api/library/playlists',
+            json={
+                "name": "Bad",
+                "smart_rules": {
+                    "match": "all",
+                    "rules": [{"field": "secret_column", "op": "equals", "value": "x"}],
+                },
+            },
+        )
+    assert res.status_code == 400
+    assert "secret_column" in res.get_json()["message"]
+    assert not inst.create_playlist.called
 
 
 def test_library_playlist_update_rename_only(client, mock_config):
@@ -667,6 +739,91 @@ def test_library_playlist_update_requires_name_or_tracks(client, mock_config):
         MockDB.return_value.__enter__.return_value.get_playlist.return_value = MagicMock()
         res = client.put('/api/library/playlists/pl-1', json={})
     assert res.status_code == 400
+
+
+def test_library_playlist_update_sets_smart_rules(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_playlist.return_value = MagicMock()
+        inst.update_playlist_smart_rules.return_value = True
+        res = client.put(
+            '/api/library/playlists/pl-1',
+            json={
+                "smart_rules": {
+                    "match": "any",
+                    "rules": [
+                        {"field": "tag_score", "op": "gt", "value": 80},
+                        {"field": "album", "op": "contains", "value": "live"},
+                    ],
+                },
+            },
+        )
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["rules_changed"] is True
+    args, _ = inst.update_playlist_smart_rules.call_args
+    assert args[0] == "pl-1"
+    stored = json.loads(args[1])
+    assert stored["match"] == "any"
+    assert len(stored["rules"]) == 2
+
+
+def test_library_playlist_update_clears_smart_rules_with_null(client, mock_config):
+    # Explicit null converts a smart playlist back to a static one —
+    # serialize() returns None for None / empty rules, so the column
+    # ends up NULL.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_playlist.return_value = MagicMock()
+        inst.update_playlist_smart_rules.return_value = True
+        res = client.put(
+            '/api/library/playlists/pl-1',
+            json={"smart_rules": None},
+        )
+
+    assert res.status_code == 200
+    inst.update_playlist_smart_rules.assert_called_once_with("pl-1", None)
+
+
+def test_library_playlist_update_rejects_tracks_and_rules_together(client, mock_config):
+    # Mixing manual membership and rule-driven membership in one request
+    # has no coherent semantics; reject up front rather than silently
+    # dropping one of them.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        res = client.put(
+            '/api/library/playlists/pl-1',
+            json={
+                "track_mbids": ["a"],
+                "smart_rules": {
+                    "match": "all",
+                    "rules": [{"field": "artist", "op": "equals", "value": "x"}],
+                },
+            },
+        )
+    assert res.status_code == 400
+    assert "mutually exclusive" in res.get_json()["message"]
+    assert not inst.replace_playlist_membership.called
+    assert not inst.update_playlist_smart_rules.called
+
+
+def test_library_playlist_update_rejects_bad_rules(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        res = client.put(
+            '/api/library/playlists/pl-1',
+            json={
+                "smart_rules": {
+                    "match": "all",
+                    "rules": [{"field": "artist", "op": "regex", "value": ".*"}],
+                },
+            },
+        )
+    assert res.status_code == 400
+    # Validation runs before get_playlist, so we never even open the DB.
+    assert not inst.get_playlist.called
 
 
 def test_library_playlist_update_404s_missing(client, mock_config):
