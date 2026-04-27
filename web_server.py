@@ -736,13 +736,19 @@ def api_library_playlists():
     """Live playlists with membership counts, for the library sidebar.
 
     Distinct from ``GET /api/playlists`` (which is the sync delta feed).
-    Orphans are excluded — the /orphans page handles those.
+    Orphans are excluded — the /orphans page handles those. ``smart_rules``
+    on each row is decoded into a dict (or null) so the client renders the
+    smart-playlist badge and pre-fills the rule editor without parsing
+    JSON-in-JSON.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    from src.smart_playlist import parse_stored
     try:
         with DatabaseManager(config.db_path) as db:
             rows = db.list_playlists_with_counts()
+        for r in rows:
+            r["smart_rules"] = parse_stored(r.get("smart_rules"))
         return jsonify({"success": True, "playlists": rows})
     except Exception as e:
         logger.exception("api_library_playlists failed")
@@ -751,21 +757,28 @@ def api_library_playlists():
 
 @app.route("/api/library/playlists", methods=["POST"])
 def api_library_playlists_create():
-    """Create an empty playlist. Body: ``{"name": "..."}``.
+    """Create a playlist. Body: ``{"name": "...", "smart_rules": {...}?}``.
 
-    Returns the generated ``playlist_id`` so the caller can immediately
-    PUT tracks into it without re-listing. Membership pushes to master
-    on the next scheduled push (same as any other playlist edit).
+    ``smart_rules`` is optional; when provided it must be a ruleset object
+    (``{match: "all"|"any", rules: [...]}``) which is validated and stored
+    JSON-encoded. Smart playlists evaluate against the tracks table at
+    read time — no manual membership rows are inserted. Returns the
+    generated ``playlist_id``.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    from src.smart_playlist import serialize
     data = request.json or {}
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"success": False, "message": "name is required"}), 400
     try:
+        smart_rules_json = serialize(data.get("smart_rules"))
+    except ValueError as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+    try:
         with DatabaseManager(config.db_path) as db:
-            pid = db.create_playlist(name)
+            pid = db.create_playlist(name, smart_rules=smart_rules_json)
     except ValueError as e:
         return jsonify({"success": False, "message": str(e)}), 400
     except Exception as e:
@@ -776,13 +789,19 @@ def api_library_playlists_create():
 
 @app.route("/api/library/playlists/<playlist_id>", methods=["PUT"])
 def api_library_playlist_update(playlist_id: str):
-    """Partial update: rename and/or replace full membership.
+    """Partial update: rename, replace full membership, and/or set rules.
 
-    Body keys (both optional — at least one required):
+    Body keys (all optional — at least one required):
       - ``name``: new display name (trimmed; rejected if empty).
       - ``track_mbids``: list of mbids in the desired order. An empty
         list explicitly empties the playlist; omit the key to leave
         membership untouched.
+      - ``smart_rules``: ruleset object, or ``null`` to clear (turning
+        a smart playlist back into a static one). Validated against
+        the field/op whitelist before storage. Mutually exclusive with
+        ``track_mbids`` in the same request — smart playlists derive
+        membership from rules, so mixing the two has no coherent
+        outcome.
 
     Unknown mbids in ``track_mbids`` are silently dropped and surface
     as ``landed`` vs ``requested`` in the response so the UI can flag
@@ -790,17 +809,30 @@ def api_library_playlist_update(playlist_id: str):
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    from src.smart_playlist import serialize
     data = request.json or {}
     if not isinstance(data, dict):
         return jsonify({"success": False, "message": "body must be an object"}), 400
 
     has_name = "name" in data
     has_tracks = "track_mbids" in data
-    if not has_name and not has_tracks:
+    has_rules = "smart_rules" in data
+    if not has_name and not has_tracks and not has_rules:
         return jsonify({
             "success": False,
-            "message": "at least one of 'name' or 'track_mbids' is required",
+            "message": "at least one of 'name', 'track_mbids', or 'smart_rules' is required",
         }), 400
+    if has_tracks and has_rules:
+        return jsonify({
+            "success": False,
+            "message": "track_mbids and smart_rules are mutually exclusive",
+        }), 400
+
+    if has_rules:
+        try:
+            smart_rules_json = serialize(data.get("smart_rules"))
+        except ValueError as e:
+            return jsonify({"success": False, "message": str(e)}), 400
 
     try:
         with DatabaseManager(config.db_path) as db:
@@ -812,6 +844,7 @@ def api_library_playlist_update(playlist_id: str):
             renamed = False
             landed = None
             requested = None
+            rules_changed = False
             if has_name:
                 new_name = (data.get("name") or "").strip()
                 if not new_name:
@@ -829,6 +862,10 @@ def api_library_playlist_update(playlist_id: str):
                     }), 400
                 requested = len(mbids)
                 landed = db.replace_playlist_membership(playlist_id, mbids)
+            if has_rules:
+                rules_changed = db.update_playlist_smart_rules(
+                    playlist_id, smart_rules_json
+                )
     except Exception as e:
         logger.exception("api_library_playlist_update failed")
         return jsonify({"success": False, "message": str(e)}), 500
@@ -837,6 +874,8 @@ def api_library_playlist_update(playlist_id: str):
     if has_tracks:
         resp["landed"] = landed
         resp["requested"] = requested
+    if has_rules:
+        resp["rules_changed"] = rules_changed
     return jsonify(resp)
 
 
