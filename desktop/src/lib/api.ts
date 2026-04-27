@@ -332,6 +332,85 @@ export type OrphanPlaylist = {
   track_count: number;
 };
 
+// Fire-and-forget. Records one play event when a track has played long
+// enough to count (the player owns that threshold). Failure is logged
+// to the console, not surfaced — a missed scrobble is not user-visible
+// and shouldn't toast on every transient backend hiccup.
+export async function recordPlay(
+  mbid: string,
+  source: string = "desktop",
+): Promise<void> {
+  try {
+    const url = await backendUrl();
+    await fetch(`${url}/api/library/plays`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mbid, source }),
+    });
+  } catch (e) {
+    console.warn("recordPlay failed", e);
+  }
+}
+
+export type PlayStatsTrack = {
+  mbid: string;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  plays: number;
+};
+
+export type PlayStatsArtist = {
+  artist: string;
+  plays: number;
+  distinct_tracks: number;
+};
+
+export type PlayStatsRecent = {
+  id: number;
+  mbid: string;
+  played_at: string;
+  source: string | null;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+};
+
+export type PlayStats = {
+  total: number;
+  top_tracks: PlayStatsTrack[];
+  top_artists: PlayStatsArtist[];
+  recent: PlayStatsRecent[];
+};
+
+export type FetchPlayStatsOptions = {
+  // ISO-8601 cutoff (inclusive); omit for all-time.
+  since?: string;
+  limit?: number;
+};
+
+export async function fetchPlayStats(
+  opts: FetchPlayStatsOptions = {},
+): Promise<PlayStats> {
+  const url = await backendUrl();
+  const params = new URLSearchParams();
+  if (opts.since) params.set("since", opts.since);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  const r = await fetch(
+    `${url}/api/library/play-stats${qs ? `?${qs}` : ""}`,
+  );
+  if (!r.ok) throw new Error(`play-stats: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "play-stats failed");
+  return {
+    total: Number(data.total ?? 0),
+    top_tracks: (data.top_tracks ?? []) as PlayStatsTrack[],
+    top_artists: (data.top_artists ?? []) as PlayStatsArtist[],
+    recent: (data.recent ?? []) as PlayStatsRecent[],
+  };
+}
+
 export async function fetchOrphanTracks(): Promise<OrphanTrack[]> {
   const url = await backendUrl();
   const r = await fetch(`${url}/api/orphans/tracks`);

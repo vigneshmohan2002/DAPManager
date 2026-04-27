@@ -15,6 +15,7 @@ import FleetScreen from "./screens/FleetScreen";
 import OrphansScreen from "./screens/OrphansScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import SongsScreen from "./screens/SongsScreen";
+import StatsScreen from "./screens/StatsScreen";
 import SuggestScreen from "./screens/SuggestScreen";
 import SyncScreen from "./screens/SyncScreen";
 import { waitForBackend, type Album, type Artist } from "./lib/api";
@@ -197,6 +198,9 @@ function App() {
     }
     if (screen === "fleet") {
       return <FleetScreen ready={status === "ready"} />;
+    }
+    if (screen === "stats") {
+      return <StatsScreen ready={status === "ready"} />;
     }
     if (screen === "orphans") {
       return (
