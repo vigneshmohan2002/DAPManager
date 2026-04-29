@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}DAP Manager{% endblock %}</title>
+    <link rel="stylesheet" href="/static/tailwind.css">
+</head>
+
+<body class="bg-[var(--color-bg)] text-[var(--color-text)] m-0 p-0">
+    {# Each child template sets `current_page` so the sidebar can highlight
+       the active row. Values: dashboard | library | fleet | orphans. #}
+    {% set current = current_page|default('') %}
+    <div class="app-shell">
+        <aside class="app-sidebar">
+            <div class="px-4 pt-4 pb-3 text-base font-semibold text-[var(--color-text)] tracking-tight">
+                DAP Manager
+            </div>
+            <nav class="px-2 pb-4">
+                <div class="app-nav-section">Library</div>
+                <a href="/" class="app-nav-item {% if current == 'dashboard' %}active{% endif %}">Dashboard</a>
+                <a href="/library" class="app-nav-item {% if current == 'library' %}active{% endif %}">Library</a>
+
+                <div class="app-nav-section">Manage</div>
+                <a href="/fleet" class="app-nav-item {% if current == 'fleet' %}active{% endif %}">Fleet</a>
+                <a href="/orphans" class="app-nav-item {% if current == 'orphans' %}active{% endif %}">Orphans</a>
+            </nav>
+        </aside>
+
+        <main class="app-main">
+            {% block header %}{% endblock %}
+            <div class="app-content">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+
+</html>

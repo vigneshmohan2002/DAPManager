@@ -54,6 +54,82 @@
   }
 }
 
+/* App shell — sidebar + main pane, mirroring desktop/src/App.tsx so the
+ * web pages and the Tauri app share one visual chassis. The sidebar
+ * sections + nav rows match the Tauri Sidebar component's typography
+ * and active-state treatment. Setup wizard skips this shell because it
+ * runs before any config / nav is meaningful. */
+@layer components {
+  .app-shell {
+    display: flex;
+    min-height: 100vh;
+    width: 100%;
+  }
+  .app-sidebar {
+    flex: 0 0 240px;
+    background: var(--color-bg-sidebar);
+    border-right: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .app-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .app-content {
+    flex: 1;
+    padding: 20px 24px;
+    overflow-y: auto;
+  }
+  .app-header {
+    padding: 16px 24px 12px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+  .app-header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .app-header .subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+
+  .app-nav-section {
+    padding: 14px 12px 6px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+  }
+  .app-nav-item {
+    display: block;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--color-text-muted);
+    text-decoration: none;
+    transition:
+      background-color 0.12s,
+      color 0.12s;
+  }
+  .app-nav-item:hover {
+    background: color-mix(in srgb, var(--color-surface) 60%, transparent);
+    color: var(--color-text);
+  }
+  .app-nav-item.active {
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+}
+
 /* State-dependent classes for the setup wizard. These names are read /
  * written by the inline <script> in web/templates/setup.html (active
  * step, selected role, validation, stepper pip state, etc.) so they

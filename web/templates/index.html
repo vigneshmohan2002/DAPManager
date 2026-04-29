@@ -1,967 +1,961 @@
-<!DOCTYPE html>
-<html lang="en">
+{% extends "_layout.html" %}
+{% set current_page = 'dashboard' %}
+{% block title %}DAP Manager — Dashboard{% endblock %}
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DAP Manager Web</title>
-    <link rel="stylesheet" href="/static/tailwind.css">
-</head>
+{% block header %}
+<header class="app-header flex items-center gap-4">
+    <div class="flex-1">
+        <h1>Dashboard</h1>
+        <div class="subtitle">Library, downloads, and sync at a glance.</div>
+    </div>
+    <div id="status-bar" class="status-idle">Status: Idle</div>
+</header>
+{% endblock %}
 
-<body class="bg-[var(--color-bg)] text-[var(--color-text)] min-h-screen p-5">
-    <div class="max-w-[900px] mx-auto">
-        <header class="text-center mb-6">
-            <h1 class="text-3xl font-semibold text-[var(--color-text)] mb-2">DAP Manager Dashboard</h1>
-            <div id="status-bar" class="status-idle">Status: Idle</div>
-        </header>
+{% block content %}
+<div class="max-w-[960px]">
+    <!-- Stats Dashboard -->
+    <div id="stats-dashboard"
+        class="flex flex-wrap justify-between gap-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border)] p-3 rounded-lg mb-5 text-sm">
+        <div>Tracks: <span id="stat-tracks" class="font-medium text-[var(--color-text)]">0</span></div>
+        <div>Albums: <span id="stat-albums" class="font-medium text-[var(--color-text)]">0</span></div>
+        <div>Artists: <span id="stat-artists" class="font-medium text-[var(--color-text)]">0</span></div>
+        <div>Incomplete: <span id="stat-incomplete" class="font-medium text-[var(--color-text)]">0</span></div>
+        <div>Disk Free: <span id="stat-disk" class="font-medium text-[var(--color-text)]">0 GB</span></div>
+    </div>
 
-        <!-- Stats Dashboard -->
-        <div id="stats-dashboard"
-            class="flex flex-wrap justify-between gap-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border)] p-3 rounded-lg mb-5 text-sm">
-            <div>Tracks: <span id="stat-tracks" class="font-medium text-[var(--color-text)]">0</span></div>
-            <div>Albums: <span id="stat-albums" class="font-medium text-[var(--color-text)]">0</span></div>
-            <div>Artists: <span id="stat-artists" class="font-medium text-[var(--color-text)]">0</span></div>
-            <div>Incomplete: <span id="stat-incomplete" class="font-medium text-[var(--color-text)]">0</span></div>
-            <div>Disk Free: <span id="stat-disk" class="font-medium text-[var(--color-text)]">0 GB</span></div>
+    <section class="card">
+        <h2>Library Management</h2>
+
+        <!-- Search Block -->
+        <div class="mb-5 pb-4 border-b border-[var(--color-border)]">
+            <h3 class="text-base font-semibold mb-2">Library Explorer</h3>
+            <div class="flex gap-2.5">
+                <input type="text" id="lib-search-input" placeholder="Search Artist, Album, or Title…" class="flex-1">
+                <button onclick="searchLibrary()" class="btn btn-primary whitespace-nowrap">Search</button>
+            </div>
+            <div id="search-results"
+                class="mt-2.5 max-h-[200px] overflow-y-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md hidden">
+                <table class="w-full border-collapse text-[13px]">
+                    <thead>
+                        <tr class="bg-[var(--color-bg-elevated)] text-left">
+                            <th class="p-1.5">Artist</th>
+                            <th class="p-1.5">Album</th>
+                            <th class="p-1.5">Title</th>
+                        </tr>
+                    </thead>
+                    <tbody id="search-results-body"></tbody>
+                </table>
+            </div>
         </div>
 
-        <main>
-            <section class="card">
-                <h2>Library Management</h2>
+        <div class="actions">
+            <button onclick="triggerAction('/api/scan', 'Scanning Library...')" class="btn btn-secondary">Scan Library</button>
+            <button onclick="triggerAction('/api/audit', 'Auditing Albums...')" class="btn btn-secondary">Audit Albums</button>
+        </div>
 
-                <!-- Search Block -->
-                <div class="mb-5 pb-4 border-b border-[var(--color-border)]">
-                    <h3 class="text-base font-semibold mb-2">Library Explorer</h3>
-                    <div class="flex gap-2.5">
-                        <input type="text" id="lib-search-input" placeholder="Search Artist, Album, or Title…" class="flex-1">
-                        <button onclick="searchLibrary()" class="btn btn-primary whitespace-nowrap">Search</button>
-                    </div>
-                    <div id="search-results"
-                        class="mt-2.5 max-h-[200px] overflow-y-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md hidden">
-                        <table class="w-full border-collapse text-[13px]">
-                            <thead>
-                                <tr class="bg-[var(--color-bg-elevated)] text-left">
-                                    <th class="p-1.5">Artist</th>
-                                    <th class="p-1.5">Album</th>
-                                    <th class="p-1.5">Title</th>
-                                </tr>
-                            </thead>
-                            <tbody id="search-results-body"></tbody>
-                        </table>
-                    </div>
+        <div class="mt-4">
+            <h3 class="text-base font-semibold mb-2">Queue Spotify Playlists</h3>
+            <textarea id="playlist-urls" rows="3"
+                placeholder="Paste Spotify Playlist URLs here (one per line)…"></textarea>
+            <button onclick="queuePlaylists()" class="btn btn-secondary mt-2">Queue Playlists</button>
+        </div>
+
+        <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
+            <h3 class="text-base font-semibold mb-2">Library Audit</h3>
+            <button onclick="loadAuditResults()" class="btn btn-secondary">Scan for Incomplete Albums</button>
+            <div id="audit-container" class="mt-2.5 hidden">
+                <p id="audit-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
+                <div id="audit-list" class="grid-container"></div>
+            </div>
+        </div>
+
+        <div id="audit-modal"
+            class="fixed inset-0 z-[100] bg-black/70 hidden items-center justify-center"
+            style="display:none;">
+            <div class="bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-lg p-5 w-4/5 max-w-[600px] text-[var(--color-text)] relative">
+                <span class="float-right text-3xl leading-none font-bold cursor-pointer text-[var(--color-text-muted)] hover:text-[var(--color-text)]" onclick="closeAuditModal()">&times;</span>
+                <h2 id="modal-title" class="text-lg font-semibold mb-1">Album Details</h2>
+                <p id="modal-subtitle" class="text-sm text-[var(--color-text-muted)] mb-3">Missing Tracks:</p>
+                <div id="modal-tracks" class="max-h-[300px] overflow-y-auto text-left"></div>
+                <div class="mt-4 text-right">
+                    <button onclick="queueSelectedTracks()" class="btn btn-primary">Queue Selected Tracks</button>
                 </div>
+            </div>
+        </div>
 
-                <div class="actions">
-                    <button onclick="triggerAction('/api/scan', 'Scanning Library...')" class="btn btn-secondary">Scan Library</button>
-                    <button onclick="triggerAction('/api/audit', 'Auditing Albums...')" class="btn btn-secondary">Audit Albums</button>
+        <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
+            <h3 class="text-base font-semibold mb-2">Duplicates</h3>
+            <button onclick="loadDuplicates()" class="btn btn-secondary">Check for Duplicates</button>
+            <div id="duplicates-container" class="mt-2.5 hidden">
+                <p id="dupe-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
+                <div id="dupe-list"></div>
+            </div>
+        </div>
+
+        <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
+            <h3 class="text-base font-semibold mb-1">Tag Review Queue</h3>
+            <p class="text-xs text-[var(--color-text-muted)] mb-2">
+                Tracks the auto-tagger flagged as yellow or red. Identify to see
+                the MusicBrainz candidate, then Apply to confirm.
+            </p>
+            <button onclick="loadTagReview()" class="btn btn-secondary">Load Flagged Tracks</button>
+            <div id="tag-review-container" class="mt-2.5 hidden">
+                <p id="tag-review-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
+                <div id="tag-review-list"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Download &amp; Sync</h2>
+        <div class="actions">
+            <button onclick="triggerAction('/api/download', 'Processing Downloads...')" class="btn btn-secondary">
+                Process Downloads
+            </button>
+
+            <div class="sync-group">
+                <h3>Sync to DAP</h3>
+                <label>
+                    Mode:
+                    <select id="sync-mode">
+                        <option value="playlists">Playlists Only</option>
+                        <option value="library">Full Library</option>
+                        <option value="selective">Selective (Artist)</option>
+                    </select>
+                </label>
+                <label>
+                    Format:
+                    <select id="sync-format">
+                        <option value="flac">FLAC</option>
+                        <option value="mp3">MP3</option>
+                        <option value="opus">Opus</option>
+                        <option value="aac">AAC</option>
+                    </select>
+                </label>
+                <button onclick="triggerSync()" class="btn btn-secondary">Start Sync</button>
+            </div>
+
+            <div class="sync-group">
+                <h3>Pull from Jellyfin</h3>
+                <div class="text-xs text-[var(--color-text-muted)] mb-2">
+                    Pull audio + playlists from your Jellyfin server into the local library. Requires
+                    Jellyfin URL + API key in config.
                 </div>
+                <button onclick="triggerAction('/api/jellyfin/pull', 'Pulling from Jellyfin...')" class="btn btn-secondary">
+                    Start Jellyfin Pull
+                </button>
+            </div>
 
-                <div class="mt-4">
-                    <h3 class="text-base font-semibold mb-2">Queue Spotify Playlists</h3>
-                    <textarea id="playlist-urls" rows="3"
-                        placeholder="Paste Spotify Playlist URLs here (one per line)…"></textarea>
-                    <button onclick="queuePlaylists()" class="btn btn-secondary mt-2">Queue Playlists</button>
+            <div class="sync-group">
+                <h3>Multi-Device Sync</h3>
+                <div class="text-xs text-[var(--color-text-muted)] mb-2">
+                    Keep this device's catalog in sync with the master DAPManager. Pull the
+                    catalog first so playlist membership resolves. Requires <code class="font-mono text-xs text-[var(--color-text)] bg-[var(--color-bg-elevated)] px-1 py-0.5 rounded">master_url</code> in config.
                 </div>
-
-                <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
-                    <h3 class="text-base font-semibold mb-2">Library Audit</h3>
-                    <button onclick="loadAuditResults()" class="btn btn-secondary">Scan for Incomplete Albums</button>
-                    <div id="audit-container" class="mt-2.5 hidden">
-                        <p id="audit-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
-                        <div id="audit-list" class="grid-container"></div>
-                    </div>
-                </div>
-
-                <div id="audit-modal"
-                    class="fixed inset-0 z-[100] bg-black/70 hidden items-center justify-center"
-                    style="display:none;">
-                    <div class="bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-lg p-5 w-4/5 max-w-[600px] text-[var(--color-text)] relative">
-                        <span class="float-right text-3xl leading-none font-bold cursor-pointer text-[var(--color-text-muted)] hover:text-[var(--color-text)]" onclick="closeAuditModal()">&times;</span>
-                        <h2 id="modal-title" class="text-lg font-semibold mb-1">Album Details</h2>
-                        <p id="modal-subtitle" class="text-sm text-[var(--color-text-muted)] mb-3">Missing Tracks:</p>
-                        <div id="modal-tracks" class="max-h-[300px] overflow-y-auto text-left"></div>
-                        <div class="mt-4 text-right">
-                            <button onclick="queueSelectedTracks()" class="btn btn-primary">Queue Selected Tracks</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
-                    <h3 class="text-base font-semibold mb-2">Duplicates</h3>
-                    <button onclick="loadDuplicates()" class="btn btn-secondary">Check for Duplicates</button>
-                    <div id="duplicates-container" class="mt-2.5 hidden">
-                        <p id="dupe-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
-                        <div id="dupe-list"></div>
-                    </div>
-                </div>
-
-                <div class="mt-5 pt-4 border-t border-[var(--color-border)]">
-                    <h3 class="text-base font-semibold mb-1">Tag Review Queue</h3>
-                    <p class="text-xs text-[var(--color-text-muted)] mb-2">
-                        Tracks the auto-tagger flagged as yellow or red. Identify to see
-                        the MusicBrainz candidate, then Apply to confirm.
-                    </p>
-                    <button onclick="loadTagReview()" class="btn btn-secondary">Load Flagged Tracks</button>
-                    <div id="tag-review-container" class="mt-2.5 hidden">
-                        <p id="tag-review-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
-                        <div id="tag-review-list"></div>
-                    </div>
-                </div>
-            </section>
-
-            <section class="card">
-                <h2>Download &amp; Sync</h2>
-                <div class="actions">
-                    <button onclick="triggerAction('/api/download', 'Processing Downloads...')" class="btn btn-secondary">
-                        Process Downloads
+                <div class="flex flex-wrap gap-2 items-center">
+                    <button onclick="triggerAction('/api/sync/all', 'Running full sync...'); setTimeout(loadSyncState, 2000);"
+                        class="btn btn-primary">
+                        Sync All
                     </button>
-
-                    <div class="sync-group">
-                        <h3>Sync to DAP</h3>
-                        <label>
-                            Mode:
-                            <select id="sync-mode">
-                                <option value="playlists">Playlists Only</option>
-                                <option value="library">Full Library</option>
-                                <option value="selective">Selective (Artist)</option>
-                            </select>
-                        </label>
-                        <label>
-                            Format:
-                            <select id="sync-format">
-                                <option value="flac">FLAC</option>
-                                <option value="mp3">MP3</option>
-                                <option value="opus">Opus</option>
-                                <option value="aac">AAC</option>
-                            </select>
-                        </label>
-                        <button onclick="triggerSync()" class="btn btn-secondary">Start Sync</button>
-                    </div>
-
-                    <div class="sync-group">
-                        <h3>Pull from Jellyfin</h3>
-                        <div class="text-xs text-[var(--color-text-muted)] mb-2">
-                            Pull audio + playlists from your Jellyfin server into the local library. Requires
-                            Jellyfin URL + API key in config.
-                        </div>
-                        <button onclick="triggerAction('/api/jellyfin/pull', 'Pulling from Jellyfin...')" class="btn btn-secondary">
-                            Start Jellyfin Pull
-                        </button>
-                    </div>
-
-                    <div class="sync-group">
-                        <h3>Multi-Device Sync</h3>
-                        <div class="text-xs text-[var(--color-text-muted)] mb-2">
-                            Keep this device's catalog in sync with the master DAPManager. Pull the
-                            catalog first so playlist membership resolves. Requires <code class="font-mono text-xs text-[var(--color-text)] bg-[var(--color-bg-elevated)] px-1 py-0.5 rounded">master_url</code> in config.
-                        </div>
-                        <div class="flex flex-wrap gap-2 items-center">
-                            <button onclick="triggerAction('/api/sync/all', 'Running full sync...'); setTimeout(loadSyncState, 2000);"
-                                class="btn btn-primary">
-                                Sync All
-                            </button>
-                            <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
-                                Pull Catalog <span class="sync-cursor" data-step="catalog_pull"></span>
-                            </button>
-                            <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
-                                Pull Playlists <span class="sync-cursor" data-step="playlist_pull"></span>
-                            </button>
-                            <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
-                                Push Playlists <span class="sync-cursor" data-step="playlist_push"></span>
-                            </button>
-                            <button onclick="triggerAction('/api/inventory/report', 'Reporting inventory...'); setTimeout(loadSyncState, 2000);"
-                                class="btn btn-secondary"
-                                title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
-                                Report Inventory <span class="sync-cursor" data-step="inventory_report"></span>
-                            </button>
-                            <button onclick="triggerAction('/api/catalog/link-local', 'Scanning library to link catalog rows...');"
-                                class="btn btn-secondary"
-                                title="Scan music_library_path and bind unlinked catalog rows to on-disk files by MBID / ISRC / artist+title. Safe to re-run.">
-                                Link Local Files
-                            </button>
-                            <a href="/library" class="self-center text-[var(--color-accent)] hover:underline ml-2 text-sm">Library →</a>
-                            <a href="/fleet" class="self-center text-[var(--color-accent)] hover:underline ml-2 text-sm">Fleet view →</a>
-                            <a href="/orphans" class="self-center text-[var(--color-accent)] hover:underline ml-2 text-sm">Orphans →</a>
-                        </div>
-                    </div>
+                    <button onclick="triggerAction('/api/catalog/pull', 'Pulling catalog delta...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
+                        Pull Catalog <span class="sync-cursor" data-step="catalog_pull"></span>
+                    </button>
+                    <button onclick="triggerAction('/api/playlists/pull', 'Pulling playlists...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
+                        Pull Playlists <span class="sync-cursor" data-step="playlist_pull"></span>
+                    </button>
+                    <button onclick="triggerAction('/api/playlists/push', 'Pushing playlists...'); setTimeout(loadSyncState, 2000);" class="btn btn-secondary">
+                        Push Playlists <span class="sync-cursor" data-step="playlist_push"></span>
+                    </button>
+                    <button onclick="triggerAction('/api/inventory/report', 'Reporting inventory...'); setTimeout(loadSyncState, 2000);"
+                        class="btn btn-secondary"
+                        title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
+                        Report Inventory <span class="sync-cursor" data-step="inventory_report"></span>
+                    </button>
+                    <button onclick="triggerAction('/api/catalog/link-local', 'Scanning library to link catalog rows...');"
+                        class="btn btn-secondary"
+                        title="Scan music_library_path and bind unlinked catalog rows to on-disk files by MBID / ISRC / artist+title. Safe to re-run.">
+                        Link Local Files
+                    </button>
                 </div>
+            </div>
+        </div>
 
-                <div class="mt-5">
-                    <h3 class="text-base font-semibold mb-2">All Downloads</h3>
-                    <button onclick="loadDownloadList()" class="btn btn-secondary">Refresh Queue List</button>
-                    <div id="download-list-container"
-                        class="mt-2.5 max-h-[200px] overflow-y-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md hidden">
-                        <table class="w-full border-collapse text-[13px]">
-                            <thead>
-                                <tr class="bg-[var(--color-bg-elevated)] text-left">
-                                    <th class="p-1.5">ID</th>
-                                    <th class="p-1.5">Query</th>
-                                    <th class="p-1.5">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody id="download-table-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </section>
+        <div class="mt-5">
+            <h3 class="text-base font-semibold mb-2">All Downloads</h3>
+            <button onclick="loadDownloadList()" class="btn btn-secondary">Refresh Queue List</button>
+            <div id="download-list-container"
+                class="mt-2.5 max-h-[200px] overflow-y-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md hidden">
+                <table class="w-full border-collapse text-[13px]">
+                    <thead>
+                        <tr class="bg-[var(--color-bg-elevated)] text-left">
+                            <th class="p-1.5">ID</th>
+                            <th class="p-1.5">Query</th>
+                            <th class="p-1.5">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="download-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
 
-            <section class="card">
-                <details>
-                    <summary class="cursor-pointer text-lg font-semibold py-1 select-none">Settings</summary>
-                    <div id="settings-status" class="text-[var(--color-accent)] text-xs my-2.5"></div>
-                    <div id="settings-groups"></div>
-                    <div class="mt-3 flex gap-2.5 items-center">
-                        <button onclick="saveSettings()" class="btn btn-primary">Save</button>
-                        <button onclick="loadSettings()" class="btn btn-secondary">Reload</button>
-                        <span class="muted">
-                            Secret fields (passwords / API keys) are masked — leave blank to keep current value.
-                        </span>
-                    </div>
-                </details>
-            </section>
+    <section class="card">
+        <details>
+            <summary class="cursor-pointer text-lg font-semibold py-1 select-none">Settings</summary>
+            <div id="settings-status" class="text-[var(--color-accent)] text-xs my-2.5"></div>
+            <div id="settings-groups"></div>
+            <div class="mt-3 flex gap-2.5 items-center">
+                <button onclick="saveSettings()" class="btn btn-primary">Save</button>
+                <button onclick="loadSettings()" class="btn btn-secondary">Reload</button>
+                <span class="muted">
+                    Secret fields (passwords / API keys) are masked — leave blank to keep current value.
+                </span>
+            </div>
+        </details>
+    </section>
 
-            <section class="card">
-                <h2>Logs / Output</h2>
-                <div id="log-display" class="font-mono text-sm text-[var(--color-text-muted)]">
-                    Last Message: <span id="last-message">None</span>
-                </div>
-                <div id="progress-console"
-                    class="bg-black text-[#0f0] font-mono p-2.5 h-[150px] overflow-y-auto mt-2.5 border border-[var(--color-border)] text-xs rounded-md">
-                    <div class="text-[var(--color-text-muted)]">Waiting for updates…</div>
-                </div>
-            </section>
-        </main>
-    </div>
+    <section class="card">
+        <h2>Logs / Output</h2>
+        <div id="log-display" class="font-mono text-sm text-[var(--color-text-muted)]">
+            Last Message: <span id="last-message">None</span>
+        </div>
+        <div id="progress-console"
+            class="bg-black text-[#0f0] font-mono p-2.5 h-[150px] overflow-y-auto mt-2.5 border border-[var(--color-border)] text-xs rounded-md">
+            <div class="text-[var(--color-text-muted)]">Waiting for updates…</div>
+        </div>
+    </section>
+</div>
+{% endblock %}
 
-    <script>
-        const SETTINGS_GROUPS = [
-            {
-                label: "Paths",
-                keys: ["music_library_path", "downloads_path"],
-            },
-            {
-                label: "DAP",
-                keys: ["dap_mount_point", "dap_music_dir_name", "dap_playlist_dir_name"],
-            },
-            {
-                label: "Downloader (Soulseek)",
-                keys: ["slsk_username", "slsk_password", "fast_search", "remove_ft", "desperate_mode", "strict_quality"],
-            },
-            {
-                label: "Jellyfin",
-                keys: ["jellyfin_url", "jellyfin_api_key", "jellyfin_user_id"],
-            },
-            {
-                label: "Multi-Device Sync",
-                keys: ["is_master", "device_id", "device_role", "master_url", "public_master_url", "report_inventory_to_host", "sync_interval_seconds", "sync_on_startup", "api_token"],
-            },
-            {
-                label: "Tagging (AcoustID / MusicBrainz)",
-                keys: ["acoustid_api_key", "contact_email"],
-            },
-        ];
-        const SETTINGS_SECRET_KEYS = new Set(["slsk_password", "jellyfin_api_key", "api_token", "acoustid_api_key"]);
-        const SETTINGS_BOOL_KEYS = new Set([
-            "fast_search", "remove_ft", "desperate_mode", "strict_quality",
-            "report_inventory_to_host", "is_master", "sync_on_startup",
-        ]);
-        let settingsCurrent = {};
+{% block scripts %}
+<script>
+    const SETTINGS_GROUPS = [
+        {
+            label: "Paths",
+            keys: ["music_library_path", "downloads_path"],
+        },
+        {
+            label: "DAP",
+            keys: ["dap_mount_point", "dap_music_dir_name", "dap_playlist_dir_name"],
+        },
+        {
+            label: "Downloader (Soulseek)",
+            keys: ["slsk_username", "slsk_password", "fast_search", "remove_ft", "desperate_mode", "strict_quality"],
+        },
+        {
+            label: "Jellyfin",
+            keys: ["jellyfin_url", "jellyfin_api_key", "jellyfin_user_id"],
+        },
+        {
+            label: "Multi-Device Sync",
+            keys: ["is_master", "device_id", "device_role", "master_url", "public_master_url", "report_inventory_to_host", "sync_interval_seconds", "sync_on_startup", "api_token"],
+        },
+        {
+            label: "Tagging (AcoustID / MusicBrainz)",
+            keys: ["acoustid_api_key", "contact_email"],
+        },
+    ];
+    const SETTINGS_SECRET_KEYS = new Set(["slsk_password", "jellyfin_api_key", "api_token", "acoustid_api_key"]);
+    const SETTINGS_BOOL_KEYS = new Set([
+        "fast_search", "remove_ft", "desperate_mode", "strict_quality",
+        "report_inventory_to_host", "is_master", "sync_on_startup",
+    ]);
+    let settingsCurrent = {};
 
-        async function loadSettings() {
-            const statusEl = document.getElementById('settings-status');
-            statusEl.textContent = 'Loading…';
-            try {
-                const resp = await fetch('/api/config');
-                const data = await resp.json();
-                if (!data.success) {
-                    statusEl.textContent = 'Error: ' + (data.message || 'unknown');
-                    return;
-                }
-                settingsCurrent = data.config || {};
-                renderSettings();
-                statusEl.textContent = '';
-            } catch (e) {
-                statusEl.textContent = 'Load failed: ' + e;
-            }
-        }
-
-        function renderSettings() {
-            const container = document.getElementById('settings-groups');
-            let html = '';
-            for (const group of SETTINGS_GROUPS) {
-                html += `<fieldset style="border:1px solid var(--color-border); padding:12px; margin-bottom:10px; border-radius:6px;">
-                    <legend style="padding:0 6px; color:var(--color-text-muted); font-size:13px;">${group.label}</legend>`;
-                for (const key of group.keys) {
-                    const value = settingsCurrent[key];
-                    html += `<div style="display:flex; align-items:center; gap:10px; margin:6px 0;">
-                        <label style="width:220px; color:var(--color-text-muted); font-size:13px;" title="${key}">${key}</label>
-                        ${renderField(key, value)}
-                    </div>`;
-                }
-                html += '</fieldset>';
-            }
-            container.innerHTML = html;
-        }
-
-        function renderField(key, value) {
-            if (SETTINGS_BOOL_KEYS.has(key)) {
-                const checked = value === true ? 'checked' : '';
-                return `<input type="checkbox" data-config-key="${key}" ${checked} style="accent-color: var(--color-accent);">`;
-            }
-            const type = SETTINGS_SECRET_KEYS.has(key) ? 'password' : 'text';
-            const placeholder = SETTINGS_SECRET_KEYS.has(key) ? '(leave blank to keep current)' : '';
-            const safe = value == null ? '' : String(value).replace(/"/g, '&quot;');
-            return `<input type="${type}" data-config-key="${key}" value="${safe}"
-                placeholder="${placeholder}" style="flex:1;">`;
-        }
-
-        async function saveSettings() {
-            const statusEl = document.getElementById('settings-status');
-            const payload = {};
-            document.querySelectorAll('#settings-groups [data-config-key]').forEach(el => {
-                const key = el.getAttribute('data-config-key');
-                if (el.type === 'checkbox') {
-                    payload[key] = el.checked;
-                } else {
-                    payload[key] = el.value;
-                }
-            });
-            statusEl.textContent = 'Saving…';
-            try {
-                const resp = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload),
-                });
-                const data = await resp.json();
-                if (!data.success) {
-                    statusEl.textContent = 'Save failed: ' + (data.message || 'unknown');
-                    return;
-                }
-                const count = (data.changed || []).length;
-                statusEl.textContent = count
-                    ? `Saved ${count} change(s): ${data.changed.join(', ')}`
-                    : 'No changes.';
-                loadSettings();
-            } catch (e) {
-                statusEl.textContent = 'Save failed: ' + e;
-            }
-        }
-
-        document.addEventListener('DOMContentLoaded', loadSettings);
-
-        async function loadSyncState() {
-            try {
-                const resp = await fetch('/api/sync/state');
-                const data = await resp.json();
-                if (!data.success) return;
-                for (const [step, ts] of Object.entries(data.state || {})) {
-                    const el = document.querySelector(`.sync-cursor[data-step="${step}"]`);
-                    if (!el) continue;
-                    el.textContent = ts ? `(${relativeTime(ts)})` : '(never)';
-                    el.title = ts || 'Never synced';
-                }
-            } catch (e) {
-                console.warn('sync state load failed', e);
-            }
-        }
-
-        function relativeTime(isoLike) {
-            // SQLite CURRENT_TIMESTAMP uses "YYYY-MM-DD HH:MM:SS" in UTC.
-            const iso = isoLike.replace(' ', 'T') + 'Z';
-            const then = Date.parse(iso);
-            if (isNaN(then)) return isoLike;
-            const diffSec = Math.round((Date.now() - then) / 1000);
-            if (diffSec < 5) return 'just now';
-            if (diffSec < 60) return `${diffSec}s ago`;
-            const diffMin = Math.round(diffSec / 60);
-            if (diffMin < 60) return `${diffMin}m ago`;
-            const diffHr = Math.round(diffMin / 60);
-            if (diffHr < 24) return `${diffHr}h ago`;
-            const diffDay = Math.round(diffHr / 24);
-            return `${diffDay}d ago`;
-        }
-
-        document.addEventListener('DOMContentLoaded', loadSyncState);
-        setInterval(loadSyncState, 30000);
-
-        function updateStatus() {
-            fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {
-                    const statusDiv = document.getElementById('status-bar');
-                    const msgSpan = document.getElementById('last-message');
-                    const consoleDiv = document.getElementById('progress-console');
-
-                    statusDiv.textContent = `Status: ${data.message}`;
-                    statusDiv.className = data.running ? 'status-running' : 'status-idle';
-                    msgSpan.textContent = data.message;
-
-                    if (data.running && data.detail) {
-                        if (window.lastDetail !== data.detail) {
-                            const line = document.createElement('div');
-                            line.textContent = `> ${data.detail}`;
-                            consoleDiv.appendChild(line);
-                            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-                            window.lastDetail = data.detail;
-                        }
-                    }
-                })
-                .catch(err => console.error("Status poll failed", err));
-        }
-
-        function triggerAction(url, initialMsg) {
-            // Optimistic update
-            document.getElementById('status-bar').textContent = `Status: ${initialMsg}`;
-            document.getElementById('status-bar').className = 'status-running';
-
-            fetch(url, { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        alert("Error: " + data.message);
-                    }
-                    updateStatus();
-                });
-        }
-
-        function queuePlaylists() {
-            const text = document.getElementById('playlist-urls').value;
-            const urls = text.split('\n').filter(line => line.trim() !== '');
-
-            if (urls.length === 0) {
-                alert("Please enter at least one URL.");
+    async function loadSettings() {
+        const statusEl = document.getElementById('settings-status');
+        statusEl.textContent = 'Loading…';
+        try {
+            const resp = await fetch('/api/config');
+            const data = await resp.json();
+            if (!data.success) {
+                statusEl.textContent = 'Error: ' + (data.message || 'unknown');
                 return;
             }
+            settingsCurrent = data.config || {};
+            renderSettings();
+            statusEl.textContent = '';
+        } catch (e) {
+            statusEl.textContent = 'Load failed: ' + e;
+        }
+    }
 
-            document.getElementById('status-bar').textContent = `Status: Queueing ${urls.length} playlists...`;
-            document.getElementById('status-bar').className = 'status-running';
+    function renderSettings() {
+        const container = document.getElementById('settings-groups');
+        let html = '';
+        for (const group of SETTINGS_GROUPS) {
+            html += `<fieldset style="border:1px solid var(--color-border); padding:12px; margin-bottom:10px; border-radius:6px;">
+                <legend style="padding:0 6px; color:var(--color-text-muted); font-size:13px;">${group.label}</legend>`;
+            for (const key of group.keys) {
+                const value = settingsCurrent[key];
+                html += `<div style="display:flex; align-items:center; gap:10px; margin:6px 0;">
+                    <label style="width:220px; color:var(--color-text-muted); font-size:13px;" title="${key}">${key}</label>
+                    ${renderField(key, value)}
+                </div>`;
+            }
+            html += '</fieldset>';
+        }
+        container.innerHTML = html;
+    }
 
-            fetch('/api/playlists/queue', {
+    function renderField(key, value) {
+        if (SETTINGS_BOOL_KEYS.has(key)) {
+            const checked = value === true ? 'checked' : '';
+            return `<input type="checkbox" data-config-key="${key}" ${checked} style="accent-color: var(--color-accent);">`;
+        }
+        const type = SETTINGS_SECRET_KEYS.has(key) ? 'password' : 'text';
+        const placeholder = SETTINGS_SECRET_KEYS.has(key) ? '(leave blank to keep current)' : '';
+        const safe = value == null ? '' : String(value).replace(/"/g, '&quot;');
+        return `<input type="${type}" data-config-key="${key}" value="${safe}"
+            placeholder="${placeholder}" style="flex:1;">`;
+    }
+
+    async function saveSettings() {
+        const statusEl = document.getElementById('settings-status');
+        const payload = {};
+        document.querySelectorAll('#settings-groups [data-config-key]').forEach(el => {
+            const key = el.getAttribute('data-config-key');
+            if (el.type === 'checkbox') {
+                payload[key] = el.checked;
+            } else {
+                payload[key] = el.value;
+            }
+        });
+        statusEl.textContent = 'Saving…';
+        try {
+            const resp = await fetch('/api/config', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ urls: urls })
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        alert("Error: " + data.message);
-                    }
-                    updateStatus();
-                });
-        }
-
-        function loadDuplicates() {
-            const container = document.getElementById('duplicates-container');
-            const list = document.getElementById('dupe-list');
-            const status = document.getElementById('dupe-status');
-
-            container.classList.remove('hidden');
-            status.textContent = 'Searching for duplicates...';
-            list.innerHTML = '';
-
-            fetch('/api/duplicates')
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        status.textContent = 'Error: ' + data.message;
-                        return;
-                    }
-
-                    const dupes = data.duplicates;
-                    if (dupes.length === 0) {
-                        status.textContent = 'No duplicates found!';
-                        return;
-                    }
-
-                    status.textContent = `Found ${dupes.length} duplicate groups.`;
-
-                    dupes.forEach(group => {
-                        const div = document.createElement('div');
-                        div.className = 'dupe-group';
-                        div.style.cssText = 'margin-bottom:14px; padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:6px;';
-
-                        let html = `<strong>${group.artist} - ${group.title}</strong><br>`;
-                        html += `<table style="width:100%; margin-top:6px; text-align:left;">`;
-
-                        group.candidates.forEach((cand, idx) => {
-                            const isRec = cand.is_recommended;
-                            const color = isRec ? '#4caf50' : '#e57373';
-                            html += `
-        <tr>
-            <td>
-                <input type="radio" name="keep_${group.mbid}" value="${cand.path}" ${isRec ? 'checked' : ''}
-                    id="radio_${group.mbid}_${idx}" style="accent-color: var(--color-accent);">
-            </td>
-            <td><label for="radio_${group.mbid}_${idx}" style="color:${color}">${cand.path}</label></td>
-            <td>Score: ${cand.score}</td>
-        </tr>
-        `;
-                        });
-                        html += `</table>`;
-                        html += `<button onclick="resolveDuplicate('${group.mbid}')" class="btn btn-secondary"
-        style="margin-top:8px; padding: 4px 12px; font-size: 12px;">Resolve (Keep Selected)</button>`;
-                        div.innerHTML = html;
-                        list.appendChild(div);
-                    });
-                })
-                .catch(err => status.textContent = 'Network error: ' + err);
-        }
-
-        function resolveDuplicate(mbid) {
-            const selected = document.querySelector(`input[name="keep_${mbid}"]:checked`);
-            if (!selected) return;
-
-            const keepPath = selected.value;
-
-            const allInputs = document.querySelectorAll(`input[name="keep_${mbid}"]`);
-            const deletePaths = [];
-            allInputs.forEach(input => {
-                if (input.value !== keepPath) {
-                    deletePaths.push(input.value);
-                }
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
             });
+            const data = await resp.json();
+            if (!data.success) {
+                statusEl.textContent = 'Save failed: ' + (data.message || 'unknown');
+                return;
+            }
+            const count = (data.changed || []).length;
+            statusEl.textContent = count
+                ? `Saved ${count} change(s): ${data.changed.join(', ')}`
+                : 'No changes.';
+            loadSettings();
+        } catch (e) {
+            statusEl.textContent = 'Save failed: ' + e;
+        }
+    }
 
-            if (!confirm(`Keep:\n${keepPath}\n\nDelete ${deletePaths.length} others?`)) return;
+    document.addEventListener('DOMContentLoaded', loadSettings);
 
-            fetch('/api/duplicates/resolve', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    mbid: mbid,
-                    keep_path: keepPath,
-                    delete_paths: deletePaths
-                })
+    async function loadSyncState() {
+        try {
+            const resp = await fetch('/api/sync/state');
+            const data = await resp.json();
+            if (!data.success) return;
+            for (const [step, ts] of Object.entries(data.state || {})) {
+                const el = document.querySelector(`.sync-cursor[data-step="${step}"]`);
+                if (!el) continue;
+                el.textContent = ts ? `(${relativeTime(ts)})` : '(never)';
+                el.title = ts || 'Never synced';
+            }
+        } catch (e) {
+            console.warn('sync state load failed', e);
+        }
+    }
+
+    function relativeTime(isoLike) {
+        // SQLite CURRENT_TIMESTAMP uses "YYYY-MM-DD HH:MM:SS" in UTC.
+        const iso = isoLike.replace(' ', 'T') + 'Z';
+        const then = Date.parse(iso);
+        if (isNaN(then)) return isoLike;
+        const diffSec = Math.round((Date.now() - then) / 1000);
+        if (diffSec < 5) return 'just now';
+        if (diffSec < 60) return `${diffSec}s ago`;
+        const diffMin = Math.round(diffSec / 60);
+        if (diffMin < 60) return `${diffMin}m ago`;
+        const diffHr = Math.round(diffMin / 60);
+        if (diffHr < 24) return `${diffHr}h ago`;
+        const diffDay = Math.round(diffHr / 24);
+        return `${diffDay}d ago`;
+    }
+
+    document.addEventListener('DOMContentLoaded', loadSyncState);
+    setInterval(loadSyncState, 30000);
+
+    function updateStatus() {
+        fetch('/api/status')
+            .then(response => response.json())
+            .then(data => {
+                const statusDiv = document.getElementById('status-bar');
+                const msgSpan = document.getElementById('last-message');
+                const consoleDiv = document.getElementById('progress-console');
+
+                statusDiv.textContent = `Status: ${data.message}`;
+                statusDiv.className = data.running ? 'status-running' : 'status-idle';
+                msgSpan.textContent = data.message;
+
+                if (data.running && data.detail) {
+                    if (window.lastDetail !== data.detail) {
+                        const line = document.createElement('div');
+                        line.textContent = `> ${data.detail}`;
+                        consoleDiv.appendChild(line);
+                        consoleDiv.scrollTop = consoleDiv.scrollHeight;
+                        window.lastDetail = data.detail;
+                    }
+                }
             })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('Resolved!');
-                        const btn = selected.closest('.dupe-group');
-                        if (btn) btn.remove();
+            .catch(err => console.error("Status poll failed", err));
+    }
 
-                        const remaining = document.querySelectorAll('.dupe-group').length;
-                        document.getElementById('dupe-status').textContent = `Found ${remaining} duplicate groups.`;
-                    } else {
-                        alert('Error: ' + data.message);
-                    }
-                });
+    function triggerAction(url, initialMsg) {
+        // Optimistic update
+        document.getElementById('status-bar').textContent = `Status: ${initialMsg}`;
+        document.getElementById('status-bar').className = 'status-running';
+
+        fetch(url, { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    alert("Error: " + data.message);
+                }
+                updateStatus();
+            });
+    }
+
+    function queuePlaylists() {
+        const text = document.getElementById('playlist-urls').value;
+        const urls = text.split('\n').filter(line => line.trim() !== '');
+
+        if (urls.length === 0) {
+            alert("Please enter at least one URL.");
+            return;
         }
 
-        // --- Tag Review Queue ---
-        const TAG_TIER_COLOURS = { green: '#3fa34d', yellow: '#d6a01d', red: '#c0392b' };
+        document.getElementById('status-bar').textContent = `Status: Queueing ${urls.length} playlists...`;
+        document.getElementById('status-bar').className = 'status-running';
 
-        function loadTagReview() {
-            const container = document.getElementById('tag-review-container');
-            const list = document.getElementById('tag-review-list');
-            const status = document.getElementById('tag-review-status');
-            container.classList.remove('hidden');
-            status.textContent = 'Loading flagged tracks...';
-            list.innerHTML = '';
+        fetch('/api/playlists/queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: urls })
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    alert("Error: " + data.message);
+                }
+                updateStatus();
+            });
+    }
 
-            fetch('/api/tracks/needs-review')
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        status.textContent = 'Error: ' + (data.message || 'unknown');
-                        return;
-                    }
-                    if (!data.count) {
-                        status.textContent = 'Nothing flagged. All auto-tags are green.';
-                        return;
-                    }
-                    status.textContent = `${data.count} track(s) need review.`;
-                    data.tracks.forEach(t => list.appendChild(renderTagReviewRow(t)));
-                })
-                .catch(err => status.textContent = 'Network error: ' + err);
-        }
+    function loadDuplicates() {
+        const container = document.getElementById('duplicates-container');
+        const list = document.getElementById('dupe-list');
+        const status = document.getElementById('dupe-status');
 
-        function renderTagReviewRow(t) {
-            const row = document.createElement('div');
-            row.className = 'tag-review-row';
-            row.dataset.mbid = t.mbid;
-            row.style.cssText = 'margin-bottom:10px; padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:6px;';
-            const colour = TAG_TIER_COLOURS[t.tag_tier] || '#888';
-            const scoreTxt = t.tag_score != null ? ` (score ${Number(t.tag_score).toFixed(2)})` : '';
-            row.innerHTML = `
-                <div style="display:flex; align-items:center; gap:10px;">
-                    <span style="color:${colour}; font-size:18px;" title="${t.tag_tier}${scoreTxt}">●</span>
-                    <div style="flex:1;">
-                        <strong>${escapeHtml(t.artist || '?')} — ${escapeHtml(t.title || '?')}</strong>
-                        <div style="font-size:12px; color:var(--color-text-muted);">${escapeHtml(t.album || '')}</div>
-                    </div>
-                    <button onclick="identifyTagRow('${t.mbid}')" class="btn btn-secondary" style="padding:4px 12px; font-size:12px;">Identify</button>
-                </div>
-                <div class="tag-review-candidate" style="display:none; margin-top:8px;"></div>
-            `;
-            return row;
-        }
+        container.classList.remove('hidden');
+        status.textContent = 'Searching for duplicates...';
+        list.innerHTML = '';
 
-        function escapeHtml(s) {
-            return String(s || '').replace(/[&<>"']/g, c => ({
-                '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-            }[c]));
-        }
+        fetch('/api/duplicates')
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    status.textContent = 'Error: ' + data.message;
+                    return;
+                }
 
-        function identifyTagRow(mbid) {
-            const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
-            if (!row) return;
-            const panel = row.querySelector('.tag-review-candidate');
-            panel.style.display = 'block';
-            panel.innerHTML = '<em>Fingerprinting & looking up…</em>';
+                const dupes = data.duplicates;
+                if (dupes.length === 0) {
+                    status.textContent = 'No duplicates found!';
+                    return;
+                }
 
-            fetch(`/api/tag/identify/${encodeURIComponent(mbid)}`, { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        panel.innerHTML = `<span style="color:#e57373;">${escapeHtml(data.message)}</span>`;
-                        return;
-                    }
-                    if (!data.candidate) {
-                        panel.innerHTML = '<em>No AcoustID match. Fix manually on desktop or via a tag editor.</em>';
-                        return;
-                    }
-                    const c = data.candidate;
-                    const colour = TAG_TIER_COLOURS[c.tier] || '#888';
-                    const pct = Math.round((c.score || 0) * 100);
-                    const cur = c.current || {};
-                    const meta = c.meta || {};
-                    panel.innerHTML = `
-                        <div style="background:${colour}; color:white; padding:4px 8px; border-radius:3px; display:inline-block; font-weight:bold;">
-                            ${pct}% — ${c.tier.toUpperCase()}
-                        </div>
-                        <table style="width:100%; margin-top:8px; font-size:13px;">
-                            <tr><th style="text-align:left;">Field</th><th style="text-align:left;">Current</th><th style="text-align:left;">Candidate</th></tr>
-                            ${tagDiffRow('title', cur, meta)}
-                            ${tagDiffRow('artist', cur, meta)}
-                            ${tagDiffRow('album', cur, meta)}
-                            ${tagDiffRow('date', cur, meta)}
-                            ${tagDiffRow('track_number', cur, meta)}
-                            ${tagDiffRow('mbid', cur, meta)}
-                        </table>
-                        <div style="margin-top:10px; display:flex; gap:8px;">
-                            <button class="btn btn-primary" style="padding:4px 12px; font-size:12px;" onclick='applyTagRow("${mbid}", ${JSON.stringify(meta).replace(/"/g, '&quot;')}, ${c.score || 'null'})'>Apply</button>
-                            <button class="btn btn-secondary" style="padding:4px 12px; font-size:12px;" onclick='this.closest(".tag-review-candidate").style.display="none"'>Cancel</button>
-                        </div>
-                    `;
-                })
-                .catch(err => panel.innerHTML = `<span style="color:#e57373;">Network error: ${err}</span>`);
-        }
+                status.textContent = `Found ${dupes.length} duplicate groups.`;
 
-        function tagDiffRow(field, cur, meta) {
-            const c = cur[field] || '';
-            const m = meta[field] || '';
-            const changed = c !== m;
-            const color = changed ? '#d6a01d' : 'var(--color-text-muted)';
-            return `<tr><td style="color:var(--color-text-muted);">${field}</td><td>${escapeHtml(c)}</td><td style="color:${color};">${escapeHtml(m)}</td></tr>`;
-        }
+                dupes.forEach(group => {
+                    const div = document.createElement('div');
+                    div.className = 'dupe-group';
+                    div.style.cssText = 'margin-bottom:14px; padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:6px;';
 
-        function applyTagRow(mbid, meta, score) {
-            fetch(`/api/tag/apply/${encodeURIComponent(mbid)}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ meta: meta, score: score }),
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        alert('Apply failed: ' + data.message);
-                        return;
-                    }
-                    const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
-                    if (row) row.remove();
-                    const remaining = document.querySelectorAll('.tag-review-row').length;
-                    const status = document.getElementById('tag-review-status');
-                    status.textContent = remaining
-                        ? `${remaining} track(s) need review.`
-                        : 'Nothing flagged. All auto-tags are green.';
-                })
-                .catch(err => alert('Network error: ' + err));
-        }
+                    let html = `<strong>${group.artist} - ${group.title}</strong><br>`;
+                    html += `<table style="width:100%; margin-top:6px; text-align:left;">`;
 
-        function triggerSync() {
-            const mode = document.getElementById('sync-mode').value;
-            const fmt = document.getElementById('sync-format').value;
-
-            fetch('/api/sync', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode: mode, format: fmt })
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        alert("Error: " + data.message);
-                    }
-                    updateStatus();
-                });
-        }
-
-        // --- Audit Logic ---
-        function loadAuditResults() {
-            const container = document.getElementById('audit-container');
-            const list = document.getElementById('audit-list');
-            const status = document.getElementById('audit-status');
-
-            container.classList.remove('hidden');
-            status.textContent = 'Searching for incomplete albums...';
-            list.innerHTML = '';
-
-            fetch('/api/audit/results')
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        status.textContent = 'Error: ' + data.message;
-                        return;
-                    }
-
-                    const results = data.results;
-                    if (results.length === 0) {
-                        status.textContent = 'No incomplete albums found!';
-                        return;
-                    }
-
-                    status.textContent = `Found ${results.length} incomplete albums.`;
-
-                    list.style.display = 'grid';
-                    list.style.gridTemplateColumns = 'repeat(auto-fill, minmax(150px, 1fr))';
-                    list.style.gap = '15px';
-
-                    results.forEach((item, idx) => {
-                        const div = document.createElement('div');
-                        div.className = 'album-card';
-                        div.style.cssText = 'background:var(--color-surface); padding:10px; border-radius:6px; border:1px solid var(--color-border); text-align:center; cursor:pointer;';
-
-                        div.onclick = () => showAuditDetails(item.mbid);
-
-                        div.innerHTML = `
-    <img src="${item.cover_art || 'img/no-cover.png'}" alt="Cover"
-        style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover; background-color: var(--color-bg);"
-        onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjNDQ0Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiNhYWEiIGR5PSIuM2VtIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5ObyBDb3ZlcjwvdGV4dD48L3N2Zz4=';">
-    <div
-        style="margin-top:6px; font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--color-text);">
-        ${item.album}</div>
-    <div style="font-size:12px; color:var(--color-text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}
-    </div>
-    <div style="font-size:12px; color:var(--color-accent); margin-top:2px;">Missing: ${item.missing}</div>
-    `;
-                        list.appendChild(div);
-                    });
-                })
-                .catch(err => status.textContent = 'Network error: ' + err);
-        }
-
-        let currentAuditDetails = null;
-
-        function showAuditDetails(mbid) {
-            const modal = document.getElementById('audit-modal');
-            const tracksDiv = document.getElementById('modal-tracks');
-            const title = document.getElementById('modal-title');
-            const subtitle = document.getElementById('modal-subtitle');
-
-            modal.style.display = 'flex';
-            title.textContent = "Loading...";
-
-            fetch(`/api/audit/details?mbid=${mbid}`)
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        title.textContent = "Error";
-                        tracksDiv.textContent = data.message;
-                        return;
-                    }
-
-                    const info = data.data;
-                    currentAuditDetails = info;
-
-                    title.textContent = info.album;
-                    subtitle.textContent = `${info.artist} - Missing ${info.missing_count}/${info.total_tracks}`;
-
-                    let html = '<table style="width:100%; border-collapse: collapse;">';
-
-                    info.missing_tracks.forEach((t, idx) => {
+                    group.candidates.forEach((cand, idx) => {
+                        const isRec = cand.is_recommended;
+                        const color = isRec ? '#4caf50' : '#e57373';
                         html += `
-        <tr style="border-bottom:1px solid var(--color-border);">
-            <td style="padding:8px; width:30px;">
-                <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}" style="accent-color: var(--color-accent);">
-            </td>
-            <td style="padding:8px;">${t.disc}-${t.track}</td>
-            <td style="padding:8px;">${t.title}</td>
-        </tr>
-        `;
+    <tr>
+        <td>
+            <input type="radio" name="keep_${group.mbid}" value="${cand.path}" ${isRec ? 'checked' : ''}
+                id="radio_${group.mbid}_${idx}" style="accent-color: var(--color-accent);">
+        </td>
+        <td><label for="radio_${group.mbid}_${idx}" style="color:${color}">${cand.path}</label></td>
+        <td>Score: ${cand.score}</td>
+    </tr>
+    `;
                     });
-                    html += '</table>';
-                    tracksDiv.innerHTML = html;
+                    html += `</table>`;
+                    html += `<button onclick="resolveDuplicate('${group.mbid}')" class="btn btn-secondary"
+    style="margin-top:8px; padding: 4px 12px; font-size: 12px;">Resolve (Keep Selected)</button>`;
+                    div.innerHTML = html;
+                    list.appendChild(div);
                 });
-        }
-
-        function closeAuditModal() {
-            document.getElementById('audit-modal').style.display = 'none';
-        }
-
-        function queueSelectedTracks() {
-            if (!currentAuditDetails) return;
-
-            const checks = document.querySelectorAll('#modal-tracks input[type="checkbox"]:checked');
-            if (checks.length === 0) {
-                alert("No tracks selected.");
-                return;
-            }
-
-            const selectedItems = [];
-            checks.forEach(chk => {
-                const idx = chk.getAttribute('data-idx');
-                const track = currentAuditDetails.missing_tracks[idx];
-                selectedItems.push({
-                    artist: currentAuditDetails.artist,
-                    title: track.title
-                });
-            });
-
-            const btn = document.querySelector('#audit-modal button');
-            const originalText = btn.textContent;
-            btn.textContent = "Queueing...";
-            btn.disabled = true;
-
-            fetch('/api/audit/queue', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    items: selectedItems,
-                    album_info: {
-                        artist: currentAuditDetails.artist,
-                        album: currentAuditDetails.album
-                    }
-                })
             })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(`Queued ${data.queued_count} tracks.`);
-                        closeAuditModal();
-                    } else {
-                        alert("Error: " + data.message);
-                    }
-                })
-                .finally(() => {
-                    btn.textContent = originalText;
-                    btn.disabled = false;
-                });
-        }
+            .catch(err => status.textContent = 'Network error: ' + err);
+    }
 
-        // --- Stats & Downloads ---
-        function loadStats() {
-            fetch('/api/stats')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        const s = data.stats;
-                        document.getElementById('stat-tracks').textContent = s.tracks;
-                        document.getElementById('stat-albums').textContent = s.albums;
-                        document.getElementById('stat-artists').textContent = s.artists;
-                        document.getElementById('stat-incomplete').textContent = s.incomplete_albums;
-                        document.getElementById('stat-disk').textContent = `${s.disk_free_gb} GB`;
+    function resolveDuplicate(mbid) {
+        const selected = document.querySelector(`input[name="keep_${mbid}"]:checked`);
+        if (!selected) return;
 
-                        if (s.disk_used_percent > 90) {
-                            document.getElementById('stat-disk').style.color = 'var(--color-accent)';
-                        }
-                    } else {
-                        console.error("Stats Error:", data.message);
-                        document.getElementById('stat-disk').textContent = "Err";
-                        document.getElementById('stat-disk').title = data.message;
-                    }
-                })
-                .catch(err => console.error("Stats Fetch Failed:", err));
-        }
+        const keepPath = selected.value;
 
-        function loadDownloadList() {
-            const container = document.getElementById('download-list-container');
-            const tbody = document.getElementById('download-table-body');
-
-            if (container.classList.contains('hidden')) {
-                container.classList.remove('hidden');
+        const allInputs = document.querySelectorAll(`input[name="keep_${mbid}"]`);
+        const deletePaths = [];
+        allInputs.forEach(input => {
+            if (input.value !== keepPath) {
+                deletePaths.push(input.value);
             }
-            tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">Loading...</td></tr>';
-
-            fetch('/api/downloads/list')
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        tbody.innerHTML = `<tr><td colspan="3" style="padding:8px;">Error: ${data.message}</td></tr>`;
-                        return;
-                    }
-                    if (data.items.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:8px; color:var(--color-text-muted);">No items in queue.</td></tr>';
-                        return;
-                    }
-
-                    tbody.innerHTML = '';
-                    data.items.forEach(item => {
-                        const tr = document.createElement('tr');
-                        tr.style.borderBottom = '1px solid var(--color-border)';
-
-                        let statusColor = 'var(--color-text)';
-                        if (item.status === 'success') statusColor = '#4caf50';
-                        if (item.status === 'failed') statusColor = '#e57373';
-
-                        tr.innerHTML = `
-                            <td style="padding:6px;">${item.id}</td>
-                            <td style="padding:6px;">${item.query}</td>
-                            <td style="padding:6px; color:${statusColor}">${item.status}</td>
-                        `;
-                        tbody.appendChild(tr);
-                    });
-                });
-        }
-
-        // Poll status every 2 seconds
-        setInterval(updateStatus, 2000);
-        updateStatus();
-
-        // --- Library Search ---
-        function searchLibrary() {
-            const query = document.getElementById('lib-search-input').value;
-            if (!query) return;
-
-            const container = document.getElementById('search-results');
-            const tbody = document.getElementById('search-results-body');
-
-            container.classList.remove('hidden');
-            tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">Searching...</td></tr>';
-
-            fetch(`/api/library/search?q=${encodeURIComponent(query)}`)
-                .then(res => res.json())
-                .then(data => {
-                    if (!data.success) {
-                        tbody.innerHTML = `<tr><td colspan="3" style="padding:8px;">Error: ${data.message}</td></tr>`;
-                        return;
-                    }
-                    if (data.results.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">No matches found.</td></tr>';
-                        return;
-                    }
-
-                    tbody.innerHTML = '';
-                    data.results.forEach(t => {
-                        const tr = document.createElement('tr');
-                        tr.style.borderBottom = '1px solid var(--color-border)';
-                        tr.innerHTML = `
-                            <td style="padding:6px;">${t.artist}</td>
-                            <td style="padding:6px;">${t.album || '-'}</td>
-                            <td style="padding:6px;">${t.title}</td>
-                        `;
-                        tbody.appendChild(tr);
-                    });
-                });
-        }
-
-        document.getElementById('lib-search-input').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') searchLibrary();
         });
 
-        loadStats();
-        setInterval(loadStats, 30000);
-    </script>
-</body>
+        if (!confirm(`Keep:\n${keepPath}\n\nDelete ${deletePaths.length} others?`)) return;
 
-</html>
+        fetch('/api/duplicates/resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mbid: mbid,
+                keep_path: keepPath,
+                delete_paths: deletePaths
+            })
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Resolved!');
+                    const btn = selected.closest('.dupe-group');
+                    if (btn) btn.remove();
+
+                    const remaining = document.querySelectorAll('.dupe-group').length;
+                    document.getElementById('dupe-status').textContent = `Found ${remaining} duplicate groups.`;
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+    }
+
+    // --- Tag Review Queue ---
+    const TAG_TIER_COLOURS = { green: '#3fa34d', yellow: '#d6a01d', red: '#c0392b' };
+
+    function loadTagReview() {
+        const container = document.getElementById('tag-review-container');
+        const list = document.getElementById('tag-review-list');
+        const status = document.getElementById('tag-review-status');
+        container.classList.remove('hidden');
+        status.textContent = 'Loading flagged tracks...';
+        list.innerHTML = '';
+
+        fetch('/api/tracks/needs-review')
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    status.textContent = 'Error: ' + (data.message || 'unknown');
+                    return;
+                }
+                if (!data.count) {
+                    status.textContent = 'Nothing flagged. All auto-tags are green.';
+                    return;
+                }
+                status.textContent = `${data.count} track(s) need review.`;
+                data.tracks.forEach(t => list.appendChild(renderTagReviewRow(t)));
+            })
+            .catch(err => status.textContent = 'Network error: ' + err);
+    }
+
+    function renderTagReviewRow(t) {
+        const row = document.createElement('div');
+        row.className = 'tag-review-row';
+        row.dataset.mbid = t.mbid;
+        row.style.cssText = 'margin-bottom:10px; padding:12px; background:var(--color-surface); border:1px solid var(--color-border); border-radius:6px;';
+        const colour = TAG_TIER_COLOURS[t.tag_tier] || '#888';
+        const scoreTxt = t.tag_score != null ? ` (score ${Number(t.tag_score).toFixed(2)})` : '';
+        row.innerHTML = `
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="color:${colour}; font-size:18px;" title="${t.tag_tier}${scoreTxt}">●</span>
+                <div style="flex:1;">
+                    <strong>${escapeHtml(t.artist || '?')} — ${escapeHtml(t.title || '?')}</strong>
+                    <div style="font-size:12px; color:var(--color-text-muted);">${escapeHtml(t.album || '')}</div>
+                </div>
+                <button onclick="identifyTagRow('${t.mbid}')" class="btn btn-secondary" style="padding:4px 12px; font-size:12px;">Identify</button>
+            </div>
+            <div class="tag-review-candidate" style="display:none; margin-top:8px;"></div>
+        `;
+        return row;
+    }
+
+    function escapeHtml(s) {
+        return String(s || '').replace(/[&<>"']/g, c => ({
+            '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+    }
+
+    function identifyTagRow(mbid) {
+        const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
+        if (!row) return;
+        const panel = row.querySelector('.tag-review-candidate');
+        panel.style.display = 'block';
+        panel.innerHTML = '<em>Fingerprinting & looking up…</em>';
+
+        fetch(`/api/tag/identify/${encodeURIComponent(mbid)}`, { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    panel.innerHTML = `<span style="color:#e57373;">${escapeHtml(data.message)}</span>`;
+                    return;
+                }
+                if (!data.candidate) {
+                    panel.innerHTML = '<em>No AcoustID match. Fix manually on desktop or via a tag editor.</em>';
+                    return;
+                }
+                const c = data.candidate;
+                const colour = TAG_TIER_COLOURS[c.tier] || '#888';
+                const pct = Math.round((c.score || 0) * 100);
+                const cur = c.current || {};
+                const meta = c.meta || {};
+                panel.innerHTML = `
+                    <div style="background:${colour}; color:white; padding:4px 8px; border-radius:3px; display:inline-block; font-weight:bold;">
+                        ${pct}% — ${c.tier.toUpperCase()}
+                    </div>
+                    <table style="width:100%; margin-top:8px; font-size:13px;">
+                        <tr><th style="text-align:left;">Field</th><th style="text-align:left;">Current</th><th style="text-align:left;">Candidate</th></tr>
+                        ${tagDiffRow('title', cur, meta)}
+                        ${tagDiffRow('artist', cur, meta)}
+                        ${tagDiffRow('album', cur, meta)}
+                        ${tagDiffRow('date', cur, meta)}
+                        ${tagDiffRow('track_number', cur, meta)}
+                        ${tagDiffRow('mbid', cur, meta)}
+                    </table>
+                    <div style="margin-top:10px; display:flex; gap:8px;">
+                        <button class="btn btn-primary" style="padding:4px 12px; font-size:12px;" onclick='applyTagRow("${mbid}", ${JSON.stringify(meta).replace(/"/g, '&quot;')}, ${c.score || 'null'})'>Apply</button>
+                        <button class="btn btn-secondary" style="padding:4px 12px; font-size:12px;" onclick='this.closest(".tag-review-candidate").style.display="none"'>Cancel</button>
+                    </div>
+                `;
+            })
+            .catch(err => panel.innerHTML = `<span style="color:#e57373;">Network error: ${err}</span>`);
+    }
+
+    function tagDiffRow(field, cur, meta) {
+        const c = cur[field] || '';
+        const m = meta[field] || '';
+        const changed = c !== m;
+        const color = changed ? '#d6a01d' : 'var(--color-text-muted)';
+        return `<tr><td style="color:var(--color-text-muted);">${field}</td><td>${escapeHtml(c)}</td><td style="color:${color};">${escapeHtml(m)}</td></tr>`;
+    }
+
+    function applyTagRow(mbid, meta, score) {
+        fetch(`/api/tag/apply/${encodeURIComponent(mbid)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ meta: meta, score: score }),
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    alert('Apply failed: ' + data.message);
+                    return;
+                }
+                const row = document.querySelector(`.tag-review-row[data-mbid="${mbid}"]`);
+                if (row) row.remove();
+                const remaining = document.querySelectorAll('.tag-review-row').length;
+                const status = document.getElementById('tag-review-status');
+                status.textContent = remaining
+                    ? `${remaining} track(s) need review.`
+                    : 'Nothing flagged. All auto-tags are green.';
+            })
+            .catch(err => alert('Network error: ' + err));
+    }
+
+    function triggerSync() {
+        const mode = document.getElementById('sync-mode').value;
+        const fmt = document.getElementById('sync-format').value;
+
+        fetch('/api/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode, format: fmt })
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    alert("Error: " + data.message);
+                }
+                updateStatus();
+            });
+    }
+
+    // --- Audit Logic ---
+    function loadAuditResults() {
+        const container = document.getElementById('audit-container');
+        const list = document.getElementById('audit-list');
+        const status = document.getElementById('audit-status');
+
+        container.classList.remove('hidden');
+        status.textContent = 'Searching for incomplete albums...';
+        list.innerHTML = '';
+
+        fetch('/api/audit/results')
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    status.textContent = 'Error: ' + data.message;
+                    return;
+                }
+
+                const results = data.results;
+                if (results.length === 0) {
+                    status.textContent = 'No incomplete albums found!';
+                    return;
+                }
+
+                status.textContent = `Found ${results.length} incomplete albums.`;
+
+                list.style.display = 'grid';
+                list.style.gridTemplateColumns = 'repeat(auto-fill, minmax(150px, 1fr))';
+                list.style.gap = '15px';
+
+                results.forEach((item, idx) => {
+                    const div = document.createElement('div');
+                    div.className = 'album-card';
+                    div.style.cssText = 'background:var(--color-surface); padding:10px; border-radius:6px; border:1px solid var(--color-border); text-align:center; cursor:pointer;';
+
+                    div.onclick = () => showAuditDetails(item.mbid);
+
+                    div.innerHTML = `
+<img src="${item.cover_art || 'img/no-cover.png'}" alt="Cover"
+    style="width:100%; height:auto; border-radius:4px; aspect-ratio:1/1; object-fit:cover; background-color: var(--color-bg);"
+    onerror="this.onerror=null; this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjNDQ0Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiNhYWEiIGR5PSIuM2VtIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5ObyBDb3ZlcjwvdGV4dD48L3N2Zz4=';">
+<div
+    style="margin-top:6px; font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--color-text);">
+    ${item.album}</div>
+<div style="font-size:12px; color:var(--color-text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.artist}
+</div>
+<div style="font-size:12px; color:var(--color-accent); margin-top:2px;">Missing: ${item.missing}</div>
+`;
+                    list.appendChild(div);
+                });
+            })
+            .catch(err => status.textContent = 'Network error: ' + err);
+    }
+
+    let currentAuditDetails = null;
+
+    function showAuditDetails(mbid) {
+        const modal = document.getElementById('audit-modal');
+        const tracksDiv = document.getElementById('modal-tracks');
+        const title = document.getElementById('modal-title');
+        const subtitle = document.getElementById('modal-subtitle');
+
+        modal.style.display = 'flex';
+        title.textContent = "Loading...";
+
+        fetch(`/api/audit/details?mbid=${mbid}`)
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    title.textContent = "Error";
+                    tracksDiv.textContent = data.message;
+                    return;
+                }
+
+                const info = data.data;
+                currentAuditDetails = info;
+
+                title.textContent = info.album;
+                subtitle.textContent = `${info.artist} - Missing ${info.missing_count}/${info.total_tracks}`;
+
+                let html = '<table style="width:100%; border-collapse: collapse;">';
+
+                info.missing_tracks.forEach((t, idx) => {
+                    html += `
+    <tr style="border-bottom:1px solid var(--color-border);">
+        <td style="padding:8px; width:30px;">
+            <input type="checkbox" id="chk_track_${idx}" checked data-idx="${idx}" style="accent-color: var(--color-accent);">
+        </td>
+        <td style="padding:8px;">${t.disc}-${t.track}</td>
+        <td style="padding:8px;">${t.title}</td>
+    </tr>
+    `;
+                });
+                html += '</table>';
+                tracksDiv.innerHTML = html;
+            });
+    }
+
+    function closeAuditModal() {
+        document.getElementById('audit-modal').style.display = 'none';
+    }
+
+    function queueSelectedTracks() {
+        if (!currentAuditDetails) return;
+
+        const checks = document.querySelectorAll('#modal-tracks input[type="checkbox"]:checked');
+        if (checks.length === 0) {
+            alert("No tracks selected.");
+            return;
+        }
+
+        const selectedItems = [];
+        checks.forEach(chk => {
+            const idx = chk.getAttribute('data-idx');
+            const track = currentAuditDetails.missing_tracks[idx];
+            selectedItems.push({
+                artist: currentAuditDetails.artist,
+                title: track.title
+            });
+        });
+
+        const btn = document.querySelector('#audit-modal button');
+        const originalText = btn.textContent;
+        btn.textContent = "Queueing...";
+        btn.disabled = true;
+
+        fetch('/api/audit/queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                items: selectedItems,
+                album_info: {
+                    artist: currentAuditDetails.artist,
+                    album: currentAuditDetails.album
+                }
+            })
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`Queued ${data.queued_count} tracks.`);
+                    closeAuditModal();
+                } else {
+                    alert("Error: " + data.message);
+                }
+            })
+            .finally(() => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+            });
+    }
+
+    // --- Stats & Downloads ---
+    function loadStats() {
+        fetch('/api/stats')
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const s = data.stats;
+                    document.getElementById('stat-tracks').textContent = s.tracks;
+                    document.getElementById('stat-albums').textContent = s.albums;
+                    document.getElementById('stat-artists').textContent = s.artists;
+                    document.getElementById('stat-incomplete').textContent = s.incomplete_albums;
+                    document.getElementById('stat-disk').textContent = `${s.disk_free_gb} GB`;
+
+                    if (s.disk_used_percent > 90) {
+                        document.getElementById('stat-disk').style.color = 'var(--color-accent)';
+                    }
+                } else {
+                    console.error("Stats Error:", data.message);
+                    document.getElementById('stat-disk').textContent = "Err";
+                    document.getElementById('stat-disk').title = data.message;
+                }
+            })
+            .catch(err => console.error("Stats Fetch Failed:", err));
+    }
+
+    function loadDownloadList() {
+        const container = document.getElementById('download-list-container');
+        const tbody = document.getElementById('download-table-body');
+
+        if (container.classList.contains('hidden')) {
+            container.classList.remove('hidden');
+        }
+        tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">Loading...</td></tr>';
+
+        fetch('/api/downloads/list')
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    tbody.innerHTML = `<tr><td colspan="3" style="padding:8px;">Error: ${data.message}</td></tr>`;
+                    return;
+                }
+                if (data.items.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:8px; color:var(--color-text-muted);">No items in queue.</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = '';
+                data.items.forEach(item => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid var(--color-border)';
+
+                    let statusColor = 'var(--color-text)';
+                    if (item.status === 'success') statusColor = '#4caf50';
+                    if (item.status === 'failed') statusColor = '#e57373';
+
+                    tr.innerHTML = `
+                        <td style="padding:6px;">${item.id}</td>
+                        <td style="padding:6px;">${item.query}</td>
+                        <td style="padding:6px; color:${statusColor}">${item.status}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            });
+    }
+
+    // Poll status every 2 seconds
+    setInterval(updateStatus, 2000);
+    updateStatus();
+
+    // --- Library Search ---
+    function searchLibrary() {
+        const query = document.getElementById('lib-search-input').value;
+        if (!query) return;
+
+        const container = document.getElementById('search-results');
+        const tbody = document.getElementById('search-results-body');
+
+        container.classList.remove('hidden');
+        tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">Searching...</td></tr>';
+
+        fetch(`/api/library/search?q=${encodeURIComponent(query)}`)
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    tbody.innerHTML = `<tr><td colspan="3" style="padding:8px;">Error: ${data.message}</td></tr>`;
+                    return;
+                }
+                if (data.results.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="3" style="padding:8px; color:var(--color-text-muted);">No matches found.</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = '';
+                data.results.forEach(t => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid var(--color-border)';
+                    tr.innerHTML = `
+                        <td style="padding:6px;">${t.artist}</td>
+                        <td style="padding:6px;">${t.album || '-'}</td>
+                        <td style="padding:6px;">${t.title}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            });
+    }
+
+    document.getElementById('lib-search-input').addEventListener('keypress', function (e) {
+        if (e.key === 'Enter') searchLibrary();
+    });
+
+    loadStats();
+    setInterval(loadStats, 30000);
+</script>
+{% endblock %}
