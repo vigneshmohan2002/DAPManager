@@ -1,204 +1,196 @@
-<!DOCTYPE html>
-<html lang="en">
+{% extends "_layout.html" %}
+{% set current_page = 'orphans' %}
+{% block title %}DAP Manager — Orphans{% endblock %}
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DAP Manager — Orphans</title>
-    <link rel="stylesheet" href="/static/tailwind.css">
-</head>
-
-<body class="bg-[var(--color-bg)] text-[var(--color-text)] min-h-screen p-5">
-    <div class="max-w-[900px] mx-auto">
-        <header class="text-center mb-6">
-            <h1 class="text-3xl font-semibold text-[var(--color-text)] mb-2">Orphans</h1>
-            <div class="muted">
-                Soft-deleted tracks and playlists. Restore to bring them back,
-                or purge to permanently remove the row.
-                <a href="/" class="text-[var(--color-accent)] hover:underline ml-2">← Dashboard</a>
-            </div>
-        </header>
-
-        <main>
-            <section class="card">
-                <div class="tabs">
-                    <div class="tab active" data-tab="tracks" onclick="selectTab('tracks')">
-                        Tracks <span class="inline-block px-2 py-0.5 rounded-full text-[11px] bg-amber-900/40 text-amber-300 ml-1.5" id="tracks-count">0</span>
-                    </div>
-                    <div class="tab" data-tab="playlists" onclick="selectTab('playlists')">
-                        Playlists <span class="inline-block px-2 py-0.5 rounded-full text-[11px] bg-amber-900/40 text-amber-300 ml-1.5" id="playlists-count">0</span>
-                    </div>
-                </div>
-
-                <div id="tab-tracks">
-                    <div class="flex items-center gap-2 mb-2.5">
-                        <button onclick="reloadTracks()" class="btn btn-secondary">Refresh</button>
-                        <span class="muted" id="tracks-status"></span>
-                    </div>
-                    <div id="tracks-container">
-                        <div class="empty">Loading…</div>
-                    </div>
-                </div>
-
-                <div id="tab-playlists" style="display:none;">
-                    <div class="flex items-center gap-2 mb-2.5">
-                        <button onclick="reloadPlaylists()" class="btn btn-secondary">Refresh</button>
-                        <span class="muted" id="playlists-status"></span>
-                    </div>
-                    <div id="playlists-container">
-                        <div class="empty">Loading…</div>
-                    </div>
-                </div>
-            </section>
-        </main>
+{% block header %}
+<header class="app-header">
+    <h1>Orphans</h1>
+    <div class="subtitle">
+        Soft-deleted tracks and playlists. Restore to bring them back, or purge to permanently remove the row.
     </div>
+</header>
+{% endblock %}
 
-    <script>
-        function selectTab(name) {
-            document.querySelectorAll('.tab').forEach(t => {
-                t.classList.toggle('active', t.dataset.tab === name);
-            });
-            document.getElementById('tab-tracks').style.display = (name === 'tracks') ? '' : 'none';
-            document.getElementById('tab-playlists').style.display = (name === 'playlists') ? '' : 'none';
-        }
+{% block content %}
+<div class="max-w-[960px]">
+    <section class="card">
+        <div class="tabs">
+            <div class="tab active" data-tab="tracks" onclick="selectTab('tracks')">
+                Tracks <span class="inline-block px-2 py-0.5 rounded-full text-[11px] bg-amber-900/40 text-amber-300 ml-1.5" id="tracks-count">0</span>
+            </div>
+            <div class="tab" data-tab="playlists" onclick="selectTab('playlists')">
+                Playlists <span class="inline-block px-2 py-0.5 rounded-full text-[11px] bg-amber-900/40 text-amber-300 ml-1.5" id="playlists-count">0</span>
+            </div>
+        </div>
 
-        async function reloadTracks() {
-            const container = document.getElementById('tracks-container');
-            const countBadge = document.getElementById('tracks-count');
-            container.innerHTML = '<div class="empty">Loading…</div>';
-            try {
-                const resp = await fetch('/api/orphans/tracks');
-                const data = await resp.json();
-                if (!data.success) {
-                    container.innerHTML = `<div class="empty">Error: ${escapeHtml(data.message || 'unknown')}</div>`;
-                    return;
-                }
-                const rows = data.tracks || [];
-                countBadge.textContent = rows.length;
-                if (!rows.length) {
-                    container.innerHTML = '<div class="empty">No orphan tracks.</div>';
-                    return;
-                }
-                let html = '<table class="orphan-table"><thead><tr>'
-                    + '<th>Artist</th><th>Title</th><th>Album</th>'
-                    + '<th>Deleted</th><th>On disk</th><th>Actions</th>'
-                    + '</tr></thead><tbody>';
-                for (const r of rows) {
-                    const mbid = encodeURIComponent(r.mbid);
-                    const hasFile = !!(r.local_path && r.local_path.trim());
-                    html += `<tr data-mbid="${escapeHtml(r.mbid)}">
-                        <td>${escapeHtml(r.artist || '')}</td>
-                        <td>${escapeHtml(r.title || '')}</td>
-                        <td>${escapeHtml(r.album || '')}</td>
-                        <td class="muted">${escapeHtml(r.deleted_at || '')}</td>
-                        <td class="muted" title="${escapeHtml(r.local_path || '')}">
-                            ${hasFile ? 'yes' : '<span class="muted">—</span>'}
-                        </td>
-                        <td class="row-actions">
-                            <button onclick="restoreTrack('${mbid}')">Restore</button>
-                            ${hasFile
-                                ? `<button class="danger" onclick="deleteTrackFile('${mbid}')">Delete file</button>`
-                                : ''}
-                            <button class="danger" onclick="purgeTrack('${mbid}')">Purge</button>
-                        </td>
-                    </tr>`;
-                }
-                html += '</tbody></table>';
-                container.innerHTML = html;
-            } catch (e) {
-                container.innerHTML = `<div class="empty">Failed: ${escapeHtml(String(e))}</div>`;
+        <div id="tab-tracks">
+            <div class="flex items-center gap-2 mb-2.5">
+                <button onclick="reloadTracks()" class="btn btn-secondary">Refresh</button>
+                <span class="muted" id="tracks-status"></span>
+            </div>
+            <div id="tracks-container">
+                <div class="empty">Loading…</div>
+            </div>
+        </div>
+
+        <div id="tab-playlists" style="display:none;">
+            <div class="flex items-center gap-2 mb-2.5">
+                <button onclick="reloadPlaylists()" class="btn btn-secondary">Refresh</button>
+                <span class="muted" id="playlists-status"></span>
+            </div>
+            <div id="playlists-container">
+                <div class="empty">Loading…</div>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function selectTab(name) {
+        document.querySelectorAll('.tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.tab === name);
+        });
+        document.getElementById('tab-tracks').style.display = (name === 'tracks') ? '' : 'none';
+        document.getElementById('tab-playlists').style.display = (name === 'playlists') ? '' : 'none';
+    }
+
+    async function reloadTracks() {
+        const container = document.getElementById('tracks-container');
+        const countBadge = document.getElementById('tracks-count');
+        container.innerHTML = '<div class="empty">Loading…</div>';
+        try {
+            const resp = await fetch('/api/orphans/tracks');
+            const data = await resp.json();
+            if (!data.success) {
+                container.innerHTML = `<div class="empty">Error: ${escapeHtml(data.message || 'unknown')}</div>`;
+                return;
             }
-        }
-
-        async function reloadPlaylists() {
-            const container = document.getElementById('playlists-container');
-            const countBadge = document.getElementById('playlists-count');
-            container.innerHTML = '<div class="empty">Loading…</div>';
-            try {
-                const resp = await fetch('/api/orphans/playlists');
-                const data = await resp.json();
-                if (!data.success) {
-                    container.innerHTML = `<div class="empty">Error: ${escapeHtml(data.message || 'unknown')}</div>`;
-                    return;
-                }
-                const rows = data.playlists || [];
-                countBadge.textContent = rows.length;
-                if (!rows.length) {
-                    container.innerHTML = '<div class="empty">No orphan playlists.</div>';
-                    return;
-                }
-                let html = '<table class="orphan-table"><thead><tr>'
-                    + '<th>Name</th><th>Tracks</th><th>Deleted</th><th>Actions</th>'
-                    + '</tr></thead><tbody>';
-                for (const r of rows) {
-                    const pid = encodeURIComponent(r.playlist_id);
-                    html += `<tr>
-                        <td>${escapeHtml(r.name || '')}</td>
-                        <td>${r.track_count}</td>
-                        <td class="muted">${escapeHtml(r.deleted_at || '')}</td>
-                        <td class="row-actions">
-                            <button onclick="restorePlaylist('${pid}')">Restore</button>
-                            <button class="danger" onclick="purgePlaylist('${pid}', ${r.track_count})">Purge</button>
-                        </td>
-                    </tr>`;
-                }
-                html += '</tbody></table>';
-                container.innerHTML = html;
-            } catch (e) {
-                container.innerHTML = `<div class="empty">Failed: ${escapeHtml(String(e))}</div>`;
+            const rows = data.tracks || [];
+            countBadge.textContent = rows.length;
+            if (!rows.length) {
+                container.innerHTML = '<div class="empty">No orphan tracks.</div>';
+                return;
             }
-        }
-
-        async function postAndReload(url, method, reload, statusElId, successMsg) {
-            const status = document.getElementById(statusElId);
-            status.textContent = '…';
-            try {
-                const resp = await fetch(url, { method });
-                const data = await resp.json();
-                if (!data.success) {
-                    status.textContent = 'Error: ' + (data.message || resp.status);
-                    return;
-                }
-                status.textContent = successMsg;
-                reload();
-            } catch (e) {
-                status.textContent = 'Failed: ' + e;
+            let html = '<table class="orphan-table"><thead><tr>'
+                + '<th>Artist</th><th>Title</th><th>Album</th>'
+                + '<th>Deleted</th><th>On disk</th><th>Actions</th>'
+                + '</tr></thead><tbody>';
+            for (const r of rows) {
+                const mbid = encodeURIComponent(r.mbid);
+                const hasFile = !!(r.local_path && r.local_path.trim());
+                html += `<tr data-mbid="${escapeHtml(r.mbid)}">
+                    <td>${escapeHtml(r.artist || '')}</td>
+                    <td>${escapeHtml(r.title || '')}</td>
+                    <td>${escapeHtml(r.album || '')}</td>
+                    <td class="muted">${escapeHtml(r.deleted_at || '')}</td>
+                    <td class="muted" title="${escapeHtml(r.local_path || '')}">
+                        ${hasFile ? 'yes' : '<span class="muted">—</span>'}
+                    </td>
+                    <td class="row-actions">
+                        <button onclick="restoreTrack('${mbid}')">Restore</button>
+                        ${hasFile
+                            ? `<button class="danger" onclick="deleteTrackFile('${mbid}')">Delete file</button>`
+                            : ''}
+                        <button class="danger" onclick="purgeTrack('${mbid}')">Purge</button>
+                    </td>
+                </tr>`;
             }
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        } catch (e) {
+            container.innerHTML = `<div class="empty">Failed: ${escapeHtml(String(e))}</div>`;
         }
+    }
 
-        function restoreTrack(mbid) {
-            postAndReload(`/api/tracks/${mbid}/restore`, 'POST', reloadTracks, 'tracks-status', 'Restored.');
+    async function reloadPlaylists() {
+        const container = document.getElementById('playlists-container');
+        const countBadge = document.getElementById('playlists-count');
+        container.innerHTML = '<div class="empty">Loading…</div>';
+        try {
+            const resp = await fetch('/api/orphans/playlists');
+            const data = await resp.json();
+            if (!data.success) {
+                container.innerHTML = `<div class="empty">Error: ${escapeHtml(data.message || 'unknown')}</div>`;
+                return;
+            }
+            const rows = data.playlists || [];
+            countBadge.textContent = rows.length;
+            if (!rows.length) {
+                container.innerHTML = '<div class="empty">No orphan playlists.</div>';
+                return;
+            }
+            let html = '<table class="orphan-table"><thead><tr>'
+                + '<th>Name</th><th>Tracks</th><th>Deleted</th><th>Actions</th>'
+                + '</tr></thead><tbody>';
+            for (const r of rows) {
+                const pid = encodeURIComponent(r.playlist_id);
+                html += `<tr>
+                    <td>${escapeHtml(r.name || '')}</td>
+                    <td>${r.track_count}</td>
+                    <td class="muted">${escapeHtml(r.deleted_at || '')}</td>
+                    <td class="row-actions">
+                        <button onclick="restorePlaylist('${pid}')">Restore</button>
+                        <button class="danger" onclick="purgePlaylist('${pid}', ${r.track_count})">Purge</button>
+                    </td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        } catch (e) {
+            container.innerHTML = `<div class="empty">Failed: ${escapeHtml(String(e))}</div>`;
         }
-        function purgeTrack(mbid) {
-            if (!confirm('Permanently remove this track row? This cannot be undone.')) return;
-            postAndReload(`/api/tracks/${mbid}?purge=true`, 'DELETE', reloadTracks, 'tracks-status', 'Purged.');
-        }
-        function deleteTrackFile(mbid) {
-            if (!confirm('Delete the file on disk? The orphan row stays until you Purge it.')) return;
-            postAndReload(`/api/tracks/${mbid}/file`, 'DELETE', reloadTracks, 'tracks-status', 'File deleted.');
-        }
-        function restorePlaylist(pid) {
-            postAndReload(`/api/playlists/${pid}/restore`, 'POST', reloadPlaylists, 'playlists-status', 'Restored.');
-        }
-        function purgePlaylist(pid, trackCount) {
-            const extra = trackCount > 0
-                ? ` (removes ${trackCount} membership row${trackCount === 1 ? '' : 's'})`
-                : '';
-            if (!confirm(`Permanently remove this playlist${extra}? This cannot be undone.`)) return;
-            postAndReload(`/api/playlists/${pid}?purge=true`, 'DELETE', reloadPlaylists, 'playlists-status', 'Purged.');
-        }
+    }
 
-        function escapeHtml(s) {
-            return String(s)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;');
+    async function postAndReload(url, method, reload, statusElId, successMsg) {
+        const status = document.getElementById(statusElId);
+        status.textContent = '…';
+        try {
+            const resp = await fetch(url, { method });
+            const data = await resp.json();
+            if (!data.success) {
+                status.textContent = 'Error: ' + (data.message || resp.status);
+                return;
+            }
+            status.textContent = successMsg;
+            reload();
+        } catch (e) {
+            status.textContent = 'Failed: ' + e;
         }
+    }
 
-        reloadTracks();
-        reloadPlaylists();
-    </script>
-</body>
+    function restoreTrack(mbid) {
+        postAndReload(`/api/tracks/${mbid}/restore`, 'POST', reloadTracks, 'tracks-status', 'Restored.');
+    }
+    function purgeTrack(mbid) {
+        if (!confirm('Permanently remove this track row? This cannot be undone.')) return;
+        postAndReload(`/api/tracks/${mbid}?purge=true`, 'DELETE', reloadTracks, 'tracks-status', 'Purged.');
+    }
+    function deleteTrackFile(mbid) {
+        if (!confirm('Delete the file on disk? The orphan row stays until you Purge it.')) return;
+        postAndReload(`/api/tracks/${mbid}/file`, 'DELETE', reloadTracks, 'tracks-status', 'File deleted.');
+    }
+    function restorePlaylist(pid) {
+        postAndReload(`/api/playlists/${pid}/restore`, 'POST', reloadPlaylists, 'playlists-status', 'Restored.');
+    }
+    function purgePlaylist(pid, trackCount) {
+        const extra = trackCount > 0
+            ? ` (removes ${trackCount} membership row${trackCount === 1 ? '' : 's'})`
+            : '';
+        if (!confirm(`Permanently remove this playlist${extra}? This cannot be undone.`)) return;
+        postAndReload(`/api/playlists/${pid}?purge=true`, 'DELETE', reloadPlaylists, 'playlists-status', 'Purged.');
+    }
 
-</html>
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    reloadTracks();
+    reloadPlaylists();
+</script>
+{% endblock %}
