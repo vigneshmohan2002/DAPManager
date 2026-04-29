@@ -526,6 +526,146 @@ Decisions worth preserving:
 
 ---
 
+## Stage 10 — Discover sidebar (Downloads + New Releases)
+
+The two `<Placeholder>` stubs in the sidebar's "Discover" section.
+Both predate Stages 5–8 (they're the only screens left as
+"Coming soon" copy) and surface backend state that's already
+flowing — the app just hasn't grown a window onto it yet. Picking
+order is value/work, not list order: Downloads first, then New
+Releases.
+
+### 10a — Downloads screen
+
+**Problem.** Tracks queued via Soulseek (manual download, "Queue
+Download" from a track context menu, "Link Local Files" misses,
+release-watcher enqueues) all flow through `download_queue` but
+the desktop app shows no progress, no failures, no completion
+signal beyond the running-state strip on the Sync screen. Users
+fire-and-forget queueing and have to grep the log to know what's
+going on.
+
+**Surface.**
+- A new `DownloadsScreen` replacing the placeholder. Top-of-pane
+  running-state strip when the downloader task is in flight (same
+  edge-trigger pattern as `SyncScreen` / `AuditScreen`).
+- A "Run Downloader" CTA next to the strip (`POST /api/download`)
+  — disabled while running. Same shape as Audit's "Complete
+  Albums".
+- Single table grouped by status: Pending → Failed → Completed.
+  Columns: query, last attempt (relative), status pill, row
+  actions. Per-row: **Retry** (failed only — flips status back to
+  pending) + **Remove** (DELETE the row from the queue, with
+  confirm).
+- Bulk: "Clear completed" wipes finished rows in one click since
+  the table grows monotonically otherwise.
+- 2s `/api/status` poll drives the strip; refetch the queue on
+  the running→idle edge so the user sees the table update without
+  a manual refresh button.
+
+**API.**
+- `GET /api/downloads/list` — already shipped; returns id, query,
+  status, last_attempt. Reuse as-is.
+- `POST /api/downloads/<id>/retry` — flip a failed row back to
+  pending. New endpoint; thin wrapper over
+  `db.update_download_status`.
+- `DELETE /api/downloads/<id>` — remove a single row from the
+  queue. New endpoint; thin wrapper over `db.delete_download_item`
+  (already exists).
+- `POST /api/downloads/clear-completed` — bulk-delete rows with
+  status `completed`. New endpoint; one DB method
+  (`delete_completed_downloads`).
+- `POST /api/download` — already exists; kicks the downloader
+  task. Reuse.
+
+**DB.** One new method — `delete_completed_downloads()` returning
+the number of rows removed. Everything else exists.
+
+**Open questions.**
+- Should "Retry" reset `last_attempt` or keep it as the previous
+  failure timestamp for forensics? Keep it — the downloader will
+  overwrite it on the next attempt anyway, and showing "last
+  failed Xm ago, retried" is more informative than "last attempt
+  just now" before the retry actually runs.
+- Pagination — the queue can grow into the hundreds for heavy
+  users. Match Songs/Library: render everything, virtualize later
+  if it becomes a real problem. The `download_queue` is regularly
+  trimmed by completion in normal operation.
+
+**Effort.** ~3–4 hours: three new endpoints (each one method or
+less), one DB helper, one screen with three sub-tables, status
+poll wiring (copy from SyncScreen).
+
+**Depends on** nothing. Independently shippable.
+
+### 10b — New Releases screen
+
+**Problem.** The release-watcher polls Lidarr's wanted/missing
+list and silently enqueues new albums via sldl. Operators have no
+view into "which releases is Lidarr asking for" or "which of
+those have I already grabbed" without going to Lidarr's own UI.
+On non-Lidarr setups this whole feature is invisible.
+
+**Surface.**
+- A new `ReleasesScreen` replacing the placeholder.
+- Lidarr-disabled state: an empty card explaining the watcher
+  isn't running, with a "Configure Lidarr" button that routes to
+  Settings via `onOpenSettings("lidarr_url")` — reuses Stage 7a's
+  focus-key flow.
+- Lidarr-enabled state: an album-cover grid (mirror Audit's
+  `coverartarchive.org/release/<mbid>/front-250` pattern) with
+  per-card title, artist, release date, and a **status pill**:
+  "queued" (already in `download_queue`), "downloaded" (already a
+  row in `tracks` with that release MBID), or "wanted" (neither).
+- Per-card actions: "Queue Now" (POSTs `/api/catalog/queue-down\
+  load` for the wanted ones — already exists from roadmap #5;
+  reuses the same machinery as the track context-menu Queue
+  Download). Disabled if already queued/downloaded.
+- A header tick: "Last poll: Nm ago" reading the watcher's last
+  run timestamp from `sync_state` (new key
+  `last_release_watch_tick`).
+
+**API.**
+- `GET /api/releases/wanted` — proxy to Lidarr's
+  `/api/v1/wanted/missing` filtered to the page-1 page size. Each
+  item is augmented server-side with `queued: bool` (joins
+  `download_queue.mbid_guess`) and `downloaded: bool` (joins
+  `tracks.release_mbid`). Returns `success: false,
+  reason: "lidarr_disabled"` when the integration isn't
+  configured (client renders the empty state).
+- `POST /api/catalog/queue-download` — already exists. Reuse for
+  per-album manual queue.
+
+**Schema.** None on `tracks` / `albums` / `download_queue`. One
+new key on `sync_state`: `last_release_watch_tick`. The
+release-watcher's `run_watch_tick` becomes responsible for
+stamping it.
+
+**Open questions.**
+- Cover art: Lidarr returns its own `images` array which already
+  includes a cover URL. Prefer that (it's what Lidarr's own UI
+  uses) and fall back to coverartarchive.org by `foreignAlbumId`.
+- Manually triggering the watcher: a "Run now" button POSTs
+  `/api/releases/run-watch-tick` so users don't wait for the
+  scheduler. Optional v1 — the existing scheduler interval is
+  fine for most use, but cheap to add and removes a "why don't I
+  see my new wanted" support question.
+- Pagination: Lidarr's wanted/missing can be hundreds. Limit to
+  the first 100 in v1 with a "View in Lidarr" external link for
+  the rest. Adding cursor pagination is bigger and not on the
+  critical path.
+
+**Effort.** ~4–6 hours: one new backend endpoint with the
+augmentation join, one new key on `sync_state`, one cover-art
+grid screen, focus-key Settings router for the disabled state.
+
+**Depends on** 10a landing first **only** for the running-state
+strip pattern (otherwise duplicate work). Lidarr integration
+itself is already in the codebase via `release_watcher` and
+`lidarr_client`.
+
+---
+
 ## Keeping this doc current
 
 Update the "Shipped stages" table as each stage lands (same cadence
