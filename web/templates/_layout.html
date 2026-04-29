@@ -25,6 +25,11 @@
                 <div class="app-nav-section">Manage</div>
                 <a href="/fleet" class="app-nav-item {% if current == 'fleet' %}active{% endif %}">Fleet</a>
                 <a href="/orphans" class="app-nav-item {% if current == 'orphans' %}active{% endif %}">Orphans</a>
+
+                {# Pages can append their own sections (e.g. library.html
+                   injects the dynamic Playlists list) without forking the
+                   shell. Empty by default. #}
+                {% block sidebar_extra %}{% endblock %}
             </nav>
         </aside>
 

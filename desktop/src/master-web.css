@@ -483,74 +483,11 @@
       color-mix(in srgb, var(--color-accent) 25%, transparent);
   }
 
-  /* library.html — full-bleed grid shell that's intentionally
-   * different from the dashboard's max-width column. The .toolbar
-   * rule is scoped to .library-shell so it doesn't bleed into other
-   * templates that also use a class called "toolbar". */
-  .library-shell {
-    display: grid;
-    grid-template-columns: 260px 1fr;
-    grid-template-rows: auto 1fr;
-    height: 100vh;
-    max-width: none;
-  }
-  .library-header {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 10px 18px;
-    background: var(--color-bg-sidebar);
-    border-bottom: 1px solid var(--color-border);
-  }
-  .library-header h1 {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--color-text);
-  }
-  .library-header .dash-link {
-    color: var(--color-accent);
-    font-size: 13px;
-    text-decoration: none;
-  }
-  .library-header .dash-link:hover {
-    text-decoration: underline;
-  }
-  .library-header .search {
-    flex: 1;
-    max-width: 360px;
-    padding: 6px 10px;
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    color: var(--color-text);
-    font-size: 14px;
-  }
-  .library-header .search:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-  .library-header .status-chip {
-    font-size: 12px;
-    color: var(--color-text-muted);
-    margin-left: auto;
-  }
-
-  .library-shell .sidebar {
-    background: var(--color-bg-sidebar);
-    border-right: 1px solid var(--color-border);
-    overflow-y: auto;
-    padding: 8px 0;
-  }
-  .sidebar-section {
-    padding: 8px 14px 4px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--color-text-muted);
-    margin-top: 4px;
-  }
+  /* library.html — playlist filter sub-list inside the shared app
+   * sidebar (see .app-nav-* in the app-shell block above). The
+   * border-left accent on .active is intentionally distinct from the
+   * page-level .app-nav-item.active treatment so users can tell which
+   * row is "the page" vs which is "the filter inside the page". */
   .sidebar-item {
     display: flex;
     justify-content: space-between;
@@ -573,21 +510,44 @@
     font-size: 12px;
   }
 
-  .main-pane {
+  /* Search input + status chip live in library.html's .app-header. */
+  .app-header .search {
+    padding: 6px 10px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    color: var(--color-text);
+    font-size: 14px;
+  }
+  .app-header .search:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+  .app-header .status-chip {
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+
+  /* library.html toolbar — sits at the top of the content area.
+   * Scoped to .library-content so the class doesn't bleed if another
+   * template later uses a generic .toolbar div. */
+  .library-content {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    height: 100%;
   }
-  .library-shell .toolbar {
+  .library-content .toolbar {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
     padding: 10px 14px;
     background: var(--color-bg-elevated);
-    border-bottom: 1px solid var(--color-border);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    margin-bottom: 10px;
   }
-  .library-shell .toolbar label {
+  .library-content .toolbar label {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -595,10 +555,10 @@
     color: var(--color-text-muted);
     margin-left: 6px;
   }
-  .library-shell .toolbar .spacer {
+  .library-content .toolbar .spacer {
     flex: 1;
   }
-  .library-shell .toolbar .selected-count {
+  .library-content .toolbar .selected-count {
     font-size: 12px;
     color: var(--color-text-muted);
   }
