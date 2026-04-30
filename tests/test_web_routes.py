@@ -1056,7 +1056,9 @@ def test_fleet_track_lookup_requires_param(client, mock_config):
 def test_fleet_page_renders(client, mock_config):
     res = client.get('/fleet')
     assert res.status_code == 200
-    assert b"Fleet View" in res.data
+    # Page extends _layout.html and is the active row in the shared nav.
+    assert b"app-sidebar" in res.data
+    assert b'href="/fleet" class="app-nav-item active"' in res.data
 
 
 def test_orphans_page_renders(client, mock_config):
@@ -1819,3 +1821,82 @@ def test_play_stats_rejects_non_integer_limit(client, mock_config):
     res = client.get('/api/library/play-stats?limit=abc')
     assert res.status_code == 400
     assert "limit" in res.get_json()["message"]
+
+
+# --- Stage 10a: Downloads endpoints --------------------------------------
+
+@pytest.fixture
+def _config_file_present(monkeypatch, tmp_path):
+    """Make ``config_exists()`` return True so the setup-redirect
+    ``before_request`` hook doesn't 302 to /setup. The rest of the
+    suite assumes CONFIG_FILE is set externally; these tests are
+    self-contained instead."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{}")
+    monkeypatch.setattr("web_server.CONFIG_FILE", str(cfg_path))
+
+
+def test_downloads_list_returns_serialized_items(client, mock_config, _config_file_present):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        item = MagicMock()
+        item.id = 7
+        item.search_query = "Beck - Loser"
+        item.status = "failed"
+        item.last_attempt = None
+        inst.get_all_downloads.return_value = [item]
+
+        res = client.get('/api/downloads/list')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is True
+    assert body["items"] == [
+        {"id": 7, "query": "Beck - Loser", "status": "failed", "last_attempt": None}
+    ]
+
+
+def test_retry_download_flips_failed_to_pending(client, mock_config, _config_file_present):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.retry_download.return_value = True
+
+        res = client.post('/api/downloads/42/retry')
+
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True}
+    inst.retry_download.assert_called_once_with(42)
+
+
+def test_retry_download_404s_when_row_not_failed(client, mock_config, _config_file_present):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.retry_download.return_value = False
+
+        res = client.post('/api/downloads/42/retry')
+
+    # 404 (not 200/success:false) so the desktop client can branch on
+    # status code without parsing message strings.
+    assert res.status_code == 404
+    assert res.get_json()["success"] is False
+
+
+def test_delete_download_removes_row(client, mock_config, _config_file_present):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        res = client.delete('/api/downloads/7')
+
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True}
+    inst.remove_from_queue.assert_called_once_with(7)
+
+
+def test_clear_completed_returns_removed_count(client, mock_config, _config_file_present):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.delete_succeeded_downloads.return_value = 3
+
+        res = client.post('/api/downloads/clear-completed')
+
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True, "removed": 3}

@@ -62,16 +62,64 @@ def test_download_queue(db):
         status="pending"
     )
     db.queue_download(item)
-    
+
     queue = db.get_all_downloads()
     assert len(queue) == 1
     assert queue[0].search_query == "foo bar"
     assert queue[0].status == "pending"
-    
+
     # Update status
     db.update_download_status(queue[0].id, "success")
     queue = db.get_all_downloads()
     assert queue[0].status == "success"
+
+
+def test_retry_download_only_flips_failed_rows(db):
+    db.queue_download(DownloadItem("a - x", "", "m1", status="pending"))
+    db.queue_download(DownloadItem("a - y", "", "m2", status="pending"))
+    db.queue_download(DownloadItem("a - z", "", "m3", status="pending"))
+    rows = db.get_all_downloads()
+    by_query = {r.search_query: r for r in rows}
+    db.update_download_status(by_query["a - y"].id, "failed")
+    db.update_download_status(by_query["a - z"].id, "success")
+
+    # retry_download flips a failed row back to pending and reports True.
+    assert db.retry_download(by_query["a - y"].id) is True
+    assert next(d for d in db.get_all_downloads()
+                if d.id == by_query["a - y"].id).status == "pending"
+
+    # Retrying a non-failed row is a no-op (returns False) so the UI can
+    # render an accurate error if the user clicks Retry on something the
+    # downloader already finished.
+    assert db.retry_download(by_query["a - z"].id) is False
+    assert next(d for d in db.get_all_downloads()
+                if d.id == by_query["a - z"].id).status == "success"
+
+    # Unknown id is also a no-op (no rows matched) — same return shape so
+    # the API can 404 without a separate exists-check.
+    assert db.retry_download(99999) is False
+
+
+def test_delete_succeeded_downloads_only_removes_success_rows(db):
+    db.queue_download(DownloadItem("keep pending", "", "m1", status="pending"))
+    db.queue_download(DownloadItem("keep failed", "", "m2", status="pending"))
+    db.queue_download(DownloadItem("drop one", "", "m3", status="pending"))
+    db.queue_download(DownloadItem("drop two", "", "m4", status="pending"))
+    rows = db.get_all_downloads()
+    by_query = {r.search_query: r for r in rows}
+    db.update_download_status(by_query["keep failed"].id, "failed")
+    db.update_download_status(by_query["drop one"].id, "success")
+    db.update_download_status(by_query["drop two"].id, "success")
+
+    removed = db.delete_succeeded_downloads()
+    assert removed == 2
+
+    remaining = sorted(r.search_query for r in db.get_all_downloads())
+    assert remaining == ["keep failed", "keep pending"]
+
+    # Re-running the bulk-delete on an already-clean queue is idempotent
+    # and reports 0 — drives the UI's "nothing to clear" toast.
+    assert db.delete_succeeded_downloads() == 0
 
 
 def test_list_albums_groups_by_release_mbid(db):

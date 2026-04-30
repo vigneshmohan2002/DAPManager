@@ -1919,6 +1919,37 @@ class DatabaseManager:
         cursor.close()
         return items
 
+    def retry_download(self, item_id: int) -> bool:
+        # Flip a failed row back to 'pending' so the downloader picks it up
+        # on its next run. last_attempt is intentionally left alone — the
+        # forensic "last failed at X" stays visible until the actual retry
+        # bumps it via update_download_status.
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE download_queue SET status = 'pending' "
+            "WHERE id = ? AND status = 'failed'",
+            (item_id,),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return changed
+
+    def delete_succeeded_downloads(self) -> int:
+        # 'success' is the schema's terminal-success state (see the
+        # CHECK constraint on download_queue.status). The web UI labels
+        # this column as "Completed" for end users; keep the DB-side
+        # name aligned with the column value to avoid translation
+        # drift.
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM download_queue WHERE status = 'success'"
+        )
+        removed = cursor.rowcount
+        self.conn.commit()
+        cursor.close()
+        return removed
+
     def _row_to_download_item(self, row):
         if not row:
             return None

@@ -2255,6 +2255,49 @@ def get_downloads_list():
         return jsonify({"success": False, "message": str(e)})
 
 
+@app.route("/api/downloads/<int:item_id>/retry", methods=["POST"])
+def retry_download_item(item_id):
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            changed = db.retry_download(item_id)
+        if not changed:
+            return jsonify({
+                "success": False,
+                "message": "Row not found or not in 'failed' state",
+            }), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/downloads/<int:item_id>", methods=["DELETE"])
+def delete_download_item(item_id):
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            db.remove_from_queue(item_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/downloads/clear-completed", methods=["POST"])
+def clear_completed_downloads():
+    # Path keeps the user-facing "completed" wording the UI shows; the
+    # underlying schema state is "success" (see db_manager).
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            removed = db.delete_succeeded_downloads()
+        return jsonify({"success": True, "removed": removed})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/search", methods=["GET"])
 def library_search():
     if not config:

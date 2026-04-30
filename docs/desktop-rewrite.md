@@ -573,8 +573,10 @@ going on.
   queue. New endpoint; thin wrapper over `db.delete_download_item`
   (already exists).
 - `POST /api/downloads/clear-completed` — bulk-delete rows with
-  status `completed`. New endpoint; one DB method
-  (`delete_completed_downloads`).
+  status `success` (the schema's terminal-success state — UI
+  labels it "Completed", which is where the path name comes
+  from). New endpoint; one DB method
+  (`delete_succeeded_downloads`).
 - `POST /api/download` — already exists; kicks the downloader
   task. Reuse.
 
