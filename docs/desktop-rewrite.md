@@ -37,9 +37,9 @@ that don't fit in a commit message.
 | 8d | `1c13ad8` | Suggest screen replacing the PySide6 "Suggest to Jellyfin" dialog. Reads `dap_manager_host_url` from `/api/config`; missing host routes through the focus-key Settings flow. Textarea parses `Artist - Title` lines client-side (mirrors `parse_manual_suggestions`) and POSTs `<host>/api/suggestions`. Selection-based suggest from SongsScreen is deferred — manual paste covers the workflow at a fraction of the integration cost. |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
-Duplicates / Orphans / Sync / Fleet / Suggest / Settings** wired to
-real screens and **Downloads / New Releases** as `<Placeholder>`
-stubs.
+Duplicates / Downloads / Orphans / Sync / Fleet / Suggest / Settings**
+wired to real screens and **New Releases** as the only remaining
+`<Placeholder>` stub.
 
 ---
 
@@ -535,7 +535,7 @@ flowing — the app just hasn't grown a window onto it yet. Picking
 order is value/work, not list order: Downloads first, then New
 Releases.
 
-### 10a — Downloads screen
+### 10a — Downloads screen — _Shipped (`31a8da7` + backend `081cbc3`)_
 
 **Problem.** Tracks queued via Soulseek (manual download, "Queue
 Download" from a track context menu, "Link Local Files" misses,
@@ -599,6 +599,34 @@ less), one DB helper, one screen with three sub-tables, status
 poll wiring (copy from SyncScreen).
 
 **Depends on** nothing. Independently shippable.
+
+Decisions worth preserving:
+
+- **DB-side `'success'` ↔ UI-side "Completed".** The schema's
+  CHECK constraint allows `pending` / `failed` / `success`. Adding
+  a fourth `completed` synonym would mean a migration for a label
+  change. Kept the DB name; render "Completed" only in the UI
+  layer (`DownloadsScreen` `BUCKETS` table). The `clear-completed`
+  API path keeps the user-facing word — that's the URL the screen
+  binds to and renaming it would break the API surface.
+- **`retry_download` does not bump `last_attempt`.** UI shows
+  "last failed Xm ago" until the next downloader run actually
+  re-attempts and `update_download_status` overwrites the
+  timestamp. Stamping it on retry would erase the only forensic
+  signal of when the failure originally happened.
+- **404 on retrying a non-failed row, not 200/success:false.**
+  The desktop client branches on status code in
+  `lib/api.ts:retryDownload`, returning a typed
+  `{success: false, message}` without throwing — keeps the table
+  mounted on a benign UI race (user clicks Retry on a row that
+  the downloader just finished).
+- **Single `_config_file_present` fixture in test_web_routes.py.**
+  The wider suite assumes `DAPMANAGER_CONFIG` is set externally;
+  the four new download endpoint tests instead set
+  `web_server.CONFIG_FILE` to a real tmp path so
+  `config_exists()` returns True without environment fiddling.
+  Pre-existing tests that share the same setup-redirect issue
+  weren't migrated — out of scope for this stage.
 
 ### 10b — New Releases screen
 
