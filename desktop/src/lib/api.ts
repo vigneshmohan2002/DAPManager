@@ -918,6 +918,71 @@ export async function addTrackToPlaylist(
   return { success: true, message: "", added: 1, missed };
 }
 
+// ---------- Stage 10b: New Releases / Lidarr wanted -------------------
+
+export type WantedRelease = {
+  mbid: string;
+  artist: string;
+  title: string;
+  release_date: string | null;
+  cover_url: string;
+  queued: boolean;
+  downloaded: boolean;
+};
+
+export type WantedReleasesResult =
+  | { kind: "ok"; last_tick: string | null; items: WantedRelease[] }
+  | { kind: "disabled" }
+  | { kind: "unavailable" }
+  | { kind: "error"; message: string };
+
+export async function fetchWantedReleases(): Promise<WantedReleasesResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/releases/wanted`);
+  if (r.status === 502) {
+    const data = await r.json().catch(() => ({}));
+    return { kind: "error", message: String(data.message ?? "Lidarr error") };
+  }
+  if (!r.ok) {
+    return { kind: "error", message: `releases/wanted: ${r.status}` };
+  }
+  const data = await r.json();
+  if (!data.success) {
+    if (data.reason === "lidarr_disabled") return { kind: "disabled" };
+    if (data.reason === "lidarr_unavailable") return { kind: "unavailable" };
+    return { kind: "error", message: String(data.message ?? "unknown") };
+  }
+  return {
+    kind: "ok",
+    last_tick: data.last_tick ?? null,
+    items: (data.items ?? []) as WantedRelease[],
+  };
+}
+
+// Queue an album via the same path the release-watcher uses: POST
+// /api/download/request with a freeform "Artist - Title" search query
+// and the release MBID as mbid_guess. Master-only; the New Releases
+// screen only renders when Lidarr is enabled, which is master-only.
+export async function queueWantedRelease(
+  release: Pick<WantedRelease, "mbid" | "artist" | "title">,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const search_query = `${release.artist} - ${release.title}`.trim();
+  const r = await fetch(`${url}/api/download/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ search_query, mbid_guess: release.mbid }),
+  });
+  if (!r.ok) {
+    return { success: false, message: `download/request: ${r.status}` };
+  }
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
 // ---------- Stage 10a: Downloads queue --------------------------------
 
 export type DownloadQueueItem = {

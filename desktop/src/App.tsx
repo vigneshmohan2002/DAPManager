@@ -14,6 +14,7 @@ import DownloadsScreen from "./screens/DownloadsScreen";
 import DuplicatesScreen from "./screens/DuplicatesScreen";
 import FleetScreen from "./screens/FleetScreen";
 import OrphansScreen from "./screens/OrphansScreen";
+import ReleasesScreen from "./screens/ReleasesScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import SongsScreen from "./screens/SongsScreen";
 import StatsScreen from "./screens/StatsScreen";
@@ -211,6 +212,14 @@ function App() {
         <OrphansScreen
           ready={status === "ready"}
           onPlaylistsChanged={bumpPlaylists}
+        />
+      );
+    }
+    if (screen === "releases") {
+      return (
+        <ReleasesScreen
+          ready={status === "ready"}
+          onOpenSettings={handleOpenSettings}
         />
       );
     }

@@ -37,9 +37,8 @@ that don't fit in a commit message.
 | 8d | `1c13ad8` | Suggest screen replacing the PySide6 "Suggest to Jellyfin" dialog. Reads `dap_manager_host_url` from `/api/config`; missing host routes through the focus-key Settings flow. Textarea parses `Artist - Title` lines client-side (mirrors `parse_manual_suggestions`) and POSTs `<host>/api/suggestions`. Selection-based suggest from SongsScreen is deferred — manual paste covers the workflow at a fraction of the integration cost. |
 
 Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
-Duplicates / Downloads / Orphans / Sync / Fleet / Suggest / Settings**
-wired to real screens and **New Releases** as the only remaining
-`<Placeholder>` stub.
+Duplicates / Downloads / New Releases / Orphans / Sync / Fleet / Suggest
+/ Settings** wired to real screens. No `<Placeholder>` stubs remain.
 
 ---
 
@@ -628,7 +627,7 @@ Decisions worth preserving:
   Pre-existing tests that share the same setup-redirect issue
   weren't migrated — out of scope for this stage.
 
-### 10b — New Releases screen
+### 10b — New Releases screen — _Shipped (frontend `<pending>` + backend `2a52a99`)_
 
 **Problem.** The release-watcher polls Lidarr's wanted/missing
 list and silently enqueues new albums via sldl. Operators have no
@@ -693,6 +692,46 @@ grid screen, focus-key Settings router for the disabled state.
 strip pattern (otherwise duplicate work). Lidarr integration
 itself is already in the codebase via `release_watcher` and
 `lidarr_client`.
+
+Decisions worth preserving:
+
+- **Three states, not two, on the empty path.** `disabled`
+  (Lidarr off in config) and `unavailable` (configured but
+  unreachable) render different copy and route to different
+  Settings keys. Folding them into a single "no Lidarr" empty
+  state would have lost the distinction the user actually needs
+  ("did I forget to enable it" vs "is the service down").
+  `error` is a third bucket for genuine LidarrError responses
+  (502 from the backend) — separate so a transient outage
+  doesn't get the configure-it-first treatment.
+- **`/api/download/request`, not `/api/catalog/queue-download`,
+  for the "Queue Now" action.** `queue-download` only works on
+  track MBIDs that already exist in the local `tracks` table —
+  for wanted (not yet downloaded) Lidarr albums, those rows
+  don't exist yet, so it would just return `not_found`.
+  `download/request` mirrors what the watcher itself does:
+  freeform `Artist - Title` query + release MBID as
+  `mbid_guess`. Master-only, but the screen only renders when
+  Lidarr is on, which is master-only, so the gate is implicit.
+- **Three-way mutually-exclusive pill (`In library` >
+  `Queued` > `Wanted`).** Stack-rank by usefulness: once a row
+  exists in `tracks`, the queue history is just noise; until
+  then, a queued row deserves a different visual than a fresh
+  Wanted one. A user toggling between manual queue and the
+  watcher should see the pill flip exactly once per state
+  change.
+- **Bulk join, not per-album lookups.** Two DB queries
+  (`get_queued_release_mbids` / `get_existing_release_mbids`)
+  feed Python set-membership checks for the augmentation. The
+  obvious "loop and SELECT" approach would have been 200+
+  queries for a 100-album page; this stays at 2 regardless of
+  page size.
+- **Stamp `last_release_watch_tick` on Lidarr success, not on
+  enqueue success.** A tick that finds nothing new still proves
+  polling is healthy; only stamping on enqueue would make a
+  caught-up library look stale to the operator. LidarrError
+  paths intentionally don't stamp, so a sustained Lidarr outage
+  surfaces in the UI as a stale "Last poll" timestamp.
 
 ---
 
