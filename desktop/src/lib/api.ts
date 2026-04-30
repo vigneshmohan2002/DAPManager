@@ -917,3 +917,68 @@ export async function addTrackToPlaylist(
   );
   return { success: true, message: "", added: 1, missed };
 }
+
+// ---------- Stage 10a: Downloads queue --------------------------------
+
+export type DownloadQueueItem = {
+  id: number;
+  query: string;
+  // Backend status vocabulary is "pending" / "failed" / "success".
+  // The UI labels "success" as "Completed" — keep names aligned with
+  // the schema so logs / DB / API don't translate three different ways.
+  status: "pending" | "failed" | "success" | string;
+  last_attempt: string | null;
+};
+
+export async function fetchDownloads(): Promise<DownloadQueueItem[]> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/downloads/list`);
+  if (!r.ok) throw new Error(`downloads/list: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "downloads/list failed");
+  return (data.items ?? []) as DownloadQueueItem[];
+}
+
+export async function retryDownload(id: number): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/downloads/${id}/retry`, { method: "POST" });
+  // The backend emits 404 when the row isn't in 'failed' state; surface
+  // that as a typed message rather than a thrown error so the screen can
+  // toast it and keep the table mounted.
+  if (r.status === 404) {
+    return { success: false, message: "row already finished or not failed" };
+  }
+  if (!r.ok) return { success: false, message: `retry: ${r.status}` };
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export async function deleteDownload(id: number): Promise<ActionResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/downloads/${id}`, { method: "DELETE" });
+  if (!r.ok) return { success: false, message: `delete: ${r.status}` };
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+  };
+}
+
+export type ClearCompletedResult = ActionResult & { removed: number };
+
+export async function clearCompletedDownloads(): Promise<ClearCompletedResult> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/downloads/clear-completed`, {
+    method: "POST",
+  });
+  if (!r.ok) return { success: false, message: `clear: ${r.status}`, removed: 0 };
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: String(data.message ?? ""),
+    removed: Number(data.removed ?? 0),
+  };
+}

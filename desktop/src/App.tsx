@@ -10,6 +10,7 @@ import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
 import AuditScreen from "./screens/AuditScreen";
+import DownloadsScreen from "./screens/DownloadsScreen";
 import DuplicatesScreen from "./screens/DuplicatesScreen";
 import FleetScreen from "./screens/FleetScreen";
 import OrphansScreen from "./screens/OrphansScreen";
@@ -181,6 +182,9 @@ function App() {
     }
     if (screen === "audit") {
       return <AuditScreen ready={status === "ready"} />;
+    }
+    if (screen === "downloads") {
+      return <DownloadsScreen ready={status === "ready"} />;
     }
     if (screen === "duplicates") {
       return <DuplicatesScreen ready={status === "ready"} />;
