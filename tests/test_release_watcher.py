@@ -108,3 +108,35 @@ def test_lidarr_error_is_swallowed(db):
 
     # Must not raise — scheduler needs to keep ticking.
     assert run_watch_tick(db, lidarr) == 0
+
+
+def test_successful_tick_stamps_last_release_watch_tick(db, monkeypatch):
+    # The /api/releases/wanted endpoint reads this stamp to surface
+    # "Last poll: …" — verify the watcher actually writes it on a
+    # tick that reaches Lidarr (regardless of whether anything got
+    # queued).
+    monkeypatch.setattr(
+        "src.release_watcher.queue_or_forward",
+        lambda database, item: database.queue_download(item),
+    )
+    lidarr = MagicMock()
+    lidarr.get_wanted_missing.return_value = []
+
+    assert db.get_sync_state("last_release_watch_tick") is None
+    run_watch_tick(db, lidarr)
+    stamp = db.get_sync_state("last_release_watch_tick")
+    assert stamp is not None
+    # ISO-formatted local datetime — same shape used elsewhere in
+    # sync_state. Tolerate microsecond precision.
+    from datetime import datetime
+    datetime.fromisoformat(stamp)
+
+
+def test_lidarr_error_does_not_stamp_tick(db):
+    # If Lidarr errors out, "Last poll: …" should NOT advance — that
+    # would mislead the operator into thinking polling is healthy.
+    lidarr = MagicMock()
+    lidarr.get_wanted_missing.side_effect = LidarrError("down")
+
+    run_watch_tick(db, lidarr)
+    assert db.get_sync_state("last_release_watch_tick") is None

@@ -2298,6 +2298,73 @@ def clear_completed_downloads():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/releases/wanted", methods=["GET"])
+def releases_wanted():
+    """Lidarr's wanted/missing list, augmented with per-album queue and
+    library state so the desktop New Releases screen can render the
+    right pill on each card."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+
+    if not bool(config._config.get("lidarr_watch_enabled") or False):
+        # 200 / success:false / reason — same shape as artist-info's
+        # quiet miss so the UI renders an empty-state without console
+        # noise.
+        return jsonify({"success": False, "reason": "lidarr_disabled"})
+
+    from src.downloader import _build_lidarr_client
+    from src.lidarr_client import LidarrError
+
+    client = _build_lidarr_client(config._config)
+    if client is None:
+        return jsonify({"success": False, "reason": "lidarr_unavailable"})
+
+    try:
+        records = client.get_wanted_missing(page=1, page_size=100)
+    except LidarrError as e:
+        # 502: upstream is configured but failing; distinct from
+        # 'lidarr_disabled' so the UI can show a "Lidarr offline" hint
+        # rather than the configure-it-first empty state.
+        return jsonify({"success": False, "message": str(e)}), 502
+
+    with DatabaseManager(config.db_path) as db:
+        last_tick = db.get_sync_state("last_release_watch_tick")
+        queued_mbids = db.get_queued_release_mbids()
+        existing_mbids = db.get_existing_release_mbids()
+
+    items = []
+    for r in records:
+        mbid = r.get("foreignAlbumId") or ""
+        artist = (r.get("artist") or {}).get("artistName") or ""
+        title = r.get("title") or ""
+        # Lidarr ships its own cover URLs in `images`; prefer those
+        # because they're what its own UI uses (CDN-cached, often
+        # higher-quality than coverartarchive.org). Fall back to CAA
+        # so non-Lidarr-served albums still render artwork.
+        cover_url = ""
+        for img in r.get("images") or []:
+            if img.get("coverType") == "cover" and img.get("remoteUrl"):
+                cover_url = img.get("remoteUrl")
+                break
+        if not cover_url and mbid:
+            cover_url = f"https://coverartarchive.org/release-group/{mbid}/front-250"
+        items.append({
+            "mbid": mbid,
+            "artist": artist,
+            "title": title,
+            "release_date": r.get("releaseDate") or None,
+            "cover_url": cover_url,
+            "queued": mbid in queued_mbids,
+            "downloaded": mbid in existing_mbids,
+        })
+
+    return jsonify({
+        "success": True,
+        "last_tick": last_tick,
+        "items": items,
+    })
+
+
 @app.route("/api/library/search", methods=["GET"])
 def library_search():
     if not config:

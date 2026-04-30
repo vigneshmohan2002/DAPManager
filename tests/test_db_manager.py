@@ -1566,3 +1566,42 @@ def test_play_events_survive_track_soft_delete(db):
     top = db.top_tracks_since(limit=10)
     assert any(r["mbid"] == "t1" for r in top)
     assert db.play_count_since() == 1
+
+
+# --- Stage 10b: Releases endpoint helpers --------------------------------
+
+def test_get_queued_release_mbids_distinct_regardless_of_status(db):
+    db.queue_download(DownloadItem("a - x", "", "rmb-1"))
+    db.queue_download(DownloadItem("a - y", "", "rmb-2"))
+    db.queue_download(DownloadItem("a - z", "", ""))   # empty mbid skipped
+    db.queue_download(DownloadItem("a - w", "", "rmb-1"))  # dupe; deduped
+    items = db.get_all_downloads()
+    by_query = {r.search_query: r for r in items}
+    db.update_download_status(by_query["a - x"].id, "failed")
+    db.update_download_status(by_query["a - y"].id, "success")
+
+    # Both 'failed' and 'success' rows count as "we are/were chasing
+    # this album" — that's what the New Releases pill needs to know.
+    assert db.get_queued_release_mbids() == {"rmb-1", "rmb-2"}
+
+
+def test_get_existing_release_mbids_excludes_soft_deleted(db):
+    from src.db_manager import Track
+    db.add_or_update_track(Track(
+        mbid="t1", title="A", artist="X", album="Live", release_mbid="rmb-live",
+        local_path="/m/x/live/01.flac",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t2", title="B", artist="X", album="Live", release_mbid="rmb-live",
+        local_path="/m/x/live/02.flac",
+    ))
+    db.add_or_update_track(Track(
+        mbid="t3", title="C", artist="Y", album="Studio", release_mbid="rmb-studio",
+        local_path="/m/y/studio/01.flac",
+    ))
+    # Soft-delete the studio album entirely — it must drop out of the
+    # "downloaded" set so the New Releases pill stays accurate when a
+    # user purges and Lidarr later re-adds the album.
+    db.soft_delete_track("t3")
+
+    assert db.get_existing_release_mbids() == {"rmb-live"}

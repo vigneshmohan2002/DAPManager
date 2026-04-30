@@ -15,6 +15,7 @@ subsequent ticks. Scheduling is handled by ``SyncScheduler`` — see
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict
 
 from .db_manager import DatabaseManager, DownloadItem
@@ -46,6 +47,11 @@ def run_watch_tick(
     except LidarrError as e:
         logger.warning("release_watcher: Lidarr fetch failed: %s", e)
         return 0
+
+    # Stamp the tick before processing so /api/releases/wanted's
+    # "Last poll: …" timestamp reflects "we did reach Lidarr" even if
+    # nothing needed enqueueing.
+    db.set_sync_state("last_release_watch_tick", datetime.now().isoformat())
 
     queued = 0
     for album in missing:

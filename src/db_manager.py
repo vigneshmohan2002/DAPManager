@@ -1935,6 +1935,34 @@ class DatabaseManager:
         cursor.close()
         return changed
 
+    def get_queued_release_mbids(self) -> set:
+        # Distinct mbid_guess values currently in the queue, regardless of
+        # status — Lidarr's wanted list cares about "is this album already
+        # being chased" not "did the last attempt succeed". The watcher's
+        # has_queued_mbid uses the same regardless-of-status semantics
+        # for the same reason.
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT mbid_guess FROM download_queue "
+            "WHERE mbid_guess IS NOT NULL AND mbid_guess != ''"
+        )
+        result = {row["mbid_guess"] for row in cursor.fetchall()}
+        cursor.close()
+        return result
+
+    def get_existing_release_mbids(self) -> set:
+        # Live tracks only (deleted_at IS NULL) — soft-deleted rows
+        # shouldn't make a wanted album look "downloaded".
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT release_mbid FROM tracks "
+            "WHERE release_mbid IS NOT NULL AND release_mbid != '' "
+            "AND deleted_at IS NULL"
+        )
+        result = {row["release_mbid"] for row in cursor.fetchall()}
+        cursor.close()
+        return result
+
     def delete_succeeded_downloads(self) -> int:
         # 'success' is the schema's terminal-success state (see the
         # CHECK constraint on download_queue.status). The web UI labels

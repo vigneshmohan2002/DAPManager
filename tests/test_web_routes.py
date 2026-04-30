@@ -1900,3 +1900,106 @@ def test_clear_completed_returns_removed_count(client, mock_config, _config_file
 
     assert res.status_code == 200
     assert res.get_json() == {"success": True, "removed": 3}
+
+
+# --- Stage 10b: New Releases endpoint -----------------------------------
+
+def test_releases_wanted_returns_disabled_when_lidarr_off(client, mock_config, _config_file_present):
+    import web_server
+    web_server.config._config = {"lidarr_watch_enabled": False}
+
+    res = client.get('/api/releases/wanted')
+    # 200 / success:false / reason — quiet empty-state on the client.
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is False
+    assert body["reason"] == "lidarr_disabled"
+
+
+def test_releases_wanted_returns_disabled_when_lidarr_unavailable(client, mock_config, _config_file_present):
+    import web_server
+    web_server.config._config = {"lidarr_watch_enabled": True}
+    with patch('src.downloader._build_lidarr_client', return_value=None):
+        res = client.get('/api/releases/wanted')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is False
+    assert body["reason"] == "lidarr_unavailable"
+
+
+def test_releases_wanted_502s_when_lidarr_errors(client, mock_config, _config_file_present):
+    import web_server
+    from src.lidarr_client import LidarrError
+    web_server.config._config = {"lidarr_watch_enabled": True}
+
+    fake_client = MagicMock()
+    fake_client.get_wanted_missing.side_effect = LidarrError("connection refused")
+    with patch('src.downloader._build_lidarr_client', return_value=fake_client):
+        res = client.get('/api/releases/wanted')
+
+    # 502 distinguishes "configured but offline" from "not configured"
+    # so the UI can render the right copy on each.
+    assert res.status_code == 502
+    assert res.get_json()["success"] is False
+
+
+def test_releases_wanted_augments_records_with_queue_and_library_state(
+    client, mock_config, _config_file_present,
+):
+    import web_server
+    web_server.config._config = {"lidarr_watch_enabled": True}
+
+    fake_client = MagicMock()
+    fake_client.get_wanted_missing.return_value = [
+        {
+            "foreignAlbumId": "rmb-wanted",
+            "title": "Wanted",
+            "artist": {"artistName": "A"},
+            "releaseDate": "2026-01-01",
+            "images": [{"coverType": "cover", "remoteUrl": "https://lidarr/cover.png"}],
+        },
+        {
+            "foreignAlbumId": "rmb-queued",
+            "title": "Queued",
+            "artist": {"artistName": "B"},
+            "releaseDate": "2026-02-01",
+            "images": [],
+        },
+        {
+            "foreignAlbumId": "rmb-have",
+            "title": "Have",
+            "artist": {"artistName": "C"},
+            "releaseDate": "2026-03-01",
+            "images": [],
+        },
+    ]
+
+    with patch('src.downloader._build_lidarr_client', return_value=fake_client), \
+            patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_sync_state.return_value = "2026-04-30T10:00:00"
+        inst.get_queued_release_mbids.return_value = {"rmb-queued"}
+        inst.get_existing_release_mbids.return_value = {"rmb-have"}
+        res = client.get('/api/releases/wanted')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is True
+    assert body["last_tick"] == "2026-04-30T10:00:00"
+    assert len(body["items"]) == 3
+
+    by_mbid = {it["mbid"]: it for it in body["items"]}
+    # Lidarr-supplied cover preferred when present.
+    assert by_mbid["rmb-wanted"]["cover_url"] == "https://lidarr/cover.png"
+    # No images → fall back to coverartarchive.org by mbid.
+    assert "coverartarchive.org" in by_mbid["rmb-queued"]["cover_url"]
+    # Augmentation flags reflect the joins.
+    assert by_mbid["rmb-wanted"] == {
+        **by_mbid["rmb-wanted"],
+        "queued": False, "downloaded": False,
+    }
+    assert by_mbid["rmb-queued"]["queued"] is True
+    assert by_mbid["rmb-queued"]["downloaded"] is False
+    assert by_mbid["rmb-have"]["queued"] is False
+    assert by_mbid["rmb-have"]["downloaded"] is True
