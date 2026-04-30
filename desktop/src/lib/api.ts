@@ -647,11 +647,15 @@ export async function runCompleteAlbums(
   };
 }
 
+// Keys mirror /api/sync/state's response, which aliases the DB-side
+// storage keys (last_catalog_sync, etc.) to friendlier step names so
+// clients don't have to know the storage layout. The web dashboard
+// reads the same shape — keep all three sides in lockstep.
 export type SyncState = {
-  last_catalog_sync: string | null;
-  last_playlist_sync: string | null;
-  last_playlist_push: string | null;
-  last_inventory_report: string | null;
+  catalog_pull: string | null;
+  playlist_pull: string | null;
+  playlist_push: string | null;
+  inventory_report: string | null;
 };
 
 export async function fetchSyncState(): Promise<SyncState> {

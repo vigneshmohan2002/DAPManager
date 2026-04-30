@@ -33,13 +33,17 @@ type Step = {
   hint?: string;
 };
 
+// `cursorKey` reads the timestamp out of /api/sync/state, whose keys
+// are the API aliases (matches `step.key` 1:1 for the four cursors,
+// kept separate so a future sub-step with a shared cursor doesn't
+// have to abandon the field).
 const STEPS: Step[] = [
   {
     key: "catalog_pull",
     label: "Pull Catalog",
     endpoint: "/api/catalog/pull",
     runningMessage: "Pulling catalog delta…",
-    cursorKey: "last_catalog_sync",
+    cursorKey: "catalog_pull",
     hint: "Delta fetch of the master's tracks. Run this first so playlist membership resolves.",
   },
   {
@@ -47,21 +51,21 @@ const STEPS: Step[] = [
     label: "Pull Playlists",
     endpoint: "/api/playlists/pull",
     runningMessage: "Pulling playlists…",
-    cursorKey: "last_playlist_sync",
+    cursorKey: "playlist_pull",
   },
   {
     key: "playlist_push",
     label: "Push Playlists",
     endpoint: "/api/playlists/push",
     runningMessage: "Pushing playlists…",
-    cursorKey: "last_playlist_push",
+    cursorKey: "playlist_push",
   },
   {
     key: "inventory_report",
     label: "Report Inventory",
     endpoint: "/api/inventory/report",
     runningMessage: "Reporting inventory…",
-    cursorKey: "last_inventory_report",
+    cursorKey: "inventory_report",
     hint: "Publishes this device's MBID→path map. Requires report_inventory_to_host in config.",
   },
   {
