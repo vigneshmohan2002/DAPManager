@@ -627,7 +627,7 @@ Decisions worth preserving:
   Pre-existing tests that share the same setup-redirect issue
   weren't migrated — out of scope for this stage.
 
-### 10b — New Releases screen — _Shipped (frontend `<pending>` + backend `2a52a99`)_
+### 10b — New Releases screen — _Shipped (frontend `8d922e2` + backend `2a52a99`)_
 
 **Problem.** The release-watcher polls Lidarr's wanted/missing
 list and silently enqueues new albums via sldl. Operators have no
