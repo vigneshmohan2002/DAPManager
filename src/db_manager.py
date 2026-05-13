@@ -117,7 +117,8 @@ class DatabaseManager:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     deleted_at TIMESTAMP,
                     tag_tier TEXT,
-                    tag_score REAL
+                    tag_score REAL,
+                    is_liked INTEGER NOT NULL DEFAULT 0
                 );
             """,
             "albums": """
@@ -242,6 +243,23 @@ class DatabaseManager:
             if "tag_score" not in cols:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN tag_score REAL")
                 logger.info("Added column: tracks.tag_score")
+            if "is_liked" not in cols:
+                # SQLite accepts NOT NULL on ADD COLUMN only with a literal
+                # DEFAULT — 0 satisfies that and gives existing rows a sane
+                # initial "not liked" state without a separate backfill pass.
+                cursor.execute(
+                    "ALTER TABLE tracks ADD COLUMN is_liked INTEGER NOT NULL "
+                    "DEFAULT 0"
+                )
+                logger.info("Added column: tracks.is_liked")
+            # The is_liked index can't sit in `_create_tables` because that
+            # runs *before* the ADD COLUMN above on legacy DBs and would
+            # fail with "no such column". Create it here so fresh and
+            # migrated databases both end up with the same index.
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tracks_is_liked "
+                "ON tracks(is_liked) WHERE is_liked = 1"
+            )
 
             pl_cols = {
                 row[1]
@@ -606,7 +624,7 @@ class DatabaseManager:
             """
             SELECT
                 mbid, title, artist, album, track_number, disc_number,
-                local_path, dap_path,
+                local_path, dap_path, is_liked,
                 COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
             FROM tracks
             WHERE deleted_at IS NULL
@@ -620,6 +638,66 @@ class DatabaseManager:
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.close()
         return rows
+
+    def set_track_liked(self, mbid: str, liked: bool) -> Optional[bool]:
+        """Flip ``tracks.is_liked`` for a single row.
+
+        Returns the new state on success, or None if the track doesn't
+        exist (or is soft-deleted — liking an orphan row would create a
+        ghost entry in the Liked Songs smart playlist). Bumps
+        ``updated_at`` so the change rides the catalog-sync delta to
+        satellites.
+        """
+        if not mbid:
+            return None
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET is_liked = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE mbid = ? AND deleted_at IS NULL",
+            (1 if liked else 0, mbid),
+        )
+        changed = cursor.rowcount > 0
+        self.conn.commit()
+        cursor.close()
+        return bool(liked) if changed else None
+
+    # The Liked Songs smart playlist uses a reserved, deterministic id so
+    # both master and satellite converge on the same row after a sync
+    # tick instead of each minting a fresh UUID. Anywhere the rest of the
+    # code refers to "the Liked Songs playlist", it uses this constant.
+    LIKED_SONGS_PLAYLIST_ID = "liked_songs"
+    LIKED_SONGS_PLAYLIST_NAME = "Liked Songs"
+
+    def ensure_liked_songs_playlist(self) -> str:
+        """Idempotently create the Liked Songs smart playlist and return
+        its id. Auto-called on the first heart-toggle so users who never
+        like a track don't get an empty playlist cluttering their sidebar.
+        """
+        from .smart_playlist import serialize
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT playlist_id FROM playlists WHERE playlist_id = ?",
+            (self.LIKED_SONGS_PLAYLIST_ID,),
+        )
+        row = cursor.fetchone()
+        if row is not None:
+            cursor.close()
+            return self.LIKED_SONGS_PLAYLIST_ID
+
+        rules = serialize({
+            "match": "all",
+            "rules": [{"field": "is_liked", "op": "equals", "value": True}],
+        })
+        cursor.execute(
+            "INSERT INTO playlists "
+            "(playlist_id, name, spotify_url, updated_at, smart_rules) "
+            "VALUES (?, ?, '', CURRENT_TIMESTAMP, ?)",
+            (self.LIKED_SONGS_PLAYLIST_ID, self.LIKED_SONGS_PLAYLIST_NAME, rules),
+        )
+        self.conn.commit()
+        cursor.close()
+        return self.LIKED_SONGS_PLAYLIST_ID
 
     def get_track_sources(self, mbid: str) -> Optional[dict]:
         """Return both candidate on-disk paths for a track, or None if
@@ -1175,10 +1253,14 @@ class DatabaseManager:
         If ``since_iso`` is provided, only rows with updated_at > since_iso
         are returned. Local-only columns (local_path, dap_path, synced_to_dap)
         are deliberately omitted since they don't travel between devices.
+        ``is_liked`` rides along because hearts are a user preference, not a
+        device-local file fact — likes set on the master should appear on
+        every satellite after the next sync tick.
         """
         sql = (
             "SELECT mbid, title, artist, album, isrc, release_mbid, "
-            "track_number, disc_number, updated_at, deleted_at FROM tracks"
+            "track_number, disc_number, is_liked, updated_at, deleted_at "
+            "FROM tracks"
         )
         params: tuple = ()
         if since_iso:
@@ -1209,8 +1291,8 @@ class DatabaseManager:
         sql = """
         INSERT INTO tracks
             (mbid, title, artist, album, isrc, release_mbid,
-             track_number, disc_number, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+             track_number, disc_number, is_liked, updated_at, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
         ON CONFLICT(mbid) DO UPDATE SET
             title = excluded.title,
             artist = excluded.artist,
@@ -1219,6 +1301,7 @@ class DatabaseManager:
             release_mbid = excluded.release_mbid,
             track_number = excluded.track_number,
             disc_number = excluded.disc_number,
+            is_liked = excluded.is_liked,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at
         """
@@ -1233,6 +1316,7 @@ class DatabaseManager:
                 row.get("release_mbid"),
                 row.get("track_number") or 0,
                 row.get("disc_number") or 1,
+                1 if row.get("is_liked") else 0,
                 row.get("updated_at"),
                 row.get("deleted_at"),
             ),
@@ -1649,7 +1733,7 @@ class DatabaseManager:
 
         base_cols = (
             "t.mbid, t.title, t.artist, t.album, t.track_number, t.disc_number, "
-            "t.local_path, t.dap_path, t.deleted_at, "
+            "t.local_path, t.dap_path, t.deleted_at, t.is_liked, "
             "COALESCE(NULLIF(t.release_mbid, ''), t.album || '|' || t.artist) AS album_id"
         )
 

@@ -1605,3 +1605,66 @@ def test_get_existing_release_mbids_excludes_soft_deleted(db):
     db.soft_delete_track("t3")
 
     assert db.get_existing_release_mbids() == {"rmb-live"}
+
+
+# --- Stage 11: Liked Songs ------------------------------------------------
+
+def test_set_track_liked_flips_state_and_bumps_updated_at(db):
+    db.add_or_update_track(Track(mbid="m1", title="T", artist="A"))
+    before = db.conn.execute(
+        "SELECT updated_at FROM tracks WHERE mbid = ?", ("m1",)
+    ).fetchone()["updated_at"]
+
+    assert db.set_track_liked("m1", True) is True
+    row = db.conn.execute(
+        "SELECT is_liked, updated_at FROM tracks WHERE mbid = ?", ("m1",)
+    ).fetchone()
+    assert row["is_liked"] == 1
+    # The catalog-sync delta keys on updated_at, so the like must ride
+    # the same delta a metadata edit would.
+    assert row["updated_at"] >= before
+
+    assert db.set_track_liked("m1", False) is False
+    assert db.conn.execute(
+        "SELECT is_liked FROM tracks WHERE mbid = ?", ("m1",)
+    ).fetchone()["is_liked"] == 0
+
+
+def test_set_track_liked_returns_none_for_unknown_or_orphan(db):
+    assert db.set_track_liked("nope", True) is None
+
+    db.add_or_update_track(Track(mbid="m1", title="T", artist="A"))
+    db.soft_delete_track("m1")
+    # Liking a soft-deleted track would create a ghost row in the Liked
+    # Songs smart playlist that the user can't see or unlike — refuse.
+    assert db.set_track_liked("m1", True) is None
+
+
+def test_ensure_liked_songs_playlist_is_idempotent(db):
+    pid1 = db.ensure_liked_songs_playlist()
+    pid2 = db.ensure_liked_songs_playlist()
+    assert pid1 == pid2 == db.LIKED_SONGS_PLAYLIST_ID
+
+    # And the row that landed is a smart playlist that filters on the
+    # is_liked column — not an empty static playlist.
+    row = db.conn.execute(
+        "SELECT name, smart_rules FROM playlists WHERE playlist_id = ?",
+        (pid1,),
+    ).fetchone()
+    assert row["name"] == "Liked Songs"
+    assert row["smart_rules"] is not None
+    assert "is_liked" in row["smart_rules"]
+
+
+def test_liked_songs_smart_playlist_resolves_to_liked_tracks(db):
+    """End-to-end: like a track, then list_tracks_filtered against the
+    Liked Songs playlist returns exactly the liked tracks."""
+    db.add_or_update_track(Track(
+        mbid="m1", title="A", artist="X", album="Al", local_path="/m/a"))
+    db.add_or_update_track(Track(
+        mbid="m2", title="B", artist="X", album="Al", local_path="/m/b"))
+    db.set_track_liked("m1", True)
+    pid = db.ensure_liked_songs_playlist()
+
+    rows = db.list_tracks_filtered(playlist_id=pid)
+    assert [r["mbid"] for r in rows] == ["m1"]

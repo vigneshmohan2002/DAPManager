@@ -742,6 +742,42 @@ def api_library_tracks():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/tracks/<mbid>/like", methods=["POST", "DELETE"])
+def api_library_track_like(mbid: str):
+    """Toggle the heart on a track.
+
+    POST sets ``tracks.is_liked = 1`` and ensures the Liked Songs smart
+    playlist exists (idempotent — only the *first* like in a fresh
+    library creates it). DELETE flips back to 0 but does not remove the
+    playlist; the user can keep the empty sidebar pin or remove it
+    manually like any other playlist.
+
+    404 when the mbid isn't in the library so the desktop can branch on
+    status code without parsing the body — matches the convention used
+    by Stage 10a's retry-download endpoint.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    mbid = (mbid or "").strip()
+    if not mbid:
+        return jsonify({"success": False, "message": "mbid is required"}), 400
+    liked = request.method == "POST"
+    try:
+        with DatabaseManager(config.db_path) as db:
+            new_state = db.set_track_liked(mbid, liked)
+            if new_state is None:
+                return jsonify({
+                    "success": False,
+                    "message": "track not found or orphaned",
+                }), 404
+            if liked:
+                db.ensure_liked_songs_playlist()
+        return jsonify({"success": True, "liked": new_state})
+    except Exception as e:
+        logger.exception("api_library_track_like failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/playlists", methods=["GET"])
 def api_library_playlists():
     """Live playlists with membership counts, for the library sidebar.
@@ -941,6 +977,7 @@ def _public_track_row(row: dict, has_master: bool) -> dict:
         "disc_number": row.get("disc_number"),
         "album_id": row.get("album_id"),
         "availability": _availability_for(row, has_master),
+        "is_liked": bool(row.get("is_liked")),
     }
 
 

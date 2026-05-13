@@ -27,18 +27,37 @@ _FIELDS: dict[str, str] = {
     "title": "t.title",
     "tag_tier": "t.tag_tier",
     "tag_score": "t.tag_score",
+    "is_liked": "t.is_liked",
 }
 
 _TEXT_OPS = {"contains", "equals", "starts_with", "ends_with"}
 _NUMERIC_OPS = {"gt", "lt", "equals"}
+_BOOLEAN_OPS = {"equals"}
 _NUMERIC_FIELDS = {"tag_score"}
+_BOOLEAN_FIELDS = {"is_liked"}
 _MATCH_VALUES = {"all", "any"}
 
 _ESCAPE = "\\"
 
 
 def _is_text_field(field: str) -> bool:
-    return field not in _NUMERIC_FIELDS
+    return field not in _NUMERIC_FIELDS and field not in _BOOLEAN_FIELDS
+
+
+def _coerce_bool(value: Any) -> int:
+    """Accept the shapes a JSON ruleset can deliver — Python bool, 0/1,
+    "true"/"false" — and collapse to the int the column actually stores."""
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "1", "yes"):
+            return 1
+        if s in ("false", "0", "no", ""):
+            return 0
+    raise ValueError(f"value {value!r} not boolean")
 
 
 def _escape_like(s: str) -> str:
@@ -57,6 +76,11 @@ def _build_clause(field: Any, op: Any, value: Any) -> tuple[str, Any]:
     if not isinstance(op, str):
         raise ValueError(f"op must be a string, got {type(op).__name__}")
     col = _FIELDS[field]
+
+    if field in _BOOLEAN_FIELDS:
+        if op not in _BOOLEAN_OPS:
+            raise ValueError(f"op {op!r} not valid for boolean field {field!r}")
+        return f"{col} = ?", _coerce_bool(value)
 
     if _is_text_field(field):
         if op not in _TEXT_OPS:

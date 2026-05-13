@@ -2003,3 +2003,49 @@ def test_releases_wanted_augments_records_with_queue_and_library_state(
     assert by_mbid["rmb-queued"]["downloaded"] is False
     assert by_mbid["rmb-have"]["queued"] is False
     assert by_mbid["rmb-have"]["downloaded"] is True
+
+
+# --- Stage 11: Liked Songs endpoint --------------------------------------
+
+def test_like_track_returns_liked_true(client, mock_config, _config_file_present):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.set_track_liked.return_value = True
+
+        res = client.post('/api/library/tracks/abc/like')
+
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True, "liked": True}
+    inst.set_track_liked.assert_called_once_with("abc", True)
+    # First like auto-creates the Liked Songs smart playlist.
+    inst.ensure_liked_songs_playlist.assert_called_once()
+
+
+def test_unlike_track_does_not_create_playlist(client, mock_config, _config_file_present):
+    """DELETE unlikes but never auto-creates Liked Songs — the playlist
+    only appears on the *first* like, so a user who unlikes immediately
+    after a like doesn't keep getting it re-created."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.set_track_liked.return_value = False
+
+        res = client.delete('/api/library/tracks/abc/like')
+
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True, "liked": False}
+    inst.set_track_liked.assert_called_once_with("abc", False)
+    inst.ensure_liked_songs_playlist.assert_not_called()
+
+
+def test_like_track_404s_when_unknown(client, mock_config, _config_file_present):
+    # Matches the Stage 10a retry-download convention: status-code branch
+    # without parsing the body so the desktop client can render an
+    # inline error without throwing.
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.set_track_liked.return_value = None
+
+        res = client.post('/api/library/tracks/missing/like')
+
+    assert res.status_code == 404
+    assert res.get_json()["success"] is False

@@ -172,3 +172,44 @@ def test_parse_stored_tolerates_garbage():
     assert parse_stored(json.dumps({"rules": [
         {"field": "rating", "op": "equals", "value": 5}
     ]})) is None
+
+
+# --- is_liked boolean field ------------------------------------------------
+
+def test_build_where_is_liked_equals_true_coerces_to_int():
+    """The Liked Songs auto-playlist stores `value: true` in its ruleset,
+    so the boolean has to flow through coerce → serialize → parse → build
+    without being treated as a text field."""
+    sql, params = build_where({"match": "all", "rules": [
+        {"field": "is_liked", "op": "equals", "value": True}
+    ]})
+    assert "t.is_liked = ?" in sql
+    assert params == [1]
+
+
+def test_build_where_is_liked_accepts_truthy_string_values():
+    # JSON over the wire can deliver bool-shaped data as strings; the
+    # rule editor in the satellite may even send "true"/"false".
+    sql, params = build_where({"match": "all", "rules": [
+        {"field": "is_liked", "op": "equals", "value": "false"}
+    ]})
+    assert params == [0]
+
+
+def test_coerce_rejects_unknown_op_for_is_liked():
+    # Only `equals` makes sense for a boolean column.
+    with pytest.raises(ValueError, match="not valid for boolean field"):
+        coerce_ruleset({"rules": [
+            {"field": "is_liked", "op": "contains", "value": True}
+        ]})
+
+
+def test_is_liked_ruleset_round_trips_through_serialize():
+    raw = serialize({"match": "all", "rules": [
+        {"field": "is_liked", "op": "equals", "value": True}
+    ]})
+    parsed = parse_stored(raw)
+    assert parsed == {
+        "match": "all",
+        "rules": [{"field": "is_liked", "op": "equals", "value": True}],
+    }
