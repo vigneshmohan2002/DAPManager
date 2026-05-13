@@ -185,7 +185,8 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     track_mbid TEXT NOT NULL,
                     played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    source TEXT
+                    source TEXT,
+                    listened_ms INTEGER
                 );
             """,
         }
@@ -252,6 +253,22 @@ class DatabaseManager:
                     "DEFAULT 0"
                 )
                 logger.info("Added column: tracks.is_liked")
+
+            # Stage 12a: per-event listened-ms. Nullable so legacy rows
+            # (recorded before the player started reporting wall-clock
+            # listening time) stay valid but are excluded from the new
+            # listening-time aggregations rather than counting as zeros.
+            pe_cols = {
+                row[1]
+                for row in cursor.execute(
+                    "PRAGMA table_info(play_events)"
+                ).fetchall()
+            }
+            if "listened_ms" not in pe_cols:
+                cursor.execute(
+                    "ALTER TABLE play_events ADD COLUMN listened_ms INTEGER"
+                )
+                logger.info("Added column: play_events.listened_ms")
             # The is_liked index can't sit in `_create_tables` because that
             # runs *before* the ADD COLUMN above on legacy DBs and would
             # fail with "no such column". Create it here so fresh and
@@ -1492,24 +1509,57 @@ class DatabaseManager:
     # tracks.mbid for that reason.
 
     def record_play_event(
-        self, track_mbid: str, source: Optional[str] = None
+        self,
+        track_mbid: str,
+        source: Optional[str] = None,
+        listened_ms: Optional[int] = None,
     ) -> int:
         """Append one play event. Returns the new event id.
 
         ``source`` is a free-form tag (e.g., "desktop", "web") so future
         stats can split per surface. None is fine and stays NULL.
+        ``listened_ms`` is the wall-clock ms the user actually heard,
+        not the track's full duration — the player owns that
+        accounting. None on legacy + non-reporting clients; rows with
+        NULL are excluded from listening-time aggregations rather
+        than treated as zero.
         """
         if not track_mbid or not str(track_mbid).strip():
             raise ValueError("track_mbid is required")
         cursor = self.conn.cursor()
         cursor.execute(
-            "INSERT INTO play_events (track_mbid, source) VALUES (?, ?)",
-            (track_mbid, source),
+            "INSERT INTO play_events (track_mbid, source, listened_ms) "
+            "VALUES (?, ?, ?)",
+            (track_mbid, source, listened_ms),
         )
         event_id = cursor.lastrowid
         self.conn.commit()
         cursor.close()
         return event_id
+
+    def listening_time_since(self, since_iso: Optional[str] = None) -> int:
+        """Sum of listened_ms in the window.
+
+        Rows with NULL ``listened_ms`` are excluded (legacy scrobbles
+        from before Stage 12a). Returns 0 when the window is empty or
+        all rows are NULL — never None — so the API layer doesn't need
+        to coalesce.
+        """
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute(
+                "SELECT COALESCE(SUM(listened_ms), 0) FROM play_events "
+                "WHERE listened_ms IS NOT NULL AND played_at >= ?",
+                (since_iso,),
+            )
+        else:
+            cursor.execute(
+                "SELECT COALESCE(SUM(listened_ms), 0) FROM play_events "
+                "WHERE listened_ms IS NOT NULL"
+            )
+        n = cursor.fetchone()[0]
+        cursor.close()
+        return int(n or 0)
 
     def play_count_since(self, since_iso: Optional[str] = None) -> int:
         """Total play events recorded since ``since_iso`` (None = all time)."""

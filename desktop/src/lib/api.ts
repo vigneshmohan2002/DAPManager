@@ -341,16 +341,25 @@ export type OrphanPlaylist = {
 // enough to count (the player owns that threshold). Failure is logged
 // to the console, not surfaced — a missed scrobble is not user-visible
 // and shouldn't toast on every transient backend hiccup.
+//
+// ``listenedMs`` is wall-clock ms the audio was unpaused on this load —
+// the server caps it server-side, so over-reporting clients can't
+// inflate listening-time stats.
 export async function recordPlay(
   mbid: string,
   source: string = "desktop",
+  listenedMs?: number,
 ): Promise<void> {
   try {
     const url = await backendUrl();
+    const body: Record<string, unknown> = { mbid, source };
+    if (typeof listenedMs === "number" && listenedMs >= 0) {
+      body.listened_ms = Math.round(listenedMs);
+    }
     await fetch(`${url}/api/library/plays`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mbid, source }),
+      body: JSON.stringify(body),
     });
   } catch (e) {
     console.warn("recordPlay failed", e);
@@ -384,6 +393,11 @@ export type PlayStatsRecent = {
 
 export type PlayStats = {
   total: number;
+  // Sum of listened ms across the same window the play count uses.
+  // Legacy rows (Stage 12a migration boundary) have NULL listened_ms
+  // server-side and contribute 0; tooltip copy on the Stats screen
+  // notes the partial-history caveat.
+  listening_time_ms: number;
   top_tracks: PlayStatsTrack[];
   top_artists: PlayStatsArtist[];
   recent: PlayStatsRecent[];
@@ -449,6 +463,7 @@ export async function fetchPlayStats(
   if (!data.success) throw new Error(data.message ?? "play-stats failed");
   return {
     total: Number(data.total ?? 0),
+    listening_time_ms: Number(data.listening_time_ms ?? 0),
     top_tracks: (data.top_tracks ?? []) as PlayStatsTrack[],
     top_artists: (data.top_artists ?? []) as PlayStatsArtist[],
     recent: (data.recent ?? []) as PlayStatsRecent[],

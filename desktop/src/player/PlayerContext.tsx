@@ -125,15 +125,36 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // again. Using a ref so timeupdate-rate state changes don't re-render.
   const scrobbledRef = useRef<string | null>(null);
 
+  // Wall-clock ms the audio has actually been playing on this load.
+  // Forward seeks don't accumulate (we only count time the audio was
+  // unpaused); the server caps the value defensively anyway. Cleared
+  // on every track-load via the same effect that resets scrobbledRef.
+  const listenedMsRef = useRef(0);
+
   // Load new src when current track changes.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !current || !base) return;
     audio.src = streamUrl(base, current.mbid);
     scrobbledRef.current = null;
+    listenedMsRef.current = 0;
     audio.play().catch(() => setIsPlaying(false));
     setIsPlaying(true);
   }, [current?.mbid, base]);
+
+  // Accumulate wall-clock listening time only while the audio is
+  // actually playing. Effect runs on every isPlaying transition: the
+  // cleanup captures the elapsed span when playback flips false (pause
+  // or track change), so a paused track that's later resumed picks
+  // back up at the next true→cleanup edge instead of losing the prior
+  // span. Track changes blow away the accumulator via the load effect.
+  useEffect(() => {
+    if (!isPlaying) return;
+    const start = Date.now();
+    return () => {
+      listenedMsRef.current += Date.now() - start;
+    };
+  }, [isPlaying, current?.mbid]);
 
   // Scrobble — record one play event per loaded track once the user
   // has heard enough of it. The threshold mirrors the long-standing
@@ -147,8 +168,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (scrobbledRef.current === current.mbid) return;
     if (position < 30 && (duration <= 0 || position / duration < 0.5)) return;
     scrobbledRef.current = current.mbid;
-    recordPlay(current.mbid);
-  }, [current, position, duration]);
+    // At threshold time the cleanup hasn't fired yet, so the running
+    // span isn't in listenedMsRef. Add the live delta so the very
+    // first scrobble for a load reflects real listening time, not 0.
+    const liveMs = isPlaying ? Date.now() - (lastPlayStartRef.current ?? Date.now()) : 0;
+    recordPlay(current.mbid, "desktop", listenedMsRef.current + liveMs);
+  }, [current, position, duration, isPlaying]);
+
+  // Companion ref to the accumulator above — captures the wall-clock
+  // start of the current playing span so the scrobble effect can
+  // include in-flight ms without waiting for the next cleanup tick.
+  const lastPlayStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    lastPlayStartRef.current = isPlaying ? Date.now() : null;
+  }, [isPlaying, current?.mbid]);
 
   // Returns the queue index that should play next, or null when there's
   // nothing left and the player should stop. Auto-advance (track ended)

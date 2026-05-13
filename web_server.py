@@ -1095,9 +1095,35 @@ def api_library_record_play():
             "success": False,
             "message": "source must be a string when provided",
         }), 400
+    # listened_ms is optional. The player computes it as wall-clock ms
+    # the audio was unpaused on this load — i.e., not the same as
+    # current playback position, which would inflate on forward seeks.
+    # Cap at 30 minutes here so a misbehaving / hostile client can't
+    # claim a 6-hour listen for a 3-minute track via clock skew or
+    # pause-spam. 30m is comfortably longer than the longest real
+    # track most users have; future Stage 12 work can tighten this to
+    # `min(track_duration * 1.5)` once tracks grows a duration column.
+    listened_ms_raw = data.get("listened_ms")
+    listened_ms = None
+    if listened_ms_raw is not None:
+        if isinstance(listened_ms_raw, bool) or not isinstance(
+            listened_ms_raw, (int, float)
+        ):
+            return jsonify({
+                "success": False,
+                "message": "listened_ms must be a number when provided",
+            }), 400
+        if listened_ms_raw < 0:
+            return jsonify({
+                "success": False,
+                "message": "listened_ms must be non-negative",
+            }), 400
+        listened_ms = min(int(listened_ms_raw), 30 * 60 * 1000)
     try:
         with DatabaseManager(config.db_path) as db:
-            event_id = db.record_play_event(mbid, source=source)
+            event_id = db.record_play_event(
+                mbid, source=source, listened_ms=listened_ms,
+            )
     except ValueError as e:
         return jsonify({"success": False, "message": str(e)}), 400
     except Exception as e:
@@ -1131,6 +1157,7 @@ def api_library_play_stats():
     try:
         with DatabaseManager(config.db_path) as db:
             total = db.play_count_since(since)
+            listening_time_ms = db.listening_time_since(since)
             top_tracks = db.top_tracks_since(since, limit=limit)
             top_artists = db.top_artists_since(since, limit=limit)
             recent = db.recent_plays(limit=limit)
@@ -1140,6 +1167,10 @@ def api_library_play_stats():
     return jsonify({
         "success": True,
         "total": total,
+        # Sum across the same window the "total plays" count uses, so
+        # the two headline numbers come from the same population. Legacy
+        # (pre-Stage-12a) rows have NULL listened_ms and are excluded.
+        "listening_time_ms": listening_time_ms,
         "top_tracks": top_tracks,
         "top_artists": top_artists,
         "recent": recent,

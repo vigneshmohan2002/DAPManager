@@ -98,13 +98,85 @@ export default function StatsScreen({ ready }: Props) {
         ) : stats.total === 0 ? (
           <EmptyState />
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <TopTracksSection tracks={stats.top_tracks} />
-            <TopArtistsSection artists={stats.top_artists} />
-            <RecentSection recent={stats.recent} />
+          <div className="flex flex-col gap-8">
+            <SummaryCards stats={stats} />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <TopTracksSection tracks={stats.top_tracks} />
+              <TopArtistsSection artists={stats.top_artists} />
+              <RecentSection recent={stats.recent} />
+            </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Human-readable "Xh Ym" for a millisecond count. Trims to bare
+// minutes under one hour and to bare days past a week so the headline
+// number stays readable instead of "2 days 13 hours 4 minutes".
+function formatListeningTime(ms: number): string {
+  if (ms <= 0) return "0m";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remM = minutes - hours * 60;
+  if (hours < 24) {
+    return remM > 0 ? `${hours}h ${remM}m` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remH = hours - days * 24;
+  return remH > 0 ? `${days}d ${remH}h` : `${days}d`;
+}
+
+function SummaryCards({ stats }: { stats: PlayStats }) {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <Card label="Plays" value={String(stats.total)} />
+      <Card
+        label="Listening time"
+        value={formatListeningTime(stats.listening_time_ms)}
+        hint={
+          stats.listening_time_ms === 0 && stats.total > 0
+            ? "Plays before this version don't carry duration — newer plays will."
+            : undefined
+        }
+      />
+      <Card
+        label="Top artist"
+        value={stats.top_artists[0]?.artist ?? "—"}
+        hint={
+          stats.top_artists[0]
+            ? `${stats.top_artists[0].plays} ${stats.top_artists[0].plays === 1 ? "play" : "plays"}`
+            : undefined
+        }
+      />
+    </div>
+  );
+}
+
+function Card({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-md bg-[var(--color-surface)]/40 border border-[var(--color-border)]/40 p-4">
+      <div className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+        {label}
+      </div>
+      <div className="mt-1 text-2xl font-semibold truncate" title={value}>
+        {value}
+      </div>
+      {hint && (
+        <div className="mt-1 text-[11px] text-[var(--color-text-muted)]">
+          {hint}
+        </div>
+      )}
     </div>
   );
 }

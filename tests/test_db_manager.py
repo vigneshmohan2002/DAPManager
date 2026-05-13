@@ -1670,6 +1670,37 @@ def test_liked_songs_smart_playlist_resolves_to_liked_tracks(db):
     assert [r["mbid"] for r in rows] == ["m1"]
 
 
+def test_record_play_event_persists_listened_ms_and_legacy_null(db):
+    """listened_ms is optional — clients that don't report it (or that
+    pre-date Stage 12a) leave it NULL rather than 0, so the listening-
+    time aggregation can distinguish "no data" from "really zero."""
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="X"))
+    db.record_play_event("m1", source="desktop", listened_ms=42_000)
+    db.record_play_event("m1", source="desktop")  # legacy / silent client
+
+    rows = db.conn.execute(
+        "SELECT listened_ms FROM play_events ORDER BY id"
+    ).fetchall()
+    assert rows[0]["listened_ms"] == 42_000
+    assert rows[1]["listened_ms"] is None
+
+
+def test_listening_time_since_sums_only_non_null_rows(db):
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="X"))
+    db.record_play_event("m1", listened_ms=30_000)
+    db.record_play_event("m1", listened_ms=120_000)
+    db.record_play_event("m1")  # NULL — excluded
+
+    assert db.listening_time_since() == 150_000
+
+
+def test_listening_time_since_returns_zero_when_window_empty(db):
+    """The endpoint coalesces NULL → 0 for SUM, but the helper should
+    also collapse to int 0 so callers don't have to check for None."""
+    assert db.listening_time_since() == 0
+    assert db.listening_time_since("2030-01-01 00:00:00") == 0
+
+
 def test_list_playlists_with_counts_specialises_liked_songs_count(db):
     """Smart playlists report manual-membership count (always 0), but
     Liked Songs is special-cased so users don't see "0 tracks" right

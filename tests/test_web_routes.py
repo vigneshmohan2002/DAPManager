@@ -2051,6 +2051,85 @@ def test_like_track_404s_when_unknown(client, mock_config, _config_file_present)
     assert res.get_json()["success"] is False
 
 
+def test_record_play_passes_listened_ms_to_db(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.record_play_event.return_value = 1
+
+        res = client.post(
+            '/api/library/plays',
+            json={"mbid": "abc", "source": "desktop", "listened_ms": 45_000},
+        )
+
+    assert res.status_code == 201
+    inst.record_play_event.assert_called_once_with(
+        "abc", source="desktop", listened_ms=45_000,
+    )
+
+
+def test_record_play_caps_listened_ms_server_side(
+    client, mock_config, _config_file_present,
+):
+    """30 minutes is the hard cap — a hostile client claiming a 6-hour
+    listen for a 3-minute track shouldn't be able to inflate the
+    listening-time stat."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.record_play_event.return_value = 1
+
+        res = client.post(
+            '/api/library/plays',
+            json={"mbid": "abc", "listened_ms": 6 * 60 * 60 * 1000},
+        )
+
+    assert res.status_code == 201
+    _, kwargs = inst.record_play_event.call_args
+    assert kwargs["listened_ms"] == 30 * 60 * 1000
+
+
+def test_record_play_rejects_negative_listened_ms(
+    client, mock_config, _config_file_present,
+):
+    res = client.post(
+        '/api/library/plays',
+        json={"mbid": "abc", "listened_ms": -1},
+    )
+    assert res.status_code == 400
+
+
+def test_record_play_rejects_non_numeric_listened_ms(
+    client, mock_config, _config_file_present,
+):
+    # Strings (including numeric-looking ones) are rejected because
+    # JSON has a real number type and accepting "45000" would silently
+    # disagree with the int-coercion behavior the player relies on.
+    res = client.post(
+        '/api/library/plays',
+        json={"mbid": "abc", "listened_ms": "45000"},
+    )
+    assert res.status_code == 400
+
+
+def test_play_stats_includes_listening_time_ms(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.play_count_since.return_value = 3
+        inst.listening_time_since.return_value = 7_200_000  # 2 hours
+        inst.top_tracks_since.return_value = []
+        inst.top_artists_since.return_value = []
+        inst.recent_plays.return_value = []
+
+        res = client.get('/api/library/play-stats')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["listening_time_ms"] == 7_200_000
+
+
 def test_home_bundles_four_cards_in_one_response(
     client, mock_config, _config_file_present,
 ):
