@@ -1668,3 +1668,20 @@ def test_liked_songs_smart_playlist_resolves_to_liked_tracks(db):
 
     rows = db.list_tracks_filtered(playlist_id=pid)
     assert [r["mbid"] for r in rows] == ["m1"]
+
+
+def test_list_playlists_with_counts_specialises_liked_songs_count(db):
+    """Smart playlists report manual-membership count (always 0), but
+    Liked Songs is special-cased so users don't see "0 tracks" right
+    after liking some."""
+    db.add_or_update_track(Track(
+        mbid="m1", title="A", artist="X", album="Al", local_path="/m/a"))
+    db.add_or_update_track(Track(
+        mbid="m2", title="B", artist="X", album="Al", local_path="/m/b"))
+    db.set_track_liked("m1", True)
+    db.set_track_liked("m2", True)
+    db.ensure_liked_songs_playlist()
+
+    rows = db.list_playlists_with_counts()
+    liked = next(r for r in rows if r["playlist_id"] == "liked_songs")
+    assert liked["track_count"] == 2

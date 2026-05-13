@@ -1704,6 +1704,21 @@ class DatabaseManager:
         )
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.close()
+        # Liked Songs is the one smart playlist where the always-zero
+        # manual-membership count is a confusing lie — users see "0
+        # tracks" the moment after liking five. The partial index on
+        # is_liked keeps this COUNT fast even on a 50k-track library.
+        # Other smart playlists still report manual-membership 0 (the
+        # existing N-query trade-off documented in the docstring above).
+        for r in rows:
+            if r.get("playlist_id") == self.LIKED_SONGS_PLAYLIST_ID:
+                cur2 = self.conn.cursor()
+                cur2.execute(
+                    "SELECT COUNT(*) FROM tracks "
+                    "WHERE is_liked = 1 AND deleted_at IS NULL"
+                )
+                r["track_count"] = cur2.fetchone()[0]
+                cur2.close()
         return rows
 
     def list_tracks_filtered(

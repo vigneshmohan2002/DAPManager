@@ -200,6 +200,17 @@ export default function Sidebar({
     onPlaylistDeleted(pid);
   };
 
+  // Liked Songs is a system smart playlist with a reserved id; we pin
+  // it at the top of the section instead of letting it sort
+  // alphabetically with user-created playlists. The heart glyph on the
+  // label makes it identifiable at a glance even if a user renames a
+  // regular playlist to "Liked".
+  const orderedPlaylists = [...playlists].sort((a, b) => {
+    if (a.playlist_id === "liked_songs") return -1;
+    if (b.playlist_id === "liked_songs") return 1;
+    return 0;
+  });
+
   const playlistSection: SidebarSection = {
     title: "Playlists",
     accessory: (
@@ -212,11 +223,11 @@ export default function Sidebar({
         +
       </button>
     ),
-    items: playlists.map((p) => ({
+    items: orderedPlaylists.map((p) => ({
       // Smart playlists carry their (decoded) ruleset so the right-
       // click handler can prefill the edit dialog without re-fetching.
       id: playlistSidebarId(p.playlist_id),
-      label: p.name,
+      label: p.playlist_id === "liked_songs" ? `♥ ${p.name}` : p.name,
       count: p.track_count,
       playlistId: p.playlist_id,
       smartRules: p.smart_rules,
