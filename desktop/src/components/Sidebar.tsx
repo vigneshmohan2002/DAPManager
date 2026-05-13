@@ -242,6 +242,13 @@ export default function Sidebar({
   };
 
   const isSmart = Boolean(menu?.smartRules);
+  // The Liked Songs system playlist is rename-and-delete-locked —
+  // the backend refuses the delete with 409 (Stage 11f) and a
+  // user-renamed "Liked Songs" wouldn't sync the way the rest of
+  // the auto-created infrastructure assumes. Hide both actions
+  // from the menu so the user doesn't try and get a toast they
+  // can't fix.
+  const isSystem = menu?.pid === "liked_songs";
   const menuEntries: ContextMenuEntry[] | null = menu
     ? [
         { kind: "label", text: menu.name },
@@ -251,6 +258,7 @@ export default function Sidebar({
               {
                 kind: "item" as const,
                 label: "Edit rules…",
+                disabled: isSystem,
                 onSelect: () =>
                   setDialog({
                     kind: "edit",
@@ -264,12 +272,14 @@ export default function Sidebar({
         {
           kind: "item",
           label: "Rename…",
+          disabled: isSystem,
           onSelect: () => handleRename(menu.pid, menu.name),
         },
         {
           kind: "item",
           label: "Delete (soft)",
           danger: true,
+          disabled: isSystem,
           onSelect: () => handleDelete(menu.pid, menu.name),
         },
       ]

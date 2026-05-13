@@ -2292,6 +2292,18 @@ def test_lyrics_post_clears_row_on_empty_lrc(
     assert len(delete_calls) == 1
 
 
+def test_delete_liked_songs_playlist_is_refused_with_409(
+    client, mock_config, _config_file_present,
+):
+    """The reserved Liked Songs id would auto-recreate on next like —
+    refuse the delete so the user can't end up in a flicker loop."""
+    res = client.delete('/api/playlists/liked_songs')
+    assert res.status_code == 409
+    body = res.get_json()
+    assert body["success"] is False
+    assert "system playlist" in body["message"].lower()
+
+
 def test_lyrics_404s_when_track_missing_from_library(
     client, mock_config, _config_file_present,
 ):

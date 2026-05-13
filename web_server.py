@@ -2166,6 +2166,20 @@ def soft_delete_track(mbid):
 def soft_delete_playlist_route(playlist_id):
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    # System playlists (Liked Songs and future system_generated rows)
+    # use reserved ids and would be auto-recreated on the next like
+    # / regenerate tick, which is confusing — refuse the delete so
+    # the user can't get into a flickering state. To clear the
+    # contents, they unlike the tracks; to hide the entry entirely
+    # would require a real "hide system playlist" preference.
+    if playlist_id == DatabaseManager.LIKED_SONGS_PLAYLIST_ID:
+        return jsonify({
+            "success": False,
+            "message": (
+                "Liked Songs is a system playlist and can't be deleted. "
+                "Unlike tracks to empty it."
+            ),
+        }), 409
     purge = request.args.get("purge", "").lower() in ("1", "true", "yes")
     try:
         with DatabaseManager(config.db_path) as db:
