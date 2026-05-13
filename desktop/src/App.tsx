@@ -15,12 +15,13 @@ import DuplicatesScreen from "./screens/DuplicatesScreen";
 import FleetScreen from "./screens/FleetScreen";
 import OrphansScreen from "./screens/OrphansScreen";
 import ReleasesScreen from "./screens/ReleasesScreen";
+import SetupScreen from "./screens/SetupScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import SongsScreen from "./screens/SongsScreen";
 import StatsScreen from "./screens/StatsScreen";
 import SuggestScreen from "./screens/SuggestScreen";
 import SyncScreen from "./screens/SyncScreen";
-import { waitForBackend, type Album, type Artist } from "./lib/api";
+import { fetchSetupStatus, waitForBackend, type Album, type Artist } from "./lib/api";
 import { PlayerProvider } from "./player/PlayerContext";
 
 type BackendStatus = "booting" | "ready" | "failed";
@@ -53,6 +54,8 @@ function App() {
     () => setPlaylistsVersion((v) => v + 1),
     [],
   );
+  // null = not yet checked; true = wizard must be shown
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
   // If the scoped playlist was just deleted, drop the scope back to
   // "all tracks" so the Songs screen doesn't keep filtering on a
@@ -107,7 +110,26 @@ function App() {
     let cancelled = false;
     (async () => {
       const ok = await waitForBackend();
-      if (!cancelled) setStatus(ok ? "ready" : "failed");
+      if (cancelled) return;
+      if (!ok) {
+        setStatus("failed");
+        return;
+      }
+      // Check whether first-run setup is still needed before showing
+      // the main UI — avoids all library API calls 302-redirecting to
+      // the Flask /setup page on a fresh machine with no config.json.
+      try {
+        const { needs_setup } = await fetchSetupStatus();
+        if (!cancelled) {
+          setNeedsSetup(needs_setup);
+          if (!needs_setup) setStatus("ready");
+        }
+      } catch {
+        if (!cancelled) {
+          setNeedsSetup(false);
+          setStatus("ready");
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -234,6 +256,26 @@ function App() {
     }
     return <Placeholder name={screen} />;
   };
+
+  // Show setup wizard on fresh installs (no config.json). Checked
+  // before the booting guard so the wizard shows even though status
+  // never transitions to "ready" on a first-run path.
+  if (needsSetup === true) {
+    return <SetupScreen onDone={() => window.location.reload()} />;
+  }
+
+  // Backend is still starting up (or setup check is in flight).
+  // Show a minimal spinner rather than rendering the sidebar in an
+  // unready state. "failed" falls through to the main layout so
+  // renderScreen() can surface the inline error message.
+  if (status === "booting") {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-[var(--color-bg)]">
+        <div className="titlebar-drag absolute inset-x-0 top-0 h-10" />
+        <div className="w-5 h-5 border-2 border-[var(--color-text-muted)]/30 border-t-[var(--color-text-muted)] rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <ToastProvider>

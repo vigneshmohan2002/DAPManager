@@ -528,6 +528,75 @@ export function parseManualSuggestions(text: string): SuggestionItem[] {
   return items;
 }
 
+// ── Setup wizard ────────────────────────────────────────────────────────────
+
+export async function fetchSetupStatus(): Promise<{ needs_setup: boolean }> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/setup/status`);
+  if (!r.ok) throw new Error(`setup/status: ${r.status}`);
+  return r.json();
+}
+
+export type PublicUrlDetection = {
+  source: "env" | "tailscale" | "none";
+  url?: string;
+};
+
+export async function detectPublicUrl(): Promise<PublicUrlDetection> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/setup/detect-public-url`);
+  if (!r.ok) return { source: "none" };
+  return r.json();
+}
+
+export async function validatePath(
+  path: string,
+  kind: "directory" | "file" = "directory",
+): Promise<{ ok: boolean; message?: string }> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/setup/validate-path`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, kind }),
+  });
+  if (!r.ok) return { ok: false, message: `${r.status}` };
+  return r.json();
+}
+
+export type SetupPayload = {
+  role: "master" | "satellite" | "standalone";
+  music_library_path: string;
+  downloads_path: string;
+  dap_mount_point?: string;
+  master_url?: string;
+  public_master_url?: string;
+  device_name?: string;
+  slsk_username?: string;
+  slsk_password?: string;
+  jellyfin_url?: string;
+  jellyfin_api_key?: string;
+  jellyfin_user_id?: string;
+  lidarr_url?: string;
+  lidarr_api_key?: string;
+  lidarr_enabled?: boolean;
+  acoustid_api_key?: string;
+  contact_email?: string;
+  api_token?: string;
+};
+
+export async function saveSetupConfig(
+  payload: SetupPayload,
+): Promise<{ success: boolean; message?: string }> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/save_config`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await r.json();
+  return { success: Boolean(data.success), message: data.message };
+}
+
 export async function postSuggestions(
   host: string,
   items: SuggestionItem[],
