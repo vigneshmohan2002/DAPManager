@@ -549,6 +549,58 @@ export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
   return (data.playlists ?? []) as OrphanPlaylist[];
 }
 
+export type LyricsResponse = {
+  lrc: string | null;
+  synced: boolean;
+  source: "lrclib" | "manual" | null;
+  fetched_at: string | null;
+  // True when the server returned a stale cached row because the live
+  // LRCLIB fetch hit a transient network error. UI shows a quiet note;
+  // contents are still rendered.
+  stale?: boolean;
+};
+
+export async function fetchLyrics(mbid: string): Promise<LyricsResponse> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/tracks/${encodeURIComponent(mbid)}/lyrics`,
+  );
+  if (r.status === 404) return { lrc: null, synced: false, source: null, fetched_at: null };
+  if (!r.ok) throw new Error(`lyrics: ${r.status}`);
+  const data = await r.json();
+  return {
+    lrc: typeof data.lrc === "string" ? data.lrc : null,
+    synced: Boolean(data.synced),
+    source: data.source ?? null,
+    fetched_at: data.fetched_at ?? null,
+    stale: Boolean(data.stale),
+  };
+}
+
+export async function saveLyrics(
+  mbid: string,
+  lrc: string,
+  synced: boolean,
+): Promise<LyricsResponse> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/tracks/${encodeURIComponent(mbid)}/lyrics`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lrc, synced }),
+    },
+  );
+  if (!r.ok) throw new Error(`saveLyrics: ${r.status}`);
+  const data = await r.json();
+  return {
+    lrc: typeof data.lrc === "string" ? data.lrc : null,
+    synced: Boolean(data.synced),
+    source: data.source ?? null,
+    fetched_at: data.fetched_at ?? null,
+  };
+}
+
 export async function setTrackLiked(
   mbid: string,
   liked: boolean,

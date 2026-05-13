@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import MiniPlayer from "./components/MiniPlayer";
 import PlayerBar from "./components/PlayerBar";
+import LyricsPane from "./components/LyricsPane";
 import QueuePanel from "./components/QueuePanel";
 import SearchOverlay from "./components/SearchOverlay";
 import Sidebar from "./components/Sidebar";
@@ -35,6 +36,7 @@ function App() {
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [lyricsOpen, setLyricsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   // Mini-player mode is purely a layout switch — same window, same
   // PlayerProvider, same audio element. Triggered by the user
@@ -337,6 +339,10 @@ function App() {
               <main className="flex-1 flex flex-col min-w-0">
                 {renderScreen()}
               </main>
+              <LyricsPane
+                open={lyricsOpen}
+                onClose={() => setLyricsOpen(false)}
+              />
               <QueuePanel
                 open={queueOpen}
                 onClose={() => setQueueOpen(false)}
@@ -345,6 +351,8 @@ function App() {
             <PlayerBar
               queueOpen={queueOpen}
               onToggleQueue={() => setQueueOpen((q) => !q)}
+              lyricsOpen={lyricsOpen}
+              onToggleLyrics={() => setLyricsOpen((o) => !o)}
             />
             <SearchOverlay
               open={searchOpen}

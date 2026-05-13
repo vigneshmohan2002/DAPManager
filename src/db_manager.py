@@ -189,6 +189,20 @@ class DatabaseManager:
                     listened_ms INTEGER
                 );
             """,
+            # Stage 13: cached / manual lyrics keyed by track mbid. lrc
+            # is NULL on a cached miss so we don't hammer LRCLIB every
+            # time the user opens the pane on a track with no match.
+            # synced is 1 when lrc is in LRC time-tag format, 0 for
+            # plain text. source ∈ {'lrclib', 'manual'}.
+            "lyrics": """
+                CREATE TABLE IF NOT EXISTS lyrics (
+                    track_mbid TEXT PRIMARY KEY,
+                    lrc TEXT,
+                    synced INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL,
+                    fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """,
         }
 
         # Indexes that pay off the common stats queries (group-by-mbid for
@@ -1850,6 +1864,57 @@ class DatabaseManager:
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.close()
         return rows
+
+    # --- Lyrics (Stage 13) -------------------------------------------------
+
+    def get_lyrics(self, track_mbid: str) -> Optional[dict]:
+        """Return the cached lyrics row for a track, or None if no row
+        exists at all.
+
+        A row with ``lrc IS NULL`` is a *cached miss* — LRCLIB has been
+        asked and didn't have lyrics. The caller still gets the row so
+        it can render the empty state and respect the cache TTL instead
+        of re-fetching on every open.
+        """
+        if not track_mbid:
+            return None
+        cur = self.conn.execute(
+            "SELECT track_mbid, lrc, synced, source, fetched_at "
+            "FROM lyrics WHERE track_mbid = ?",
+            (track_mbid,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        return dict(row) if row else None
+
+    def upsert_lyrics(
+        self,
+        track_mbid: str,
+        lrc: Optional[str],
+        synced: bool,
+        source: str,
+    ) -> None:
+        """Insert or replace the cached lyrics for a track.
+
+        ``lrc=None`` is allowed and represents a cached miss (we asked
+        LRCLIB and there's nothing). ``source`` must be 'lrclib' or
+        'manual'; a manual override replaces any LRCLIB-cached row.
+        """
+        if not track_mbid:
+            raise ValueError("track_mbid is required")
+        if source not in ("lrclib", "manual"):
+            raise ValueError(f"unknown lyrics source: {source!r}")
+        self.conn.execute(
+            "INSERT INTO lyrics (track_mbid, lrc, synced, source, fetched_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(track_mbid) DO UPDATE SET "
+            "  lrc = excluded.lrc, "
+            "  synced = excluded.synced, "
+            "  source = excluded.source, "
+            "  fetched_at = CURRENT_TIMESTAMP",
+            (track_mbid, lrc, 1 if synced else 0, source),
+        )
+        self.conn.commit()
 
     def apply_pushed_playlist_row(self, row: dict) -> str:
         """Apply a playlist pushed from a satellite, using last-writer-wins

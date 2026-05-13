@@ -1188,6 +1188,165 @@ def api_library_play_stats():
     })
 
 
+# Lyrics cache freshness — how long a cached LRCLIB result (hit *or*
+# miss) is considered fresh before we re-fetch. 30 days mirrors the
+# Stage 13 plan and balances "stay fresh as lyrics get added" against
+# "don't hammer LRCLIB". Manual overrides never expire.
+_LYRICS_TTL_SEC = 30 * 24 * 60 * 60
+
+
+def _is_lyrics_fresh(fetched_at: str) -> bool:
+    """Compare an ISO timestamp from the DB to now. Tolerant — a
+    parse failure returns True (treat as fresh) so a malformed legacy
+    row doesn't trigger an immediate re-fetch storm."""
+    try:
+        from datetime import datetime, timezone
+        # SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" in UTC.
+        ts = datetime.fromisoformat(fetched_at.replace(" ", "T"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() < _LYRICS_TTL_SEC
+    except Exception:
+        return True
+
+
+@app.route("/api/library/tracks/<mbid>/lyrics", methods=["GET", "POST"])
+def api_library_track_lyrics(mbid: str):
+    """Get or set the cached lyrics for a track.
+
+    GET tries the cache first. A fresh hit (including a cached miss)
+    returns immediately. A stale-or-missing entry triggers a synchronous
+    LRCLIB fetch against the track's name+artist, persists the result
+    (or the miss), and returns. Manual-source rows are never auto-
+    refreshed — the user's typed override beats LRCLIB.
+
+    POST upserts a manual override. Body: ``{"lrc": "...", "synced": bool}``.
+    A missing or empty lrc clears the override and falls back to the
+    next GET's LRCLIB fetch.
+
+    Returns ``{ok: bool, lrc, synced, source, fetched_at}``. ``lrc`` is
+    null when there are no lyrics for this track — the desktop renders
+    the empty-state copy on null rather than throwing.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    mbid = (mbid or "").strip()
+    if not mbid:
+        return jsonify({"success": False, "message": "mbid is required"}), 400
+
+    if request.method == "POST":
+        data = request.json or {}
+        lrc = data.get("lrc")
+        synced = bool(data.get("synced"))
+        if lrc is not None and not isinstance(lrc, str):
+            return jsonify({
+                "success": False,
+                "message": "lrc must be a string or null",
+            }), 400
+        try:
+            with DatabaseManager(config.db_path) as db:
+                # An empty manual paste clears the row entirely so the
+                # next GET can re-try LRCLIB instead of being stuck on
+                # the manual blank.
+                if not (lrc or "").strip():
+                    db.conn.execute(
+                        "DELETE FROM lyrics WHERE track_mbid = ?", (mbid,)
+                    )
+                    db.conn.commit()
+                    return jsonify({"success": True, "lrc": None})
+                db.upsert_lyrics(mbid, lrc, synced, "manual")
+                row = db.get_lyrics(mbid)
+        except Exception as e:
+            logger.exception("api_library_track_lyrics POST failed")
+            return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({
+            "success": True,
+            "lrc": row["lrc"],
+            "synced": bool(row["synced"]),
+            "source": row["source"],
+            "fetched_at": row["fetched_at"],
+        })
+
+    # GET path
+    try:
+        with DatabaseManager(config.db_path) as db:
+            row = db.get_lyrics(mbid)
+            if row and (row["source"] == "manual" or _is_lyrics_fresh(
+                row["fetched_at"]
+            )):
+                return jsonify({
+                    "success": True,
+                    "lrc": row["lrc"],
+                    "synced": bool(row["synced"]),
+                    "source": row["source"],
+                    "fetched_at": row["fetched_at"],
+                })
+            # Need to fetch. Look up the canonical track + artist for
+            # the lookup keys — LRCLIB matches on those, not the mbid.
+            track = db.conn.execute(
+                "SELECT title, artist, album FROM tracks "
+                "WHERE mbid = ? AND deleted_at IS NULL",
+                (mbid,),
+            ).fetchone()
+            if track is None:
+                return jsonify({
+                    "success": False,
+                    "message": "track not found",
+                }), 404
+
+            from src.lrclib_client import fetch_lyrics
+            try:
+                result = fetch_lyrics(
+                    track_name=track["title"],
+                    artist_name=track["artist"],
+                    album_name=track["album"] or None,
+                )
+            except RuntimeError as e:
+                # Transient — don't cache. Return whatever we have so
+                # the user at least sees stale cached lyrics if there
+                # were any, instead of a hard failure.
+                logger.warning("lrclib fetch failed: %s", e)
+                if row is not None:
+                    return jsonify({
+                        "success": True,
+                        "lrc": row["lrc"],
+                        "synced": bool(row["synced"]),
+                        "source": row["source"],
+                        "fetched_at": row["fetched_at"],
+                        "stale": True,
+                    })
+                return jsonify({
+                    "success": False,
+                    "message": "lyrics lookup failed",
+                }), 502
+
+            # Cache the result (hit or miss). A None result becomes a
+            # negative-cache row so the next reopen doesn't refetch.
+            if result is None:
+                db.upsert_lyrics(mbid, None, False, "lrclib")
+                return jsonify({
+                    "success": True,
+                    "lrc": None,
+                    "synced": False,
+                    "source": "lrclib",
+                    "fetched_at": None,
+                })
+            db.upsert_lyrics(
+                mbid, result["lrc"], result["synced"], "lrclib",
+            )
+            stored = db.get_lyrics(mbid)
+            return jsonify({
+                "success": True,
+                "lrc": stored["lrc"],
+                "synced": bool(stored["synced"]),
+                "source": stored["source"],
+                "fetched_at": stored["fetched_at"],
+            })
+    except Exception as e:
+        logger.exception("api_library_track_lyrics GET failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/wrapped", methods=["GET"])
 def api_library_wrapped():
     """Year-in-review summary for the Wrapped screen.

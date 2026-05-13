@@ -15,9 +15,16 @@ function fmt(secs: number): string {
 type Props = {
   queueOpen: boolean;
   onToggleQueue: () => void;
+  lyricsOpen: boolean;
+  onToggleLyrics: () => void;
 };
 
-export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
+export default function PlayerBar({
+  queueOpen,
+  onToggleQueue,
+  lyricsOpen,
+  onToggleLyrics,
+}: Props) {
   const {
     current,
     isPlaying,
@@ -161,10 +168,24 @@ export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
           )}
         </button>
         <button
+          onClick={onToggleLyrics}
+          aria-label={lyricsOpen ? "Hide lyrics" : "Show lyrics"}
+          aria-pressed={lyricsOpen}
+          disabled={!current}
+          title="Lyrics"
+          className={`w-9 h-9 rounded-md ml-1 text-sm hover:text-[var(--color-text)] disabled:opacity-40 ${
+            lyricsOpen
+              ? "bg-[var(--color-surface)] text-[var(--color-text)]"
+              : "hover:bg-[var(--color-surface)]/60"
+          }`}
+        >
+          ♪
+        </button>
+        <button
           onClick={onToggleQueue}
           aria-label={queueOpen ? "Hide queue" : "Show queue"}
           aria-pressed={queueOpen}
-          className={`w-9 h-9 rounded-md ml-1 text-sm hover:text-[var(--color-text)] ${
+          className={`w-9 h-9 rounded-md text-sm hover:text-[var(--color-text)] ${
             queueOpen
               ? "bg-[var(--color-surface)] text-[var(--color-text)]"
               : "hover:bg-[var(--color-surface)]/60"

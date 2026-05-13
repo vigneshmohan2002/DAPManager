@@ -1694,6 +1694,40 @@ def test_listening_time_since_sums_only_non_null_rows(db):
     assert db.listening_time_since() == 150_000
 
 
+def test_lyrics_upsert_round_trip(db):
+    db.upsert_lyrics("m1", "[00:01.00] hello", synced=True, source="lrclib")
+    row = db.get_lyrics("m1")
+    assert row is not None
+    assert row["lrc"] == "[00:01.00] hello"
+    assert row["synced"] == 1
+    assert row["source"] == "lrclib"
+
+
+def test_lyrics_upsert_replaces_existing(db):
+    db.upsert_lyrics("m1", "first", synced=False, source="lrclib")
+    db.upsert_lyrics("m1", "second", synced=True, source="manual")
+    row = db.get_lyrics("m1")
+    assert row["lrc"] == "second"
+    assert row["source"] == "manual"
+    assert row["synced"] == 1
+
+
+def test_lyrics_negative_cache_stores_null_lrc(db):
+    """LRCLIB misses are cached as a row with lrc=NULL so the next
+    pane open doesn't refetch — distinguishable from "never asked"."""
+    db.upsert_lyrics("m1", None, synced=False, source="lrclib")
+    row = db.get_lyrics("m1")
+    assert row is not None
+    assert row["lrc"] is None
+    assert row["source"] == "lrclib"
+
+
+def test_lyrics_upsert_rejects_unknown_source(db):
+    import pytest
+    with pytest.raises(ValueError):
+        db.upsert_lyrics("m1", "x", synced=False, source="genius")
+
+
 def test_wrapped_summary_empty_year_returns_zeros(db):
     """A year with no events shouldn't return None aggregates — the UI
     branches on `total_plays == 0`, not on each card being null."""

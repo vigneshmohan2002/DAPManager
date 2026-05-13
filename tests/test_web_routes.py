@@ -2181,6 +2181,131 @@ def test_play_stats_drops_out_of_range_hours_silently(
     assert sum(body["hour_of_day"]) == 1
 
 
+def test_lyrics_returns_cached_row_without_calling_lrclib(
+    client, mock_config, _config_file_present,
+):
+    """A manual-source row should never trigger an LRCLIB request, even
+    if it's older than the TTL — the user's typed override wins."""
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.lrclib_client.fetch_lyrics') as fetch:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_lyrics.return_value = {
+            "track_mbid": "m1",
+            "lrc": "hand-written line\nanother",
+            "synced": 0,
+            "source": "manual",
+            "fetched_at": "1999-01-01 00:00:00",
+        }
+        res = client.get('/api/library/tracks/m1/lyrics')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["source"] == "manual"
+    assert body["lrc"].startswith("hand-written")
+    fetch.assert_not_called()
+
+
+def test_lyrics_fetches_lrclib_on_cache_miss_and_caches_result(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.lrclib_client.fetch_lyrics') as fetch:
+        inst = MockDB.return_value.__enter__.return_value
+        # First get_lyrics call (cache check) → no row.
+        # conn.execute(...).fetchone() looks up the track for LRCLIB
+        # keys. Final get_lyrics (after upsert) returns the freshly
+        # cached row.
+        inst.get_lyrics.side_effect = [
+            None,
+            {
+                "track_mbid": "m1",
+                "lrc": "[00:01.00] line",
+                "synced": 1,
+                "source": "lrclib",
+                "fetched_at": "2026-05-13 10:00:00",
+            },
+        ]
+        track_cur = MagicMock()
+        track_cur.fetchone.return_value = {
+            "title": "Song", "artist": "Artist", "album": "Album",
+        }
+        inst.conn.execute.return_value = track_cur
+
+        fetch.return_value = {"lrc": "[00:01.00] line", "synced": True}
+
+        res = client.get('/api/library/tracks/m1/lyrics')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["synced"] is True
+    assert body["source"] == "lrclib"
+    fetch.assert_called_once()
+    # The cache must be populated with the LRCLIB result so the next
+    # open doesn't re-hit the network.
+    inst.upsert_lyrics.assert_called_once_with(
+        "m1", "[00:01.00] line", True, "lrclib",
+    )
+
+
+def test_lyrics_caches_miss_so_repeated_opens_dont_refetch(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.lrclib_client.fetch_lyrics') as fetch:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_lyrics.return_value = None
+        track_cur = MagicMock()
+        track_cur.fetchone.return_value = {
+            "title": "Song", "artist": "Artist", "album": None,
+        }
+        inst.conn.execute.return_value = track_cur
+        fetch.return_value = None  # LRCLIB miss
+
+        res = client.get('/api/library/tracks/m1/lyrics')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["lrc"] is None
+    # Crucially: cache the miss as a negative-cache row.
+    inst.upsert_lyrics.assert_called_once_with("m1", None, False, "lrclib")
+
+
+def test_lyrics_post_clears_row_on_empty_lrc(
+    client, mock_config, _config_file_present,
+):
+    """A blank manual paste should delete the row entirely so the
+    next GET can re-try LRCLIB instead of being stuck on a blank
+    manual override."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        res = client.post(
+            '/api/library/tracks/m1/lyrics',
+            json={"lrc": "   ", "synced": False},
+        )
+    assert res.status_code == 200
+    # The DELETE goes through conn.execute, not upsert_lyrics.
+    inst.upsert_lyrics.assert_not_called()
+    delete_calls = [
+        call for call in inst.conn.execute.call_args_list
+        if "DELETE FROM lyrics" in (call.args[0] if call.args else "")
+    ]
+    assert len(delete_calls) == 1
+
+
+def test_lyrics_404s_when_track_missing_from_library(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_lyrics.return_value = None
+        track_cur = MagicMock()
+        track_cur.fetchone.return_value = None
+        inst.conn.execute.return_value = track_cur
+
+        res = client.get('/api/library/tracks/missing/lyrics')
+    assert res.status_code == 404
+
+
 def test_wrapped_defaults_year_to_current_utc(
     client, mock_config, _config_file_present,
 ):
