@@ -1722,6 +1722,58 @@ def test_lyrics_negative_cache_stores_null_lrc(db):
     assert row["source"] == "lrclib"
 
 
+def test_get_lyrics_since_filters_by_fetched_at_cursor(db):
+    db.upsert_lyrics("m1", "first", synced=False, source="lrclib")
+    # Stamp the first row with an old cursor so the WHERE filters it
+    # out — relying on wall-clock between upserts would flake in CI.
+    db.conn.execute(
+        "UPDATE lyrics SET fetched_at = '2020-01-01 00:00:00' "
+        "WHERE track_mbid = 'm1'"
+    )
+    db.upsert_lyrics("m2", "second", synced=True, source="lrclib")
+    db.conn.commit()
+    rows = db.get_lyrics_since("2020-06-01 00:00:00")
+    assert [r["track_mbid"] for r in rows] == ["m2"]
+
+
+def test_apply_lyrics_row_inserts_new_and_marks_stale(db):
+    incoming = {
+        "track_mbid": "m1",
+        "lrc": "remote",
+        "synced": True,
+        "source": "lrclib",
+        "fetched_at": "2026-04-01 10:00:00",
+    }
+    assert db.apply_lyrics_row(incoming) == "inserted"
+
+    # Replay the same payload — last-writer-wins blocks the redundant
+    # update so the sync doesn't churn the row's timestamp.
+    assert db.apply_lyrics_row(incoming) == "stale"
+
+    # A satellite's newer manual override wins on equal-or-greater ts.
+    newer = {**incoming, "lrc": "user typed", "source": "manual",
+             "fetched_at": "2026-05-01 12:00:00"}
+    assert db.apply_lyrics_row(newer) == "updated"
+    row = db.get_lyrics("m1")
+    assert row["lrc"] == "user typed"
+    assert row["source"] == "manual"
+
+
+def test_apply_lyrics_row_handles_negative_cache_passthrough(db):
+    """Cached LRCLIB misses (lrc=None) must propagate so satellites
+    don't re-fetch tracks the master already knows have no lyrics."""
+    db.apply_lyrics_row({
+        "track_mbid": "m1",
+        "lrc": None,
+        "synced": False,
+        "source": "lrclib",
+        "fetched_at": "2026-04-01 10:00:00",
+    })
+    row = db.get_lyrics("m1")
+    assert row is not None
+    assert row["lrc"] is None
+
+
 def test_lyrics_upsert_rejects_unknown_source(db):
     import pytest
     with pytest.raises(ValueError):

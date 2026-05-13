@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional
 
 from .catalog_sync import (
     main_run_catalog_pull,
+    main_run_lyrics_pull,
     main_run_playlist_pull,
     main_run_playlist_push,
 )
@@ -75,11 +76,16 @@ def main_run_sync_all(
         _run("pull_catalog", lambda: main_run_catalog_pull(db, config))
         _run("pull_playlists", lambda: main_run_playlist_pull(db, config))
         _run("push_playlists", lambda: main_run_playlist_push(db, config))
+        # Lyrics ride along last — cheap when there's nothing new
+        # (one query on the cursor) and order-independent of the
+        # other deltas.
+        _run("pull_lyrics", lambda: main_run_lyrics_pull(db, config))
     else:
         reason = "master_url not configured"
         _skip("pull_catalog", reason)
         _skip("pull_playlists", reason)
         _skip("push_playlists", reason)
+        _skip("pull_lyrics", reason)
 
     if report_inv:
         _run("report_inventory", lambda: main_run_inventory_report(db, config))

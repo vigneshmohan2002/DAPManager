@@ -5,10 +5,12 @@ import requests
 
 from src.catalog_sync import (
     CatalogClient,
+    LYRICS_SYNC_STATE_KEY,
     PLAYLIST_PUSH_STATE_KEY,
     PLAYLIST_SYNC_STATE_KEY,
     SYNC_STATE_KEY,
     main_run_catalog_pull,
+    main_run_lyrics_pull,
     main_run_playlist_pull,
     main_run_playlist_push,
 )
@@ -298,6 +300,65 @@ def test_main_run_playlist_push_uses_config_master_url(db):
                return_value=_mock_response(payload)) as mock_post:
         main_run_playlist_push(db, config)
     assert mock_post.call_args.args[0] == "http://host.local:5001/api/playlists"
+
+
+def test_pull_lyrics_applies_rows_and_advances_cursor(db):
+    """Stage 13 follow-up sanity check — lyrics sync fans out cached
+    LRCLIB hits + manual overrides + negative-cache misses across the
+    fleet using the same cursor pattern as catalog/playlists."""
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True,
+        "as_of": "2026-05-13 12:00:00",
+        "count": 3,
+        "lyrics": [
+            {
+                "track_mbid": "m1", "lrc": "[00:01.00] hi",
+                "synced": True, "source": "lrclib",
+                "fetched_at": "2026-05-13 11:00:00",
+            },
+            {
+                "track_mbid": "m2", "lrc": "hand-typed",
+                "synced": False, "source": "manual",
+                "fetched_at": "2026-05-13 11:30:00",
+            },
+            # Negative cache row — must propagate so satellites don't
+            # re-hit LRCLIB for known-empty tracks.
+            {
+                "track_mbid": "m3", "lrc": None,
+                "synced": False, "source": "lrclib",
+                "fetched_at": "2026-05-13 11:45:00",
+            },
+        ],
+    }
+    with patch.object(
+        client.session, "get", return_value=_mock_response(payload)
+    ) as mock_get:
+        summary = client.pull_lyrics()
+
+    assert mock_get.call_args.args[0] == "http://host.local:5001/api/lyrics"
+    assert mock_get.call_args.kwargs["params"] == {}
+    assert summary == {
+        "received": 3, "inserted": 3, "updated": 0,
+        "stale": 0, "skipped": 0, "since": None,
+        "as_of": "2026-05-13 12:00:00",
+    }
+    assert db.get_sync_state(LYRICS_SYNC_STATE_KEY) == "2026-05-13 12:00:00"
+    assert db.get_lyrics("m3")["lrc"] is None
+
+
+def test_main_run_lyrics_pull_uses_config_master_url(db):
+    config = {"master_url": "http://host.local:5001/"}
+    payload = {
+        "success": True, "as_of": "2026-05-13 12:00:00",
+        "count": 0, "lyrics": [],
+    }
+    with patch(
+        "src.catalog_sync.requests.Session.get",
+        return_value=_mock_response(payload),
+    ) as mock_get:
+        main_run_lyrics_pull(db, config)
+    assert mock_get.call_args.args[0] == "http://host.local:5001/api/lyrics"
 
 
 def test_catalog_client_sets_bearer_header_when_token_given(db):

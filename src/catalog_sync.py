@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 SYNC_STATE_KEY = "last_catalog_sync"
 PLAYLIST_SYNC_STATE_KEY = "last_playlist_sync"
 PLAYLIST_PUSH_STATE_KEY = "last_playlist_push"
+LYRICS_SYNC_STATE_KEY = "last_lyrics_sync"
 
 
 class CatalogClient:
@@ -209,6 +210,79 @@ class CatalogClient:
         return summary
 
 
+    def pull_lyrics(self) -> dict:
+        """Pull the lyrics delta and apply each row.
+
+        Cheaper than running LRCLIB lookups on every satellite — the
+        master's cached results (hits *and* negative-cache misses)
+        propagate across the fleet, and a user's manual override on
+        one device appears on every other. Tracks should be pulled
+        first; lyrics for unknown mbids still apply (the row's keyed
+        by mbid, not the foreign key).
+        """
+        since = self.db.get_sync_state(LYRICS_SYNC_STATE_KEY)
+        self._report(
+            "Fetching lyrics delta"
+            + (f" since {since}" if since else " (initial)")
+        )
+
+        params = {"since": since} if since else {}
+        resp = self.session.get(
+            f"{self.master_url}/api/lyrics",
+            params=params,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+        if not data.get("success"):
+            raise RuntimeError(
+                f"Master responded with failure: "
+                f"{data.get('message', 'unknown error')}"
+            )
+
+        lyrics = data.get("lyrics") or []
+        as_of = data.get("as_of")
+        inserted = 0
+        updated = 0
+        stale = 0
+        skipped = 0
+        total = len(lyrics)
+        for i, row in enumerate(lyrics, 1):
+            action = self.db.apply_lyrics_row(row)
+            if action == "inserted":
+                inserted += 1
+            elif action == "updated":
+                updated += 1
+            elif action == "stale":
+                stale += 1
+            else:
+                skipped += 1
+            if total and (i == total or i % 100 == 0):
+                self._report(
+                    f"Applying lyrics ({i}/{total})",
+                    current=i,
+                    total=total,
+                )
+
+        if as_of:
+            self.db.set_sync_state(LYRICS_SYNC_STATE_KEY, as_of)
+
+        summary = {
+            "received": total,
+            "inserted": inserted,
+            "updated": updated,
+            "stale": stale,
+            "skipped": skipped,
+            "since": since,
+            "as_of": as_of,
+        }
+        self._report(
+            f"Lyrics pull done: {inserted} new, {updated} updated, "
+            f"{stale} stale, {skipped} skipped"
+        )
+        return summary
+
+
     def push_playlists(self) -> dict:
         """Push locally-edited playlists to the master.
 
@@ -319,3 +393,23 @@ def main_run_playlist_push(
         api_token=(config.get("api_token") or "").strip() or None,
     )
     return client.push_playlists()
+
+
+def main_run_lyrics_pull(
+    db: DatabaseManager,
+    config: dict,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Pull the lyrics delta from the master.
+
+    Skipped at the sync_all level when no master_url is configured;
+    callable here directly for tests or manual sync.
+    """
+    master_url = (config.get("master_url") or "").rstrip("/")
+    client = CatalogClient(
+        db=db,
+        master_url=master_url,
+        progress_callback=progress_callback,
+        api_token=(config.get("api_token") or "").strip() or None,
+    )
+    return client.pull_lyrics()

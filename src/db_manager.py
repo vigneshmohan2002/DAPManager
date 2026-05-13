@@ -1887,6 +1887,75 @@ class DatabaseManager:
         cur.close()
         return dict(row) if row else None
 
+    def get_lyrics_since(self, since_iso: Optional[str] = None) -> List[dict]:
+        """Lyrics rows whose ``fetched_at`` is newer than the cursor.
+
+        Used by the catalog-sync pipeline to ship the master's cached
+        LRCLIB results + manual overrides to satellites. ``fetched_at``
+        doubles as a "last touched" timestamp because the upsert always
+        bumps it on conflict.
+
+        Rows with NULL lrc (negative-cache misses) are included so a
+        satellite doesn't re-fetch LRCLIB for tracks the master already
+        knows have no lyrics — saves outbound bandwidth across the fleet.
+        """
+        sql = (
+            "SELECT track_mbid, lrc, synced, source, fetched_at "
+            "FROM lyrics"
+        )
+        params: tuple = ()
+        if since_iso:
+            sql += " WHERE fetched_at > ?"
+            params = (since_iso,)
+        sql += " ORDER BY fetched_at ASC"
+        cur = self.conn.execute(sql, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        return rows
+
+    def apply_lyrics_row(self, row: dict) -> str:
+        """Upsert a lyrics row pulled from the master.
+
+        Returns 'inserted' / 'updated' / 'stale' / 'skipped'. Last-
+        writer-wins on ``fetched_at`` — a satellite that just typed a
+        manual override shouldn't be clobbered by the master's older
+        cached LRCLIB row. Mirrors the resolution pattern in
+        apply_pushed_playlist_row.
+        """
+        mbid = (row or {}).get("track_mbid")
+        if not mbid:
+            return "skipped"
+        incoming_ts = row.get("fetched_at")
+        if incoming_ts:
+            cur = self.conn.execute(
+                "SELECT fetched_at FROM lyrics WHERE track_mbid = ?",
+                (mbid,),
+            ).fetchone()
+            if cur and cur["fetched_at"] and cur["fetched_at"] >= incoming_ts:
+                return "stale"
+
+        existed = self.conn.execute(
+            "SELECT 1 FROM lyrics WHERE track_mbid = ?", (mbid,)
+        ).fetchone() is not None
+        self.conn.execute(
+            "INSERT INTO lyrics (track_mbid, lrc, synced, source, fetched_at) "
+            "VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP)) "
+            "ON CONFLICT(track_mbid) DO UPDATE SET "
+            "  lrc = excluded.lrc, "
+            "  synced = excluded.synced, "
+            "  source = excluded.source, "
+            "  fetched_at = excluded.fetched_at",
+            (
+                mbid,
+                row.get("lrc"),
+                1 if row.get("synced") else 0,
+                row.get("source") or "lrclib",
+                incoming_ts,
+            ),
+        )
+        self.conn.commit()
+        return "updated" if existed else "inserted"
+
     def upsert_lyrics(
         self,
         track_mbid: str,

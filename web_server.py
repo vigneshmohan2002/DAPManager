@@ -1877,6 +1877,36 @@ def get_catalog():
     })
 
 
+@app.route("/api/lyrics", methods=["GET"])
+def get_lyrics_delta():
+    """Return cached + manual lyrics rows for satellite sync.
+
+    Same shape as /api/catalog and /api/playlists: optional ``since``
+    cursor, response carries ``as_of`` for the next call. The cursor
+    is the lyrics table's ``fetched_at`` column (bumped on every
+    upsert), so manual overrides ride the same delta as cached
+    LRCLIB results.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    since = request.args.get("since") or None
+    try:
+        with DatabaseManager(config.db_path) as db:
+            as_of = db.conn.execute(
+                "SELECT CURRENT_TIMESTAMP AS t"
+            ).fetchone()["t"]
+            rows = db.get_lyrics_since(since)
+    except Exception as e:
+        logger.error(f"Lyrics delta query failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({
+        "success": True,
+        "as_of": as_of,
+        "count": len(rows),
+        "lyrics": rows,
+    })
+
+
 @app.route("/api/playlists", methods=["GET"])
 def get_playlists_delta():
     """Return playlists (with full track membership) for replica sync.
