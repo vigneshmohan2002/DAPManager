@@ -985,21 +985,30 @@ Decisions worth preserving:
   don't carry portrait images consistently). An initial keeps
   the row visually rich without lying about a missing asset.
 
-### 11f — Follow-ups (not yet started)
+### 11f — Follow-ups — _All shipped_
 
-- **AlbumDetail + QueuePanel hearts.** Needs `is_liked` to flow
-  through `fetchAlbumTracks` (or for `Track` to grow the column).
-  Independent of any other Stage 11 work.
-- **Liked Songs satellite → master proxy.** Today a satellite
-  like is clobbered on next sync. Either proxy the POST to the
-  master, or move to last-writer-wins on `updated_at` for
-  `is_liked` specifically. Pairs naturally with Stage 19 (the
-  live multi-device milestone).
-- **Liked Songs sync delete-protect.** The Liked Songs playlist
-  uses a reserved id, so a user who deletes it via the sidebar
-  would currently get it auto-recreated on next like — slightly
-  confusing. Either block delete on system playlists or treat
-  re-creation as restore.
+- **AlbumDetail + QueuePanel hearts** — _Shipped (`16ba721`)_.
+  `list_album_tracks` now selects `is_liked`; the existing
+  `_public_track_row` serializer threads it through. `Track`
+  grows an optional `is_liked?` so the bare type can carry the
+  state when consumers care. PlayerContext exposes
+  `setTrackLikedInQueue` so a toggle from *any* screen keeps the
+  queue UI honest. AlbumDetail also bumps `playlistsVersion` on
+  first like so the sidebar pin appears immediately.
+- **Liked Songs sync delete-protect** — _Shipped (`657fa4b`)_.
+  Server refuses DELETE on the reserved `liked_songs` id with a
+  409 + "unlike tracks to empty it" message; the sidebar
+  context menu disables Rename / Delete / Edit-rules for system
+  playlists so the user doesn't reach for actions they'd get a
+  toast on.
+- **Liked Songs satellite → master proxy** — _Shipped (`31b667a`)_.
+  When master_url is configured, the like endpoint forwards
+  POST/DELETE to the master with the configured bearer token
+  and mirrors the change locally on 200 so the UI doesn't
+  snap-back between optimistic flip and next catalog
+  reconciliation. The catalog-sync invariant ("master is the
+  source of truth for is_liked") stays intact while satellite
+  users get write-through semantics.
 
 ---
 
@@ -1232,16 +1241,21 @@ Decisions worth preserving:
   search clean and avoids "blank line is active for 4 seconds"
   glitches.
 
-### Stage 13 follow-ups (not yet started)
+### Stage 13 follow-ups
 
-- **Lyrics sync across the fleet.** `lyrics` should ride the
-  existing catalog-sync delta so a satellite gets the master's
-  cached LRCLIB lookups + manual overrides without re-fetching.
-  Out of scope for this commit; one column added to the
-  catalog payload.
-- **Karaoke / translation overlays.** Not on the immediate
-  roadmap. LRCLIB supports translations but the v1 panel doesn't
-  surface them.
+- **Lyrics sync across the fleet** — _Shipped (`e8ff14b`)_. A
+  new `get_lyrics_since` / `apply_lyrics_row` pair lets the
+  existing catalog-sync pipeline ship cached LRCLIB hits +
+  manual overrides + negative-cache misses to satellites.
+  `fetched_at` doubles as the cursor (the upsert bumps it on
+  conflict). Last-writer-wins on `fetched_at` means a recent
+  manual paste on a satellite isn't clobbered by the master's
+  older cached LRCLIB row — same resolution pattern as
+  `apply_pushed_playlist_row`. New `pull_lyrics` step runs last
+  in `sync_all` so it never blocks the catalog/playlists pulls
+  it's paired with.
+- **Karaoke / translation overlays** — not yet started. LRCLIB
+  supports translations but the v1 panel doesn't surface them.
 
 ---
 
