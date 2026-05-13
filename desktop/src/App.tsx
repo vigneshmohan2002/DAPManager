@@ -13,6 +13,7 @@ import AuditScreen from "./screens/AuditScreen";
 import DownloadsScreen from "./screens/DownloadsScreen";
 import DuplicatesScreen from "./screens/DuplicatesScreen";
 import FleetScreen from "./screens/FleetScreen";
+import HomeScreen from "./screens/HomeScreen";
 import OrphansScreen from "./screens/OrphansScreen";
 import ReleasesScreen from "./screens/ReleasesScreen";
 import SetupScreen from "./screens/SetupScreen";
@@ -28,7 +29,7 @@ type BackendStatus = "booting" | "ready" | "failed";
 
 function App() {
   const [status, setStatus] = useState<BackendStatus>("booting");
-  const [screen, setScreen] = useState<string>("albums");
+  const [screen, setScreen] = useState<string>("home");
   const [scopedPlaylistId, setScopedPlaylistId] = useState<string | null>(null);
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
   const [openArtist, setOpenArtist] = useState<Artist | null>(null);
@@ -175,6 +176,30 @@ function App() {
     if (openAlbum) {
       return (
         <AlbumDetailScreen album={openAlbum} onBack={() => setOpenAlbum(null)} />
+      );
+    }
+    if (screen === "home") {
+      return (
+        <HomeScreen
+          ready={status === "ready"}
+          onOpenAlbum={setOpenAlbum}
+          onOpenArtist={(a) => {
+            setScreen("artists");
+            setOpenArtist(a);
+            setOpenAlbum(null);
+          }}
+          onOpenPlaylist={(pid) => {
+            setScopedPlaylistId(pid);
+            setScreen("songs");
+            setOpenAlbum(null);
+            setOpenArtist(null);
+          }}
+          onOpenStats={() => {
+            setScreen("stats");
+            setOpenAlbum(null);
+            setOpenArtist(null);
+          }}
+        />
       );
     }
     if (screen === "albums") {

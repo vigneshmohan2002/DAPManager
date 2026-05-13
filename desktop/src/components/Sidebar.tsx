@@ -43,6 +43,13 @@ type Props = {
 
 const STATIC_SECTIONS: SidebarSection[] = [
   {
+    // Home is its own section because it sits above Library — it's the
+    // launch surface for recent/liked/jump-back-in, not another library
+    // browser. Anchored at the very top so users land here on start.
+    title: "",
+    items: [{ id: "home", label: "Home" }],
+  },
+  {
     title: "Library",
     items: [
       { id: "albums", label: "Albums" },
@@ -365,12 +372,18 @@ function Section({
   onContextMenuItem?: (item: SidebarItem, e: React.MouseEvent) => void;
   footer?: React.ReactNode;
 }) {
+  // Sections with an empty title (e.g. the top-level Home anchor) skip
+  // the heading row but keep the same vertical rhythm so the next
+  // section's heading still sits flush below the items above.
+  const showHeading = section.title.length > 0 || section.accessory;
   return (
     <div className="mb-6">
-      <div className="px-3 pb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-        <span>{section.title}</span>
-        {section.accessory ?? null}
-      </div>
+      {showHeading && (
+        <div className="px-3 pb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+          <span>{section.title}</span>
+          {section.accessory ?? null}
+        </div>
+      )}
       <ul className="space-y-0.5">
         {section.items.map((item) => {
           const active = item.id === activeId;

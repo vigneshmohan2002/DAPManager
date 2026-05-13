@@ -1611,11 +1611,17 @@ class DatabaseManager:
         """Reverse-chronological feed of recent play events. Joined to
         tracks for display. Soft-deleted / purged tracks come back with
         NULL title/artist; the UI surfaces those as "(unknown track)".
+
+        ``album_id`` mirrors the same COALESCE used by list_albums so the
+        Home screen's "Jump back in" row can deep-link to the album
+        detail without a second lookup.
         """
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT pe.id, pe.track_mbid AS mbid, pe.played_at, pe.source, "
-            "       t.title, t.artist, t.album "
+            "       t.title, t.artist, t.album, "
+            "       COALESCE(NULLIF(t.release_mbid, ''), "
+            "                t.album || '|' || t.artist) AS album_id "
             "FROM play_events pe "
             "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
             "ORDER BY pe.played_at DESC, pe.id DESC "

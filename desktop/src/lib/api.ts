@@ -379,6 +379,7 @@ export type PlayStatsRecent = {
   title: string | null;
   artist: string | null;
   album: string | null;
+  album_id: string | null;
 };
 
 export type PlayStats = {
@@ -393,6 +394,44 @@ export type FetchPlayStatsOptions = {
   since?: string;
   limit?: number;
 };
+
+export type HomeLikedPreview = {
+  mbid: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  album_id: string | null;
+};
+
+export type HomeJumpBackIn = {
+  album_id: string;
+  title: string;
+  artist: string;
+};
+
+export type HomePayload = {
+  recent: PlayStatsRecent[];
+  top_artists: PlayStatsArtist[];
+  liked: { total: number; preview: HomeLikedPreview[] };
+  jump_back_in: HomeJumpBackIn[];
+};
+
+export async function fetchHome(): Promise<HomePayload> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/home`);
+  if (!r.ok) throw new Error(`home: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "home failed");
+  return {
+    recent: (data.recent ?? []) as PlayStatsRecent[],
+    top_artists: (data.top_artists ?? []) as PlayStatsArtist[],
+    liked: {
+      total: Number(data.liked?.total ?? 0),
+      preview: (data.liked?.preview ?? []) as HomeLikedPreview[],
+    },
+    jump_back_in: (data.jump_back_in ?? []) as HomeJumpBackIn[],
+  };
+}
 
 export async function fetchPlayStats(
   opts: FetchPlayStatsOptions = {},

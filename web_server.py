@@ -1146,6 +1146,82 @@ def api_library_play_stats():
     })
 
 
+@app.route("/api/library/home", methods=["GET"])
+def api_library_home():
+    """Roll-up payload for the desktop Home screen.
+
+    Bundles the four cards (recent plays, top artists in the last 30
+    days, liked-songs preview, jump-back-in albums) into a single round
+    trip so the screen renders without four serial fetches on mount.
+
+    The 30-day window for top artists isn't configurable here — the
+    full Listening screen owns the time-range UI. Home is intentionally
+    a fixed, opinionated view.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    from datetime import datetime, timedelta, timezone
+
+    # Match the existing scrobble timestamp shape: space-separated, UTC.
+    since_30d = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            recent = db.recent_plays(limit=12)
+            top_artists = db.top_artists_since(since_30d, limit=8)
+            liked_total = db.conn.execute(
+                "SELECT COUNT(*) FROM tracks "
+                "WHERE is_liked = 1 AND deleted_at IS NULL"
+            ).fetchone()[0]
+            # First six liked tracks by most-recently-updated, so a row
+            # the user just hearted lands at the front of the preview.
+            liked_rows = db.conn.execute(
+                "SELECT mbid, title, artist, album, "
+                "       COALESCE(NULLIF(release_mbid, ''), "
+                "                album || '|' || artist) AS album_id "
+                "FROM tracks "
+                "WHERE is_liked = 1 AND deleted_at IS NULL "
+                "ORDER BY updated_at DESC LIMIT 6"
+            ).fetchall()
+            liked_preview = [dict(r) for r in liked_rows]
+
+        # "Jump back in" is the last six distinct albums you played
+        # from, derived from `recent` to avoid an extra DB call. Pulling
+        # from recent_plays(12) is enough for almost everyone — the rare
+        # user who plays the same album back-to-back six times in a row
+        # will see fewer than six tiles, which is the right behavior
+        # anyway ("you've been listening to one thing — keep going").
+        jump_back_in: list[dict] = []
+        seen_albums: set[str] = set()
+        for row in recent:
+            aid = row.get("album_id")
+            album = row.get("album")
+            if not aid or not album or aid in seen_albums:
+                continue
+            seen_albums.add(aid)
+            jump_back_in.append({
+                "album_id": aid,
+                "title": album,
+                "artist": row.get("artist") or "",
+            })
+            if len(jump_back_in) >= 6:
+                break
+
+    except Exception as e:
+        logger.exception("api_library_home failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "recent": recent,
+        "top_artists": top_artists,
+        "liked": {"total": liked_total, "preview": liked_preview},
+        "jump_back_in": jump_back_in,
+    })
+
+
 @app.route("/api/stream/<path:mbid>")
 def api_stream_track(mbid: str):
     """Stream a track's audio bytes, resolving source in priority order.

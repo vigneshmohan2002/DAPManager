@@ -2049,3 +2049,50 @@ def test_like_track_404s_when_unknown(client, mock_config, _config_file_present)
 
     assert res.status_code == 404
     assert res.get_json()["success"] is False
+
+
+def test_home_bundles_four_cards_in_one_response(
+    client, mock_config, _config_file_present,
+):
+    """The Home screen does four conceptual fetches in one round trip —
+    confirm the endpoint actually returns each section under its keyed
+    name so the frontend's optional-chaining defaults don't silently
+    swallow a regression."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.recent_plays.return_value = [
+            {
+                "id": 1, "mbid": "m1", "played_at": "2026-05-13 10:00:00",
+                "source": "desktop", "title": "A", "artist": "X",
+                "album": "Al", "album_id": "rmb-1",
+            }
+        ]
+        inst.top_artists_since.return_value = [
+            {"artist": "X", "plays": 5, "distinct_tracks": 3},
+        ]
+        # The liked rollup queries `inst.conn.execute(...).fetchone()` —
+        # patch the chain so the count + preview both resolve. Each call
+        # returns a different shape depending on the SQL, so we use
+        # side_effect to dispatch by call order.
+        count_cursor = MagicMock()
+        count_cursor.fetchone.return_value = (4,)
+        preview_cursor = MagicMock()
+        preview_cursor.fetchall.return_value = [
+            {"mbid": "m1", "title": "A", "artist": "X", "album": "Al",
+             "album_id": "rmb-1"},
+        ]
+        inst.conn.execute.side_effect = [count_cursor, preview_cursor]
+
+        res = client.get('/api/library/home')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is True
+    assert len(body["recent"]) == 1
+    assert len(body["top_artists"]) == 1
+    assert body["liked"]["total"] == 4
+    assert len(body["liked"]["preview"]) == 1
+    # Jump-back-in derived from recent — one unique album_id here.
+    assert body["jump_back_in"] == [
+        {"album_id": "rmb-1", "title": "Al", "artist": "X"}
+    ]
