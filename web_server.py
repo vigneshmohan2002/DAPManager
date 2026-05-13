@@ -302,6 +302,7 @@ def check_setup():
         "save_config",
         "setup_validate_path",
         "setup_detect_public_url",
+        "setup_status",
         "download_mac",
         "healthz",
         "static",
@@ -488,6 +489,16 @@ def save_config():
     except Exception as e:
         logger.exception("save_config failed")
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/setup/status", methods=["GET"])
+def setup_status():
+    """Return whether first-run setup is still needed.
+
+    Whitelisted in check_setup so the Tauri app can check on boot
+    before config.json exists.
+    """
+    return jsonify({"needs_setup": not config_exists()})
 
 
 @app.route("/api/setup/validate-path", methods=["POST"])
