@@ -18,6 +18,8 @@ import {
 
 export type PlayerTrack = Track & { albumId: string | null };
 
+export type RepeatMode = "off" | "all" | "one";
+
 type PlayerState = {
   queue: PlayerTrack[];
   index: number;
@@ -25,6 +27,8 @@ type PlayerState = {
   isPlaying: boolean;
   position: number;
   duration: number;
+  shuffle: boolean;
+  repeat: RepeatMode;
   play: (queue: PlayerTrack[], startIndex?: number) => void;
   toggle: () => void;
   next: () => void;
@@ -33,7 +37,35 @@ type PlayerState = {
   jumpTo: (index: number) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
+  // Append to the end. If the queue is empty, playback starts on the
+  // first appended track.
+  addToQueue: (tracks: PlayerTrack | PlayerTrack[]) => void;
+  // Insert immediately after the currently-playing track. If the queue
+  // is empty, behaves like ``addToQueue`` and starts playback.
+  playNext: (tracks: PlayerTrack | PlayerTrack[]) => void;
+  toggleShuffle: () => void;
+  cycleRepeat: () => void;
 };
+
+const LS_SHUFFLE = "dap.player.shuffle";
+const LS_REPEAT = "dap.player.repeat";
+
+function loadShuffle(): boolean {
+  try {
+    return localStorage.getItem(LS_SHUFFLE) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function loadRepeat(): RepeatMode {
+  try {
+    const v = localStorage.getItem(LS_REPEAT);
+    return v === "all" || v === "one" ? v : "off";
+  } catch {
+    return "off";
+  }
+}
 
 const Ctx = createContext<PlayerState | null>(null);
 
@@ -50,6 +82,30 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [base, setBase] = useState<string>("");
+  const [shuffle, setShuffle] = useState<boolean>(loadShuffle);
+  const [repeat, setRepeat] = useState<RepeatMode>(loadRepeat);
+
+  // Pool of queue indices left to play in the current shuffle cycle.
+  // Held in a ref so picking the next track doesn't itself trigger a
+  // re-render, and so the pool survives between sequential ``next()``
+  // calls inside the same React tick.
+  const shufflePoolRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_SHUFFLE, shuffle ? "1" : "0");
+    } catch {
+      /* private mode etc. — silently fall back to session-only */
+    }
+  }, [shuffle]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_REPEAT, repeat);
+    } catch {
+      /* see above */
+    }
+  }, [repeat]);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,6 +150,60 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     recordPlay(current.mbid);
   }, [current, position, duration]);
 
+  // Returns the queue index that should play next, or null when there's
+  // nothing left and the player should stop. Auto-advance (track ended)
+  // with ``repeat="one"`` returns the current index so the caller knows
+  // to seek-to-0 instead of changing tracks.
+  const pickNextIndex = useCallback(
+    (reason: "user" | "auto"): number | null => {
+      if (queue.length === 0) return null;
+      if (reason === "auto" && repeat === "one") return index;
+
+      if (shuffle) {
+        let pool = shufflePoolRef.current;
+        if (pool.size === 0) {
+          if (repeat === "all") {
+            // Refill but exclude the current index so we don't pick the
+            // same track we just finished as the very next one.
+            pool = new Set(
+              queue.map((_, i) => i).filter((i) => i !== index),
+            );
+            shufflePoolRef.current = pool;
+          } else {
+            return null;
+          }
+        }
+        if (pool.size === 0) return null; // single-track queue + repeat=all
+        const arr = Array.from(pool);
+        const target = arr[Math.floor(Math.random() * arr.length)];
+        pool.delete(target);
+        return target;
+      }
+
+      if (index + 1 < queue.length) return index + 1;
+      if (repeat === "all") return 0;
+      return null;
+    },
+    [queue, shuffle, repeat, index],
+  );
+
+  // Whenever the queue identity or shuffle mode changes, reset the
+  // shuffle pool so new tracks are eligible and removed ones can't be
+  // picked. Excluding the current index keeps the immediate next-pick
+  // from being a same-track repeat.
+  useEffect(() => {
+    if (!shuffle) {
+      shufflePoolRef.current = new Set();
+      return;
+    }
+    shufflePoolRef.current = new Set(
+      queue.map((_, i) => i).filter((i) => i !== index),
+    );
+    // Intentionally omits `index` — we don't want a brand-new pool every
+    // time playback advances, only on identity-changing events.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue, shuffle]);
+
   // Wire <audio> events → state.
   useEffect(() => {
     const audio = audioRef.current;
@@ -104,8 +214,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const onTime = () => setPosition(audio.currentTime);
     const onDur = () => setDuration(audio.duration || 0);
     const onEnded = () => {
-      setIndex((i) => (i + 1 < queue.length ? i + 1 : i));
-      if (index + 1 >= queue.length) setIsPlaying(false);
+      const target = pickNextIndex("auto");
+      if (target === null) {
+        setIsPlaying(false);
+        return;
+      }
+      if (target === index && repeat === "one") {
+        // Same track again — don't change index (the src-load effect
+        // only fires on mbid change), just seek and replay.
+        audio.currentTime = 0;
+        audio.play().catch(() => setIsPlaying(false));
+        return;
+      }
+      setIndex(target);
     };
 
     audio.addEventListener("play", onPlay);
@@ -120,7 +241,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("durationchange", onDur);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [queue.length, index]);
+  }, [queue.length, index, repeat, pickNextIndex]);
 
   const play = useCallback((q: PlayerTrack[], startIndex = 0) => {
     setQueue(q);
@@ -135,8 +256,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [current]);
 
   const next = useCallback(() => {
-    setIndex((i) => Math.min(i + 1, queue.length - 1));
-  }, [queue.length]);
+    const target = pickNextIndex("user");
+    if (target !== null) setIndex(target);
+  }, [pickNextIndex]);
 
   const prev = useCallback(() => {
     const audio = audioRef.current;
@@ -144,8 +266,50 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.currentTime = 0;
       return;
     }
+    // Sequential "previous" even when shuffle is on — matches Spotify's
+    // behavior of letting the user step back through the visible queue
+    // order. A future iteration could maintain a played-history stack
+    // and pop from that instead.
     setIndex((i) => Math.max(0, i - 1));
   }, []);
+
+  const toggleShuffle = useCallback(() => {
+    setShuffle((s) => !s);
+  }, []);
+
+  const cycleRepeat = useCallback(() => {
+    setRepeat((r) => (r === "off" ? "all" : r === "all" ? "one" : "off"));
+  }, []);
+
+  const addToQueue = useCallback(
+    (tracks: PlayerTrack | PlayerTrack[]) => {
+      const items = Array.isArray(tracks) ? tracks : [tracks];
+      if (items.length === 0) return;
+      setQueue((q) => {
+        const startEmpty = q.length === 0;
+        const next = q.concat(items);
+        if (startEmpty) setIndex(0);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const playNext = useCallback(
+    (tracks: PlayerTrack | PlayerTrack[]) => {
+      const items = Array.isArray(tracks) ? tracks : [tracks];
+      if (items.length === 0) return;
+      setQueue((q) => {
+        if (q.length === 0) {
+          setIndex(0);
+          return items;
+        }
+        const insertAt = Math.min(index + 1, q.length);
+        return [...q.slice(0, insertAt), ...items, ...q.slice(insertAt)];
+      });
+    },
+    [index],
+  );
 
   const jumpTo = useCallback(
     (target: number) => {
@@ -231,6 +395,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       isPlaying,
       position,
       duration,
+      shuffle,
+      repeat,
       play,
       toggle,
       next,
@@ -239,6 +405,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       jumpTo,
       removeFromQueue,
       clearQueue,
+      addToQueue,
+      playNext,
+      toggleShuffle,
+      cycleRepeat,
     }),
     [
       queue,
@@ -247,6 +417,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       isPlaying,
       position,
       duration,
+      shuffle,
+      repeat,
       play,
       toggle,
       next,
@@ -255,6 +427,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       jumpTo,
       removeFromQueue,
       clearQueue,
+      addToQueue,
+      playNext,
+      toggleShuffle,
+      cycleRepeat,
     ],
   );
 
