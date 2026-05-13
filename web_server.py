@@ -1161,9 +1161,19 @@ def api_library_play_stats():
             top_tracks = db.top_tracks_since(since, limit=limit)
             top_artists = db.top_artists_since(since, limit=limit)
             recent = db.recent_plays(limit=limit)
+            hours = db.plays_by_hour(since)
     except Exception as e:
         logger.exception("api_library_play_stats failed")
         return jsonify({"success": False, "message": str(e)}), 500
+    # Pad to a full 24-hour array so the heatmap layout is fixed-width
+    # in the UI and hours with zero plays don't get omitted. Backend
+    # decides the shape because the same padding logic would otherwise
+    # live in every client.
+    hour_counts = [0] * 24
+    for row in hours:
+        h = row.get("hour")
+        if isinstance(h, int) and 0 <= h < 24:
+            hour_counts[h] = int(row.get("plays") or 0)
     return jsonify({
         "success": True,
         "total": total,
@@ -1174,6 +1184,7 @@ def api_library_play_stats():
         "top_tracks": top_tracks,
         "top_artists": top_artists,
         "recent": recent,
+        "hour_of_day": hour_counts,
     })
 
 

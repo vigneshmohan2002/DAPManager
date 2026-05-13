@@ -1537,6 +1537,36 @@ class DatabaseManager:
         cursor.close()
         return event_id
 
+    def plays_by_hour(self, since_iso: Optional[str] = None) -> List[dict]:
+        """Per-hour-of-day play counts in the window.
+
+        Returns one row per hour the user has actually played
+        something — hours with zero plays are omitted, and the UI
+        layer pads to a full 24-hour heatmap. Hour is parsed from
+        ``strftime('%H', played_at)`` which treats played_at as UTC;
+        the desktop renders against UTC labels (not local time) so
+        the bins stay stable across DST shifts and traveling users.
+        """
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute(
+                "SELECT CAST(strftime('%H', played_at) AS INTEGER) AS hour, "
+                "       COUNT(*) AS plays "
+                "FROM play_events WHERE played_at >= ? "
+                "GROUP BY hour ORDER BY hour",
+                (since_iso,),
+            )
+        else:
+            cursor.execute(
+                "SELECT CAST(strftime('%H', played_at) AS INTEGER) AS hour, "
+                "       COUNT(*) AS plays "
+                "FROM play_events "
+                "GROUP BY hour ORDER BY hour"
+            )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def listening_time_since(self, since_iso: Optional[str] = None) -> int:
         """Sum of listened_ms in the window.
 

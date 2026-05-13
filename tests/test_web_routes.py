@@ -2122,12 +2122,63 @@ def test_play_stats_includes_listening_time_ms(
         inst.top_tracks_since.return_value = []
         inst.top_artists_since.return_value = []
         inst.recent_plays.return_value = []
+        inst.plays_by_hour.return_value = []
 
         res = client.get('/api/library/play-stats')
 
     assert res.status_code == 200
     body = res.get_json()
     assert body["listening_time_ms"] == 7_200_000
+
+
+def test_play_stats_pads_hour_of_day_to_24_entries(
+    client, mock_config, _config_file_present,
+):
+    """The DB helper only returns hours with plays; the endpoint pads
+    so the heatmap renders fixed-width and missing hours read as 0."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.play_count_since.return_value = 5
+        inst.listening_time_since.return_value = 0
+        inst.top_tracks_since.return_value = []
+        inst.top_artists_since.return_value = []
+        inst.recent_plays.return_value = []
+        inst.plays_by_hour.return_value = [
+            {"hour": 3, "plays": 2},
+            {"hour": 22, "plays": 3},
+        ]
+
+        res = client.get('/api/library/play-stats')
+
+    body = res.get_json()
+    assert len(body["hour_of_day"]) == 24
+    assert body["hour_of_day"][3] == 2
+    assert body["hour_of_day"][22] == 3
+    assert sum(body["hour_of_day"]) == 5
+    # Out-of-range hours from a misbehaving DB row are dropped, not
+    # crashed.
+    assert body["hour_of_day"][0] == 0
+
+
+def test_play_stats_drops_out_of_range_hours_silently(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.play_count_since.return_value = 0
+        inst.listening_time_since.return_value = 0
+        inst.top_tracks_since.return_value = []
+        inst.top_artists_since.return_value = []
+        inst.recent_plays.return_value = []
+        inst.plays_by_hour.return_value = [
+            # 25 isn't a real hour; the endpoint shouldn't IndexError.
+            {"hour": 25, "plays": 99},
+            {"hour": 12, "plays": 1},
+        ]
+        res = client.get('/api/library/play-stats')
+    body = res.get_json()
+    assert body["hour_of_day"][12] == 1
+    assert sum(body["hour_of_day"]) == 1
 
 
 def test_home_bundles_four_cards_in_one_response(

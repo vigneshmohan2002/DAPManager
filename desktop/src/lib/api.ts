@@ -401,6 +401,9 @@ export type PlayStats = {
   top_tracks: PlayStatsTrack[];
   top_artists: PlayStatsArtist[];
   recent: PlayStatsRecent[];
+  // 24-element fixed-width array, index = UTC hour (0..23).
+  // Backend pads zeros so the heatmap can render directly.
+  hour_of_day: number[];
 };
 
 export type FetchPlayStatsOptions = {
@@ -461,12 +464,20 @@ export async function fetchPlayStats(
   if (!r.ok) throw new Error(`play-stats: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "play-stats failed");
+  // Coerce hour_of_day defensively: backend pads to 24 entries, but a
+  // pre-Stage-12b server (or a flaky JSON parse) could deliver fewer.
+  const rawHours = Array.isArray(data.hour_of_day) ? data.hour_of_day : [];
+  const hours = Array.from(
+    { length: 24 },
+    (_, i) => Number(rawHours[i] ?? 0) || 0,
+  );
   return {
     total: Number(data.total ?? 0),
     listening_time_ms: Number(data.listening_time_ms ?? 0),
     top_tracks: (data.top_tracks ?? []) as PlayStatsTrack[],
     top_artists: (data.top_artists ?? []) as PlayStatsArtist[],
     recent: (data.recent ?? []) as PlayStatsRecent[],
+    hour_of_day: hours,
   };
 }
 

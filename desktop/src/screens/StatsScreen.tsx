@@ -100,6 +100,7 @@ export default function StatsScreen({ ready }: Props) {
         ) : (
           <div className="flex flex-col gap-8">
             <SummaryCards stats={stats} />
+            <HourOfDayHeatmap hours={stats.hour_of_day} />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <TopTracksSection tracks={stats.top_tracks} />
               <TopArtistsSection artists={stats.top_artists} />
@@ -178,6 +179,55 @@ function Card({
         </div>
       )}
     </div>
+  );
+}
+
+function HourOfDayHeatmap({ hours }: { hours: number[] }) {
+  const max = hours.reduce((m, n) => (n > m ? n : m), 0);
+  if (max === 0) return null;
+  // Top hour is rendered in copy under the strip so users get a
+  // headline read ("most active around 22:00 UTC") without having to
+  // squint at the cells. UTC is explicit so a future "local time
+  // toggle" can ship without rewriting copy.
+  const topHour = hours.indexOf(max);
+  return (
+    <section>
+      <SectionTitle>Listening by hour</SectionTitle>
+      <div className="rounded-md bg-[var(--color-surface)]/40 border border-[var(--color-border)]/40 p-4">
+        <div className="flex items-end gap-0.5 h-24">
+          {hours.map((n, h) => {
+            const intensity = max === 0 ? 0 : n / max;
+            const heightPct = Math.max(intensity * 100, n > 0 ? 6 : 2);
+            return (
+              <div
+                key={h}
+                className="flex-1 rounded-sm bg-[var(--color-accent)] transition-opacity"
+                style={{
+                  height: `${heightPct}%`,
+                  opacity: n === 0 ? 0.15 : 0.3 + intensity * 0.7,
+                }}
+                title={`${String(h).padStart(2, "0")}:00 UTC — ${n} ${
+                  n === 1 ? "play" : "plays"
+                }`}
+              />
+            );
+          })}
+        </div>
+        <div className="flex justify-between mt-2 text-[10px] text-[var(--color-text-muted)]">
+          <span>00</span>
+          <span>06</span>
+          <span>12</span>
+          <span>18</span>
+          <span>23</span>
+        </div>
+        <div className="mt-2 text-xs text-[var(--color-text-muted)]">
+          Most active around{" "}
+          <span className="text-[var(--color-text)]">
+            {String(topHour).padStart(2, "0")}:00 UTC
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 

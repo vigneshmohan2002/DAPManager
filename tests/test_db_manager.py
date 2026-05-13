@@ -1694,6 +1694,27 @@ def test_listening_time_since_sums_only_non_null_rows(db):
     assert db.listening_time_since() == 150_000
 
 
+def test_plays_by_hour_only_returns_hours_with_plays(db):
+    """The DB helper returns one row per hour with at least one play.
+    The endpoint pads to a full 24-hour array — that padding is
+    deliberately not in the helper so other consumers (Wrapped, etc.)
+    can decide whether they want zeros."""
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="X"))
+    # Insert events at three explicit hours so the test doesn't
+    # depend on wall-clock timing.
+    db.conn.execute(
+        "INSERT INTO play_events (track_mbid, played_at) VALUES "
+        "('m1', '2026-05-13 03:15:00'), "
+        "('m1', '2026-05-13 03:45:00'), "
+        "('m1', '2026-05-13 14:00:00'), "
+        "('m1', '2026-05-13 22:30:00')"
+    )
+    db.conn.commit()
+    rows = db.plays_by_hour()
+    by_hour = {r["hour"]: r["plays"] for r in rows}
+    assert by_hour == {3: 2, 14: 1, 22: 1}
+
+
 def test_listening_time_since_returns_zero_when_window_empty(db):
     """The endpoint coalesces NULL → 0 for SUM, but the helper should
     also collapse to int 0 so callers don't have to check for None."""
