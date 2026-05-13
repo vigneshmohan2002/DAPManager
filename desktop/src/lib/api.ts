@@ -412,6 +412,55 @@ export type FetchPlayStatsOptions = {
   limit?: number;
 };
 
+export type WrappedTopTrack = {
+  mbid: string;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  plays: number;
+};
+
+export type WrappedTopArtist = {
+  artist: string;
+  plays: number;
+  distinct_tracks: number;
+};
+
+export type WrappedTopAlbum = {
+  album_id: string;
+  album: string | null;
+  artist: string | null;
+  plays: number;
+};
+
+export type WrappedPayload = {
+  year: number;
+  total_plays: number;
+  total_listening_time_ms: number;
+  has_legacy_rows: boolean;
+  top_track: WrappedTopTrack | null;
+  top_artist: WrappedTopArtist | null;
+  top_album: WrappedTopAlbum | null;
+  busiest_day: { date: string; plays: number } | null;
+  top_hour: number | null;
+  first_play: { played_at: string; title: string | null; artist: string | null } | null;
+  longest_streak_days: number;
+};
+
+export async function fetchWrapped(year?: number): Promise<WrappedPayload> {
+  const url = await backendUrl();
+  const params = new URLSearchParams();
+  if (typeof year === "number") params.set("year", String(year));
+  const qs = params.toString();
+  const r = await fetch(
+    `${url}/api/library/wrapped${qs ? `?${qs}` : ""}`,
+  );
+  if (!r.ok) throw new Error(`wrapped: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "wrapped failed");
+  return data as WrappedPayload;
+}
+
 export type HomeLikedPreview = {
   mbid: string;
   title: string;

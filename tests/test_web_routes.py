@@ -2181,6 +2181,45 @@ def test_play_stats_drops_out_of_range_hours_silently(
     assert sum(body["hour_of_day"]) == 1
 
 
+def test_wrapped_defaults_year_to_current_utc(
+    client, mock_config, _config_file_present,
+):
+    from datetime import datetime, timezone
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.wrapped_summary.return_value = {
+            "year": datetime.now(timezone.utc).year,
+            "total_plays": 0, "total_listening_time_ms": 0,
+            "has_legacy_rows": False, "top_track": None, "top_artist": None,
+            "top_album": None, "busiest_day": None, "top_hour": None,
+            "first_play": None, "longest_streak_days": 0,
+        }
+
+        res = client.get('/api/library/wrapped')
+
+    assert res.status_code == 200
+    inst.wrapped_summary.assert_called_once_with(datetime.now(timezone.utc).year)
+
+
+def test_wrapped_rejects_non_integer_year(
+    client, mock_config, _config_file_present,
+):
+    res = client.get('/api/library/wrapped?year=last')
+    assert res.status_code == 400
+
+
+def test_wrapped_propagates_db_value_error_as_400(
+    client, mock_config, _config_file_present,
+):
+    """The DB helper raises ValueError on an unreasonable year (e.g.
+    year=99) — the endpoint should surface that as a 400, not a 500."""
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.wrapped_summary.side_effect = ValueError("unreasonable year: 99")
+        res = client.get('/api/library/wrapped?year=99')
+    assert res.status_code == 400
+
+
 def test_home_bundles_four_cards_in_one_response(
     client, mock_config, _config_file_present,
 ):

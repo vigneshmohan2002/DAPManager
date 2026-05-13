@@ -22,6 +22,7 @@ import SongsScreen from "./screens/SongsScreen";
 import StatsScreen from "./screens/StatsScreen";
 import SuggestScreen from "./screens/SuggestScreen";
 import SyncScreen from "./screens/SyncScreen";
+import WrappedScreen from "./screens/WrappedScreen";
 import { fetchSetupStatus, waitForBackend, type Album, type Artist } from "./lib/api";
 import { PlayerProvider } from "./player/PlayerContext";
 
@@ -252,7 +253,20 @@ function App() {
       return <FleetScreen ready={status === "ready"} />;
     }
     if (screen === "stats") {
-      return <StatsScreen ready={status === "ready"} />;
+      return (
+        <StatsScreen
+          ready={status === "ready"}
+          onOpenWrapped={() => setScreen("wrapped")}
+        />
+      );
+    }
+    if (screen === "wrapped") {
+      return (
+        <WrappedScreen
+          ready={status === "ready"}
+          onBack={() => setScreen("stats")}
+        />
+      );
     }
     if (screen === "orphans") {
       return (

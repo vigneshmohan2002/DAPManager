@@ -11,6 +11,7 @@ import { relativeTime } from "../lib/time";
 
 type Props = {
   ready: boolean;
+  onOpenWrapped: () => void;
 };
 
 type WindowKey = "30d" | "90d" | "all";
@@ -32,7 +33,7 @@ function cutoffFor(window: WindowKey): string | undefined {
   return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
 }
 
-export default function StatsScreen({ ready }: Props) {
+export default function StatsScreen({ ready, onOpenWrapped }: Props) {
   const [windowKey, setWindowKey] = useState<WindowKey>("30d");
   const [stats, setStats] = useState<PlayStats | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +90,13 @@ export default function StatsScreen({ ready }: Props) {
             </button>
           );
         })}
+        <button
+          onClick={onOpenWrapped}
+          className="ml-auto px-3 py-1 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)]/60 border border-[var(--color-border)]/40"
+          title="Year-in-review recap"
+        >
+          ✨ Wrapped {new Date().getUTCFullYear()}
+        </button>
       </div>
       <div className="flex-1 overflow-y-auto px-8 py-6">
         {error ? (

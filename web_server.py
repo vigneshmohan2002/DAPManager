@@ -1188,6 +1188,44 @@ def api_library_play_stats():
     })
 
 
+@app.route("/api/library/wrapped", methods=["GET"])
+def api_library_wrapped():
+    """Year-in-review summary for the Wrapped screen.
+
+    Query params:
+      year: integer (defaults to the current UTC year).
+
+    Returns a single roll-up payload covering total plays + listening
+    time, top track/artist/album, busiest day, top hour of day, first
+    play, and longest consecutive-day streak.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    from datetime import datetime, timezone
+
+    year_raw = request.args.get("year")
+    if year_raw is None or year_raw == "":
+        year = datetime.now(timezone.utc).year
+    else:
+        try:
+            year = int(year_raw)
+        except ValueError:
+            return jsonify({
+                "success": False,
+                "message": "year must be an integer",
+            }), 400
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            summary = db.wrapped_summary(year)
+    except ValueError as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+    except Exception as e:
+        logger.exception("api_library_wrapped failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({"success": True, **summary})
+
+
 @app.route("/api/library/home", methods=["GET"])
 def api_library_home():
     """Roll-up payload for the desktop Home screen.

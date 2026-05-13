@@ -1694,6 +1694,92 @@ def test_listening_time_since_sums_only_non_null_rows(db):
     assert db.listening_time_since() == 150_000
 
 
+def test_wrapped_summary_empty_year_returns_zeros(db):
+    """A year with no events shouldn't return None aggregates — the UI
+    branches on `total_plays == 0`, not on each card being null."""
+    out = db.wrapped_summary(2099)
+    assert out["year"] == 2099
+    assert out["total_plays"] == 0
+    assert out["total_listening_time_ms"] == 0
+    assert out["top_track"] is None
+    assert out["top_artist"] is None
+    assert out["top_album"] is None
+    assert out["busiest_day"] is None
+    assert out["top_hour"] is None
+    assert out["first_play"] is None
+    assert out["longest_streak_days"] == 0
+    assert out["has_legacy_rows"] is False
+
+
+def test_wrapped_summary_picks_top_track_artist_album_and_busiest(db):
+    db.add_or_update_track(Track(
+        mbid="m1", title="A", artist="X", album="Al",
+        release_mbid="rmb-1", local_path="/m/a"))
+    db.add_or_update_track(Track(
+        mbid="m2", title="B", artist="X", album="Al",
+        release_mbid="rmb-1", local_path="/m/b"))
+    db.add_or_update_track(Track(
+        mbid="m3", title="C", artist="Y", album="Other",
+        release_mbid="rmb-2", local_path="/m/c"))
+    # Two plays of m1 + one of m2 + one of m3 — top track is m1, top
+    # artist is X (3 plays), top album is "Al" (3 plays from rmb-1).
+    db.conn.execute(
+        "INSERT INTO play_events (track_mbid, played_at, listened_ms) VALUES "
+        "('m1', '2026-03-01 10:00:00', 60000), "
+        "('m1', '2026-03-01 11:00:00', 60000), "
+        "('m2', '2026-03-02 09:00:00', 60000), "
+        "('m3', '2026-04-15 22:00:00', 120000)"
+    )
+    db.conn.commit()
+    out = db.wrapped_summary(2026)
+    assert out["total_plays"] == 4
+    assert out["total_listening_time_ms"] == 300_000
+    assert out["top_track"]["mbid"] == "m1"
+    assert out["top_track"]["plays"] == 2
+    assert out["top_artist"]["artist"] == "X"
+    assert out["top_artist"]["plays"] == 3
+    assert out["top_album"]["album_id"] == "rmb-1"
+    assert out["top_album"]["plays"] == 3
+    assert out["busiest_day"]["date"] == "2026-03-01"
+    assert out["busiest_day"]["plays"] == 2
+
+
+def test_wrapped_summary_longest_streak_picks_longest_run(db):
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="X"))
+    # Three-day run (Mar 1-3), gap, two-day run (Mar 6-7). Longest = 3.
+    db.conn.execute(
+        "INSERT INTO play_events (track_mbid, played_at) VALUES "
+        "('m1', '2026-03-01 10:00:00'), "
+        "('m1', '2026-03-02 10:00:00'), "
+        "('m1', '2026-03-03 10:00:00'), "
+        "('m1', '2026-03-06 10:00:00'), "
+        "('m1', '2026-03-07 10:00:00')"
+    )
+    db.conn.commit()
+    out = db.wrapped_summary(2026)
+    assert out["longest_streak_days"] == 3
+
+
+def test_wrapped_summary_flags_legacy_listening_rows(db):
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="X"))
+    db.conn.execute(
+        "INSERT INTO play_events (track_mbid, played_at, listened_ms) VALUES "
+        "('m1', '2026-03-01 10:00:00', NULL), "
+        "('m1', '2026-03-02 10:00:00', 60000)"
+    )
+    db.conn.commit()
+    out = db.wrapped_summary(2026)
+    assert out["has_legacy_rows"] is True
+    # Only the non-NULL row contributes to the headline number.
+    assert out["total_listening_time_ms"] == 60_000
+
+
+def test_wrapped_summary_rejects_unreasonable_year(db):
+    import pytest
+    with pytest.raises(ValueError):
+        db.wrapped_summary(99)
+
+
 def test_plays_by_hour_only_returns_hours_with_plays(db):
     """The DB helper returns one row per hour with at least one play.
     The endpoint pads to a full 24-hour array — that padding is
