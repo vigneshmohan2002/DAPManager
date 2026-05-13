@@ -735,6 +735,274 @@ Decisions worth preserving:
 
 ---
 
+## Stage 11 — "For You" foundation
+
+The basic listening verbs every modern music app takes for granted
+but DAPManager didn't have: a "heart" / liked column, shuffle,
+repeat, append-to-queue, and a launch surface that surfaces what
+the user listened to recently and what they like. Ranked first
+on the Stage 11+ Spotify-parity roadmap by value/work ratio —
+mostly wiring, one DB column, one new screen, one new endpoint.
+
+Ships in five small, independently revertable commits rather than
+one big pile, matching the user's small-chunks preference.
+
+### 11a — Liked Songs primitive — _Shipped (`ce65813`)_
+
+**Problem.** No "liked" / favourite / heart primitive existed at
+all. Users had no way to flag tracks they want easy access to and
+no foundation for a downstream Daily-Mix-style recommender that
+needs a positive-signal set to seed from.
+
+**Surface.**
+- New `tracks.is_liked` column (NOT NULL, default 0) + partial
+  index `idx_tracks_is_liked WHERE is_liked = 1`.
+- `POST /api/library/tracks/<mbid>/like` and `DELETE …/like`.
+  404 (not 200/success:false) when the mbid isn't in the library
+  so the desktop client can branch on status code without parsing
+  message strings — same convention as Stage 10a's retry-download.
+- An auto-created `Liked Songs` smart playlist with a reserved
+  deterministic id `liked_songs` (not a UUID). Created on first
+  like, idempotent on subsequent likes, never auto-deleted on
+  unlike. The smart-playlist rule schema gains an `is_liked`
+  boolean field + value coercion that accepts Python bool, 0/1,
+  and "true"/"false" so JSON over the wire round-trips.
+
+**DB.** One column, one partial index, one playlist row. The index
+sits in `_migrate_schema` (not `_create_tables`'s indexes list)
+because on legacy DBs the column doesn't exist when
+`_create_tables` runs — partial index creation would otherwise
+fail with "no such column".
+
+**Reuse.** `is_liked` rides the existing catalog-sync delta (it's
+a user preference, not a device-local file fact). `apply_catalog_row`'s
+on-conflict overwrite matches the existing master-authoritative
+model — v1 ships without satellite→master like proxying, so likes
+set on a satellite are clobbered by the master's view on next
+sync. Acceptable for v1; documented here for future revisit.
+
+**Effort.** ~3 hours: column + migration, two endpoints, one
+auto-playlist seed, rule-schema extension, web-route + db tests.
+
+**Depends on** nothing.
+
+Decisions worth preserving:
+
+- **Reserved id `liked_songs`, not a UUID.** Both master and
+  satellite converge on the same row after a sync tick instead
+  of each minting their own UUID. The fixed string is also how
+  the sidebar's "pin to top" logic identifies the row without a
+  separate `is_system` flag.
+- **404 not 200/success:false on unknown mbid.** Same convention
+  as Stage 10a. Status-code branching keeps the client small and
+  lets the row drop from the table without a try/catch.
+- **Unlike doesn't auto-delete the playlist.** Otherwise a user
+  who likes-then-unlikes immediately would see the sidebar pin
+  flicker in and out. The user can delete the playlist manually
+  if they really want.
+- **`is_liked` is master-authoritative via catalog sync.** Picking
+  per-row conflict resolution by `updated_at` instead would be
+  the right long-term move (a satellite like would win until the
+  master also touched the row), but it requires every catalog
+  column to opt into the comparison and isn't gated on Stage 11.
+
+### 11b — PlayerContext queue ergonomics — _Shipped (`2acdba6`)_
+
+**Problem.** Shuffle, repeat, append-to-queue, and play-next —
+the four primitives every music app exposes — were all missing.
+Users had to replace the entire queue to add a track to it, and
+playback always advanced sequentially with no wrap-around.
+
+**Surface.**
+- `shuffle: boolean` and `repeat: "off" | "all" | "one"` on the
+  PlayerContext, both persisted to `localStorage` keys
+  `dap.player.shuffle` / `dap.player.repeat` so they survive
+  restarts (instead of silently resetting to off every launch).
+- `playNext(tracks)` inserts after the current index;
+  `addToQueue(tracks)` appends. Both start playback from the new
+  tracks when the queue is empty so the very first context-menu
+  click works without a separate "play" path.
+- A single `pickNextIndex(reason)` helper routes auto-advance and
+  user-driven `next()` through the same shuffle+repeat logic.
+  Shuffle uses a without-replacement pool kept in a ref — every
+  queue track plays once before repeats can occur.
+
+**Effort.** ~2 hours: one context module change, no new endpoints
+or types, no DB work. The biggest risk was the shuffle pool's
+interaction with queue mutations; refilling the pool on identity-
+changing events (queue + shuffle deps) keeps it sound.
+
+**Depends on** nothing.
+
+Decisions worth preserving:
+
+- **`repeat=one` on track end seeks to 0 instead of changing
+  index.** The src-load effect only fires on mbid change, so
+  changing the index to itself wouldn't reload the audio. Seeking
+  and re-playing is also gapless since the buffer isn't dropped.
+- **Refill the shuffle pool excluding the current index when
+  `repeat=all` runs out.** Otherwise the very-next-track after
+  exhausting the pool can be the same track that just ended,
+  which feels like the shuffle algorithm is broken.
+- **Prev stays sequential even when shuffle is on.** Matches the
+  visible-queue affordance — a played-history stack to pop from
+  would feel better but is a future improvement, not v1.
+
+### 11c — Heart icon, shuffle/repeat buttons, queue actions — _Shipped (`a237063`)_
+
+**Problem.** The Stage 11a + 11b primitives needed user-visible
+surfaces. Songs rows had no heart icon, the player bar had no
+shuffle/repeat buttons, and the context menu had no Play-next /
+Add-to-queue items.
+
+**Surface.**
+- Songs rows grow a heart column right after the playing-indicator
+  column. Click toggles `is_liked` optimistically; on server error,
+  the local flip rolls back and a toast surfaces the failure.
+- The first like in a fresh library bumps `playlistsVersion` so
+  the sidebar re-fetches and the auto-created Liked Songs pin
+  appears without a manual reload.
+- PlayerBar grows two new buttons: shuffle (⇄) and repeat (↻ with
+  a small "1" superscript when in `one` mode). Both light up in
+  accent color when active and have `aria-pressed` for screen
+  readers.
+- Songs row context menu grows Play next / Add to queue / Add
+  to Liked Songs (or Remove from Liked Songs). All three are
+  disabled when the row's availability is `unavailable` — adding
+  a catalog-only row to the queue would just stall on next().
+
+**Reuse.** `LibraryTrack` gets a new `is_liked: boolean` field,
+flowing from the API response. `setTrackLiked` in `lib/api.ts`
+returns a typed `{success, liked, message}` shape that matches
+Stage 10a's retry-download pattern. No changes to PlayerContext.
+
+**Effort.** ~3 hours. Mostly mechanical wiring.
+
+**Depends on** Stages 11a + 11b shipped first.
+
+Decisions worth preserving:
+
+- **Heart is its own column, not inline in the title cell.**
+  Inline would mean the click target overlaps the row's play-on-
+  click handler, and `stopPropagation` doesn't always feel right
+  to users who expect "click anywhere in the row to play". A
+  dedicated w-9 cell keeps both intents legible.
+- **Optimistic flip with server-side rollback on failure.** The
+  alternative — wait for the server, then flip — costs a noticeable
+  beat between click and visual feedback. The rollback path uses
+  the captured pre-click `track.is_liked` value, not the current
+  state, so a rapid double-click can't tear.
+- **Album Detail + Queue panel hearts deferred.** Those screens
+  use the bare `Track` type via `fetchAlbumTracks` rather than
+  `LibraryTrack` from the library-tracks endpoint. Threading
+  `is_liked` through requires either widening Track or extending
+  the endpoint — out of scope for this commit; see Stage 11f
+  for the follow-up.
+
+### 11d — Sidebar pin + real Liked count — _Shipped (`feb35ea`)_
+
+**Problem.** Two small Spotify-discordant defaults: the Liked
+Songs playlist sorted alphabetically with user playlists (instead
+of being pinned), and it showed "0 tracks" right after liking a
+batch (because `list_playlists_with_counts` joins on
+`playlist_tracks` and smart playlists have no manual membership).
+
+**Surface.**
+- Backend: a one-line specialization in `list_playlists_with_counts`
+  runs an extra `COUNT(*) FROM tracks WHERE is_liked = 1` against
+  the partial index for the Liked Songs row only. Other smart
+  playlists still report 0 (the documented N-query trade-off).
+- Frontend: the sidebar sorts `liked_songs` to the front of the
+  Playlists section regardless of name, and prefixes its label
+  with `♥ ` so it's identifiable even if a user names a regular
+  playlist "Liked".
+
+**Effort.** ~30 minutes. Two surgical edits.
+
+**Depends on** Stage 11a shipped first.
+
+### 11e — Home screen + landing card bundle — _Shipped (`dd307c7`)_
+
+**Problem.** No top-level "landing" screen surfaced what the user
+actually engaged with — recents, top artists, liked songs. Albums
+was the default screen, which is the *catalog*, not the user's
+*activity*. A first-launch user with no plays sees a wall of
+covers; a returning user has to scroll the sidebar to find what
+they just played.
+
+**Surface.**
+- New `/api/library/home` bundles four cards in one round trip:
+  - `recent`: 12 reverse-chronological play events.
+  - `top_artists`: top 8 artists in the last 30 days.
+  - `liked`: `{ total, preview: first 6 most-recently-hearted }`.
+  - `jump_back_in`: distinct albums derived client-side from the
+    same `recent` feed, deep-linking to AlbumDetail.
+- New `HomeScreen.tsx` with four sections rendered as Spotify-like
+  rows / grids. Section actions ("See all") route into the existing
+  Listening screen or the Liked Songs scoped Songs screen.
+- Sidebar grows a heading-less "Home" anchor section at the very
+  top. The default `screen` state moves from `"albums"` to
+  `"home"` so fresh launches land here.
+- `recent_plays` (existing helper) gains `album_id` (the same
+  COALESCE shape `list_albums` uses) so the Home tile can deep-
+  link without a second lookup.
+
+**API.** `/api/library/home` is intentionally an opinionated fixed
+view — the 30-day window for top artists isn't configurable here,
+the Listening screen owns that UI. Coalescing the four cards into
+one endpoint keeps screen mount fast and avoids four serial
+fetches.
+
+**DB.** No new tables or columns. `recent_plays` gets two extra
+columns in its SELECT.
+
+**Reuse.** Section / card layout doesn't introduce a new design
+system — same `bg-[var(--color-surface)]` / muted-text patterns
+the rest of the app uses.
+
+**Effort.** ~4 hours: one endpoint, one screen, sidebar wiring,
+default-screen change, web-route test.
+
+**Depends on** Stages 11a + 11c for the Liked Songs surface, but
+the empty-state copy ("Tap the ♡ on any track to add it here.")
+makes Home render usefully even when nothing's liked.
+
+Decisions worth preserving:
+
+- **Jump-back-in derived client-side from `recent`, not a separate
+  DB query.** The rare user who plays the same album six times in
+  a row will see fewer than six tiles, which is the right behavior
+  anyway ("you've been listening to one thing — keep going"). A
+  dedicated query would be ~3× the data movement for the same
+  perceptual result.
+- **Heading-less Home section in the sidebar.** Wrapping it in
+  a "Home" heading would visually weight it the same as Library
+  and Manage, which it isn't — Home is the singular launch
+  surface above everything else. `showHeading` skips the heading
+  row when both `title` and `accessory` are empty.
+- **Artist tiles use an initial in a circle, not an image.**
+  DAPManager has no artist-image source today (Wikipedia bios
+  don't carry portrait images consistently). An initial keeps
+  the row visually rich without lying about a missing asset.
+
+### 11f — Follow-ups (not yet started)
+
+- **AlbumDetail + QueuePanel hearts.** Needs `is_liked` to flow
+  through `fetchAlbumTracks` (or for `Track` to grow the column).
+  Independent of any other Stage 11 work.
+- **Liked Songs satellite → master proxy.** Today a satellite
+  like is clobbered on next sync. Either proxy the POST to the
+  master, or move to last-writer-wins on `updated_at` for
+  `is_liked` specifically. Pairs naturally with Stage 19 (the
+  live multi-device milestone).
+- **Liked Songs sync delete-protect.** The Liked Songs playlist
+  uses a reserved id, so a user who deletes it via the sidebar
+  would currently get it auto-recreated on next like — slightly
+  confusing. Either block delete on system playlists or treat
+  re-creation as restore.
+
+---
+
 ## Keeping this doc current
 
 Update the "Shipped stages" table as each stage lands (same cadence
