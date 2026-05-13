@@ -1003,6 +1003,248 @@ Decisions worth preserving:
 
 ---
 
+## Stage 12 — Listening intelligence
+
+The Stats screen knew *that* you played track X but not how *long*
+you played it, so total listening time was unavailable and
+hour-of-day patterns were missing. A fresh install also had no
+Wrapped-shaped recap of the year. Stage 12 lays the foundations
+for both, in three independently revertable commits.
+
+The scrobble bridges (Last.fm out / ListenBrainz import) are
+scoped to Stage 12d-e but deferred — Stages 12a-c stand on their
+own and value/work-wise the lyrics work (Stage 13) ranked higher.
+
+### 12a — Per-event listened_ms + listening-time card — _Shipped (`b5c4b09`)_
+
+**Problem.** ``play_events`` tracked *that* a track was played but
+not how long the user actually listened. So "listening time" stats
+were impossible and a Spotify-Wrapped-shaped recap had nothing to
+build on.
+
+**Surface.**
+- `play_events.listened_ms` — nullable. Legacy rows stay NULL and
+  are excluded from listening-time aggregations rather than
+  counted as zero.
+- `PlayerContext` accumulates wall-clock ms the audio was unpaused
+  on the current load (a `useEffect` keyed on `isPlaying` captures
+  the elapsed span on cleanup). Forward seeks don't inflate;
+  pauses don't count.
+- `recordPlay` now threads a third `listenedMs` arg through the
+  POST body. Server-side cap at 30 minutes defends against
+  pause-spam / clock-skew / hostile clients. A future tighter cap
+  of `min(track_duration_ms * 1.5)` is gated on `tracks` growing
+  a duration column.
+- `api_library_play_stats` returns `listening_time_ms`.
+  `StatsScreen` renders a three-card summary row — Plays,
+  Listening time, Top artist — above the existing breakdown.
+
+**DB.** One column, one migration. The `play_events` CREATE TABLE
+gets the column too so fresh DBs match the migrated shape.
+
+**Effort.** ~2 hours.
+
+**Depends on** nothing.
+
+Decisions worth preserving:
+
+- **`useEffect` on `isPlaying` accumulates via cleanup, not on
+  every `timeupdate`.** Two stable wall-clock reads per pause/play
+  transition are simpler and more accurate than summing deltas at
+  20Hz, and forward seeks transparently don't inflate (they don't
+  flip `isPlaying`).
+- **30-minute hard cap server-side.** Cheap defense against the
+  trivial "claim a 6-hour listen for a 3-minute track" attack.
+  Trading absolute tightness for ship-now simplicity — to be
+  revisited once `tracks` knows duration.
+- **Legacy NULL rows excluded, not zeroed.** Otherwise the Stats
+  "Listening time" card would underreport real activity for users
+  who already had hundreds of plays before this stage shipped. A
+  separate `has_legacy_rows` count on the Wrapped payload drives
+  a small caveat string in the UI.
+
+### 12b — Hour-of-day heatmap — _Shipped (`650b5f7`)_
+
+**Problem.** The Listening screen had no view of *when* the user
+listens — morning, evening, late night. A heatmap is a one-glance
+read users react to immediately.
+
+**Surface.**
+- `plays_by_hour(since_iso)` aggregator using
+  `CAST(strftime('%H', played_at) AS INTEGER)`. Returns only hours
+  with at least one play — the endpoint pads to a full 24-entry
+  array so the heatmap renders without per-cell defaults.
+- A sparkline-style bar strip on `StatsScreen`. Intensity-scaled
+  opacity makes the top hour pop without a separate legend; a
+  single-line caption ("Most active around 22:00 UTC") gives the
+  headline read.
+
+**Effort.** ~1 hour.
+
+**Depends on** Stage 12a only insofar as the test data benefits
+from real `listened_ms` values; the heatmap itself counts plays,
+not duration.
+
+Decisions worth preserving:
+
+- **UTC bins, not local time.** Users who travel and users whose
+  local clock shifts on DST would see bin assignments jitter
+  otherwise. Future "local time toggle" can ship without rewriting
+  the copy.
+- **Padding lives in the endpoint, not the helper.** Wrapped (and
+  future consumers) may want sparse rows; only the heatmap needs
+  fixed-width zeroes.
+
+### 12c — Wrapped year-in-review — _Shipped (`0759ed9`)_
+
+**Problem.** No year-end recap. Spotify Wrapped is a flagship
+moment that distills 12 months of listening into shareable cards;
+nothing equivalent existed and the data was already there.
+
+**Surface.**
+- A new `wrapped_summary(year)` DB method bundles nine
+  aggregations in one method (not nine helpers, since they all
+  share the year window):
+  - total plays, total listening_ms, `has_legacy_rows` flag
+  - top track / artist / album (each one row, joined for display)
+  - busiest day, top hour, first play, longest consecutive-day
+    streak
+- `GET /api/library/wrapped?year=YYYY` (defaults to current UTC
+  year). ValueError on an unreasonable year flows through to a
+  400 rather than a 500.
+- `WrappedScreen.tsx` with a hero block, three top-X cards, four
+  fact cards, and a year stepper. Linked from the Listening
+  screen via a "✨ Wrapped 2026" button in the time-window strip.
+
+**DB.** No new tables or columns. Existing `play_events`,
+`tracks`, and a single SQL CTE for the streak.
+
+**Reuse.** Hero + Card components are local — they don't earn
+their own files yet. Date formatting helpers mirror the relative-
+time helper used on the Stats screen.
+
+**Effort.** ~3 hours: one DB method, one endpoint, one screen,
+nine focused tests.
+
+**Depends on** Stage 12a for `listening_time_ms` to be non-zero,
+otherwise the hero block reads zero.
+
+Decisions worth preserving:
+
+- **Longest streak via gaps-and-islands SQL.** Distinct days minus
+  their `ROW_NUMBER() OVER (ORDER BY date)` yields a constant
+  per consecutive run; group by that constant and pick the max.
+  SQLite 3.25+ window functions are required — they've shipped
+  with Python's bundled `sqlite3` for years, so no compatibility
+  gate.
+- **Single-method aggregation, not nine helpers.** Wrapped is a
+  fixed view; per-card endpoints would mean nine round trips for
+  one screen and identical year-window plumbing everywhere. The
+  cost is a fatter DB method, paid once.
+- **`has_legacy_rows` flag plumbed through the API.** The same
+  number quoted in the Stats screen caveat appears in the
+  Wrapped screen footnote — both surfaces speak the same truth
+  so users don't bounce between conflicting headlines.
+
+### 12d/12e — Scrobble bridges (deferred)
+
+The Last.fm outbound bridge and ListenBrainz history import were
+scoped to Stage 12 but deferred behind Stage 13 lyrics on
+value/work grounds: lyrics has universal user value and a single
+no-auth API; the scrobble bridges require per-user credentials
+and have value gated on whether the user already maintains an
+external scrobble history. Picked up later in the roadmap.
+
+---
+
+## Stage 13 — Lyrics via LRCLIB
+
+**Problem.** No lyrics support existed anywhere in the codebase.
+For a music app, this is the single most missed Spotify-shaped
+feature once playback works. LRCLIB is a no-auth, music-app-
+focused lyrics API — well-suited to a one-evening integration.
+
+**Surface.**
+- New `lyrics` table keyed by `track_mbid`. Cached LRCLIB results
+  *and* user manual paste overrides share the same row, with a
+  `source` column disambiguating them. `lrc IS NULL` rows are
+  cached misses — distinguishable from "never asked" — so the
+  pane doesn't refetch on every reopen.
+- `GET /api/library/tracks/<mbid>/lyrics` returns the cached row
+  when fresh (30-day TTL for `lrclib` rows, infinite for manual),
+  otherwise synchronously fetches from LRCLIB and persists.
+  Transient network errors fall back to whatever stale cached
+  row exists (with a `stale=true` flag) rather than failing hard.
+- `POST` upserts a manual override. An empty body clears the row
+  entirely so the next GET can re-try LRCLIB.
+- `src/lrclib_client.py` is a 40-line `urllib` wrapper around
+  `/api/get` — no auth, no rate limiter (LRCLIB explicitly
+  invites music-app traffic), 8-second timeout so a failing
+  fetch doesn't wedge the pane.
+- `LyricsPane.tsx` slides in to the right of the queue panel.
+  Synced LRC is parsed into ascending-time lines; the active
+  line is picked by binary search on every `position` tick and
+  auto-scrolled into view via `querySelector` against
+  `data-lyric-index` (so the row JSX stays plain — no per-line
+  refs).
+- Clicking a synced line seeks playback to its time tag. Plain
+  (unsynced) lyrics render as a paragraph; the seek affordance
+  is hidden.
+
+**API.** Two endpoints sharing one route via method dispatch
+(`GET`/`POST`).
+
+**DB.** One table — no other changes.
+
+**Reuse.** `MusicBrainzClient` was the model for the
+HTTP-cache-and-fetch shape, but LRCLIB has no rate limit so the
+client is even simpler. PlayerContext's existing `currentTime`
+stream drives line highlighting.
+
+**Effort.** ~3 hours: one client module, one schema migration,
+two DB helpers, two routes (one method-dispatched), one panel,
+nine tests.
+
+**Depends on** nothing structural. Sits alongside the existing
+QueuePanel.
+
+Decisions worth preserving:
+
+- **Synchronous LRCLIB fetch in the GET handler.** Async/queued
+  would let the response return immediately, but the UX is "open
+  pane → see lyrics within 1s" — a synchronous fetch with an 8s
+  timeout cap matches that expectation without needing a polling
+  /retry loop on the client.
+- **Negative cache (`lrc IS NULL`).** Without this, every reopen
+  of an unmatched track refetches. Storing the miss costs ~50
+  bytes per track without lyrics and pays back the first time
+  the user reopens the pane.
+- **Manual rows never auto-refresh.** A user who typed their own
+  translation/correction should never have it silently
+  overwritten by an LRCLIB row arriving later.
+- **`scrollIntoView({block: "center"})` on active-index change,
+  not on every `timeupdate`.** The 20Hz tick stream would
+  thrash; reading the live DOM node on index *change* keeps
+  rendering smooth and avoids a per-line ref map.
+- **LRC parser drops untagged lines silently.** LRC files
+  routinely have header rows like `[ar:Artist Name]` that aren't
+  lyric content. Dropping them keeps the active-line binary
+  search clean and avoids "blank line is active for 4 seconds"
+  glitches.
+
+### Stage 13 follow-ups (not yet started)
+
+- **Lyrics sync across the fleet.** `lyrics` should ride the
+  existing catalog-sync delta so a satellite gets the master's
+  cached LRCLIB lookups + manual overrides without re-fetching.
+  Out of scope for this commit; one column added to the
+  catalog payload.
+- **Karaoke / translation overlays.** Not on the immediate
+  roadmap. LRCLIB supports translations but the v1 panel doesn't
+  surface them.
+
+---
+
 ## Keeping this doc current
 
 Update the "Shipped stages" table as each stage lands (same cadence
