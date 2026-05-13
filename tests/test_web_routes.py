@@ -2292,6 +2292,61 @@ def test_lyrics_post_clears_row_on_empty_lrc(
     assert len(delete_calls) == 1
 
 
+def test_like_track_on_satellite_proxies_to_master_and_mirrors_locally(
+    client, mock_config, _config_file_present,
+):
+    """When master_url is set the satellite must forward to the master
+    so the like survives the next catalog pull; the local DB is
+    mirrored on success so the UI doesn't bounce on page reload."""
+    import web_server
+    web_server.config._config = {
+        "master_url": "http://master.local:5001",
+        "api_token": "tok",
+    }
+
+    upstream = MagicMock()
+    upstream.status_code = 200
+    upstream.json.return_value = {"success": True, "liked": True}
+
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.request', return_value=upstream) as proxy:
+        inst = MockDB.return_value.__enter__.return_value
+        # When api_token is set on this satellite, the before-request
+        # auth gate requires a Bearer header on /api/* — supply it so
+        # the test exercises the proxy path, not the 401 path.
+        res = client.post(
+            '/api/library/tracks/m1/like',
+            headers={"Authorization": "Bearer tok"},
+        )
+
+    assert res.status_code == 200
+    assert res.get_json() == {"success": True, "liked": True}
+    # Forwarded to the master with the bearer token.
+    args, kwargs = proxy.call_args
+    assert args[0] == "POST"
+    assert args[1] == "http://master.local:5001/api/library/tracks/m1/like"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    # And the local DB is mirrored so the catalog pull's eventual
+    # reconciliation doesn't visibly snap-back the heart.
+    inst.set_track_liked.assert_called_once_with("m1", True)
+    inst.ensure_liked_songs_playlist.assert_called_once()
+
+
+def test_like_track_returns_502_when_master_unreachable(
+    client, mock_config, _config_file_present,
+):
+    import web_server
+    web_server.config._config = {"master_url": "http://master.local:5001"}
+
+    with patch('requests.request') as proxy:
+        import requests as _req
+        proxy.side_effect = _req.ConnectionError("nope")
+        res = client.post('/api/library/tracks/m1/like')
+
+    assert res.status_code == 502
+    assert res.get_json()["success"] is False
+
+
 def test_delete_liked_songs_playlist_is_refused_with_409(
     client, mock_config, _config_file_present,
 ):

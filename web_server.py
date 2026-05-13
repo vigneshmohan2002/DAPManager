@@ -752,6 +752,12 @@ def api_library_track_like(mbid: str):
     playlist; the user can keep the empty sidebar pin or remove it
     manually like any other playlist.
 
+    On satellites the request is proxied to the master so the like
+    survives the next catalog sync (otherwise the master's is_liked=0
+    would clobber the satellite's local flip). The satellite also
+    applies the change locally on success so the UI doesn't bounce
+    between optimistic flip and next-sync resolution.
+
     404 when the mbid isn't in the library so the desktop can branch on
     status code without parsing the body — matches the convention used
     by Stage 10a's retry-download endpoint.
@@ -762,6 +768,53 @@ def api_library_track_like(mbid: str):
     if not mbid:
         return jsonify({"success": False, "message": "mbid is required"}), 400
     liked = request.method == "POST"
+
+    # Satellite proxy path. Local-only fallback would mean the heart
+    # gets clobbered on the next catalog pull when the master's
+    # is_liked=0 wins over the satellite's local update.
+    if _master_url_configured():
+        import requests
+        cfg = config._config if isinstance(config._config, dict) else {}
+        master_url = (cfg.get("master_url") or "").rstrip("/")
+        upstream = f"{master_url}/api/library/tracks/{mbid}/like"
+        headers = {}
+        token = (cfg.get("api_token") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            resp = requests.request(
+                request.method, upstream, headers=headers, timeout=(5, 10),
+            )
+        except requests.RequestException as e:
+            logger.warning("like proxy to master failed: %s", e)
+            return jsonify({
+                "success": False,
+                "message": "couldn't reach master to save the like",
+            }), 502
+        if resp.status_code == 404:
+            return jsonify({
+                "success": False,
+                "message": "track not found on master",
+            }), 404
+        if resp.status_code >= 400:
+            return jsonify({
+                "success": False,
+                "message": f"master returned {resp.status_code}",
+            }), resp.status_code
+
+        # Master accepted — mirror the change locally so the UI is
+        # consistent until the next catalog pull. Tolerant if the
+        # track isn't on the satellite yet (catalog-only row hasn't
+        # landed) — the master is the source of truth either way.
+        try:
+            with DatabaseManager(config.db_path) as db:
+                db.set_track_liked(mbid, liked)
+                if liked:
+                    db.ensure_liked_songs_playlist()
+        except Exception as e:
+            logger.warning("local mirror after like-proxy failed: %s", e)
+        return jsonify({"success": True, "liked": liked})
+
     try:
         with DatabaseManager(config.db_path) as db:
             new_state = db.set_track_liked(mbid, liked)
