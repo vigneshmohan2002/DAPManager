@@ -45,6 +45,10 @@ type PlayerState = {
   playNext: (tracks: PlayerTrack | PlayerTrack[]) => void;
   toggleShuffle: () => void;
   cycleRepeat: () => void;
+  // Update is_liked on a queued track in place. Called by every
+  // heart-toggle path so the queue panel doesn't drift out of sync
+  // with the rest of the app. No-op when the mbid isn't queued.
+  setTrackLikedInQueue: (mbid: string, liked: boolean) => void;
 };
 
 const LS_SHUFFLE = "dap.player.shuffle";
@@ -328,6 +332,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const setTrackLikedInQueue = useCallback((mbid: string, liked: boolean) => {
+    setQueue((q) => {
+      // Bail when nothing matches — avoids forcing a React re-render
+      // on every heart-toggle from screens that aren't currently
+      // playing anything from the queue.
+      if (!q.some((t) => t.mbid === mbid && Boolean(t.is_liked) !== liked)) {
+        return q;
+      }
+      return q.map((t) =>
+        t.mbid === mbid ? { ...t, is_liked: liked } : t,
+      );
+    });
+  }, []);
+
   const playNext = useCallback(
     (tracks: PlayerTrack | PlayerTrack[]) => {
       const items = Array.isArray(tracks) ? tracks : [tracks];
@@ -442,6 +460,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       playNext,
       toggleShuffle,
       cycleRepeat,
+      setTrackLikedInQueue,
     }),
     [
       queue,
@@ -464,6 +483,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       playNext,
       toggleShuffle,
       cycleRepeat,
+      setTrackLikedInQueue,
     ],
   );
 

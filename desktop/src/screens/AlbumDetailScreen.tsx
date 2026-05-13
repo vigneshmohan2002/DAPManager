@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import TopBar from "../components/TopBar";
+import { useToast } from "../components/Toast";
 import {
   albumCoverUrl,
   backendUrl,
   fetchAlbumTracks,
+  setTrackLiked,
   type Album,
   type Track,
 } from "../lib/api";
@@ -12,15 +14,26 @@ import { usePlayer } from "../player/PlayerContext";
 type Props = {
   album: Album;
   onBack: () => void;
+  // First like in a fresh library auto-creates the Liked Songs
+  // playlist on the server — sidebar needs the nudge to re-fetch.
+  // Optional so the search-overlay open path (which doesn't carry
+  // playlists context yet) can route here without breaking.
+  onPlaylistsChanged?: () => void;
 };
 
-export default function AlbumDetailScreen({ album, onBack }: Props) {
+export default function AlbumDetailScreen({
+  album,
+  onBack,
+  onPlaylistsChanged,
+}: Props) {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [base, setBase] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const { play, current, isPlaying, toggle } = usePlayer();
+  const { play, current, isPlaying, toggle, setTrackLikedInQueue } =
+    usePlayer();
+  const toast = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +66,27 @@ export default function AlbumDetailScreen({ album, onBack }: Props) {
   const playFrom = (startIndex: number) => {
     const withAlbum = tracks.map((t) => ({ ...t, albumId: album.id }));
     play(withAlbum, startIndex);
+  };
+
+  const handleLikeToggle = async (track: Track) => {
+    const wasLiked = Boolean(track.is_liked);
+    const next = !wasLiked;
+    // Optimistic flip on local rows + on any in-queue copy so both
+    // surfaces fill the heart immediately.
+    setTracks((ts) =>
+      ts.map((r) => (r.mbid === track.mbid ? { ...r, is_liked: next } : r)),
+    );
+    setTrackLikedInQueue(track.mbid, next);
+    const result = await setTrackLiked(track.mbid, next);
+    if (!result.success) {
+      setTracks((ts) =>
+        ts.map((r) => (r.mbid === track.mbid ? { ...r, is_liked: wasLiked } : r)),
+      );
+      setTrackLikedInQueue(track.mbid, wasLiked);
+      toast.show(result.message ?? "Could not save like", "err");
+      return;
+    }
+    if (next) onPlaylistsChanged?.();
   };
 
   return (
@@ -137,6 +171,22 @@ export default function AlbumDetailScreen({ album, onBack }: Props) {
                       {t.artist}
                     </div>
                   </div>
+                  <button
+                    onClick={(e) => {
+                      // Heart must not also fire the row's play handler.
+                      e.stopPropagation();
+                      handleLikeToggle(t);
+                    }}
+                    aria-label={t.is_liked ? "Unlike" : "Like"}
+                    aria-pressed={Boolean(t.is_liked)}
+                    className={`text-base px-2 transition-colors ${
+                      t.is_liked
+                        ? "text-rose-400 hover:text-rose-300"
+                        : "text-[var(--color-text-muted)]/30 hover:text-rose-400 opacity-0 group-hover:opacity-100"
+                    }`}
+                  >
+                    {t.is_liked ? "♥" : "♡"}
+                  </button>
                 </li>
               );
             })}

@@ -20,6 +20,10 @@ export type Track = {
   album: string | null;
   track_number: number | null;
   disc_number: number | null;
+  // Optional because not every consumer of Track carries the hearted
+  // state (search results, ad-hoc constructed rows). Present on rows
+  // coming from /api/library/tracks and /api/library/albums/.../tracks.
+  is_liked?: boolean;
 };
 
 export type Availability = "local" | "drive" | "remote" | "unavailable";
@@ -185,6 +189,8 @@ export async function fetchArtistInfo(name: string): Promise<ArtistInfo | null> 
   return data.success ? (data.info as ArtistInfo) : null;
 }
 
+// Album tracks now carry is_liked from the backend so the detail
+// screen can render a heart column without a second per-row fetch.
 export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
   const url = await backendUrl();
   const r = await fetch(

@@ -810,7 +810,7 @@ class DatabaseManager:
         cursor.execute(
             """
             SELECT mbid, title, artist, album, track_number, disc_number,
-                   local_path, dap_path
+                   local_path, dap_path, is_liked
             FROM tracks
             WHERE deleted_at IS NULL
               AND (release_mbid = ? OR (album || '|' || artist) = ?)

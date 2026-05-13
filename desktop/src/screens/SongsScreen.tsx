@@ -92,7 +92,15 @@ export default function SongsScreen({
   const [catalogOnly, setCatalogOnly] = useState(false);
   const [showOrphans, setShowOrphans] = useState(false);
 
-  const { play, current, isPlaying, toggle, playNext, addToQueue } = usePlayer();
+  const {
+    play,
+    current,
+    isPlaying,
+    toggle,
+    playNext,
+    addToQueue,
+    setTrackLikedInQueue,
+  } = usePlayer();
   const toast = useToast();
 
   useEffect(() => {
@@ -195,6 +203,7 @@ export default function SongsScreen({
     setRows((rs) =>
       rs.map((r) => (r.mbid === track.mbid ? { ...r, is_liked: nextLiked } : r)),
     );
+    setTrackLikedInQueue(track.mbid, nextLiked);
     const result = await setTrackLiked(track.mbid, nextLiked);
     if (!result.success) {
       setRows((rs) =>
@@ -202,6 +211,7 @@ export default function SongsScreen({
           r.mbid === track.mbid ? { ...r, is_liked: track.is_liked } : r,
         ),
       );
+      setTrackLikedInQueue(track.mbid, track.is_liked);
       toast.show(result.message ?? "Could not save like", "err");
       return;
     }

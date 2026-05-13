@@ -1,4 +1,6 @@
+import { setTrackLiked } from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
+import { useToast } from "./Toast";
 
 type Props = {
   open: boolean;
@@ -6,10 +8,32 @@ type Props = {
 };
 
 export default function QueuePanel({ open, onClose }: Props) {
-  const { queue, index, isPlaying, jumpTo, removeFromQueue, clearQueue } =
-    usePlayer();
+  const {
+    queue,
+    index,
+    isPlaying,
+    jumpTo,
+    removeFromQueue,
+    clearQueue,
+    setTrackLikedInQueue,
+  } = usePlayer();
+  const toast = useToast();
 
   if (!open) return null;
+
+  const handleLikeToggle = async (mbid: string, wasLiked: boolean) => {
+    const next = !wasLiked;
+    setTrackLikedInQueue(mbid, next);
+    const result = await setTrackLiked(mbid, next);
+    if (!result.success) {
+      setTrackLikedInQueue(mbid, wasLiked);
+      toast.show(result.message ?? "Could not save like", "err");
+    }
+    // Auto-created Liked Songs playlist refresh is intentionally
+    // skipped here — the queue panel doesn't own the playlists-
+    // version counter. Users will see the pin appear next time the
+    // sidebar refreshes (next playlist mutation or screen change).
+  };
 
   return (
     <aside className="w-80 shrink-0 bg-[var(--color-bg-sidebar)] border-l border-[var(--color-border)] flex flex-col">
@@ -71,6 +95,21 @@ export default function QueuePanel({ open, onClose }: Props) {
                       {t.artist}
                     </div>
                   </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleLikeToggle(t.mbid, Boolean(t.is_liked));
+                    }}
+                    aria-label={t.is_liked ? "Unlike" : "Like"}
+                    aria-pressed={Boolean(t.is_liked)}
+                    className={`text-sm transition-colors ${
+                      t.is_liked
+                        ? "text-rose-400 hover:text-rose-300"
+                        : "opacity-0 group-hover:opacity-100 text-[var(--color-text-muted)] hover:text-rose-400"
+                    }`}
+                  >
+                    {t.is_liked ? "♥" : "♡"}
+                  </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

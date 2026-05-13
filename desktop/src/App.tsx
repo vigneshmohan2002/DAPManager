@@ -178,7 +178,11 @@ function App() {
     }
     if (openAlbum) {
       return (
-        <AlbumDetailScreen album={openAlbum} onBack={() => setOpenAlbum(null)} />
+        <AlbumDetailScreen
+          album={openAlbum}
+          onBack={() => setOpenAlbum(null)}
+          onPlaylistsChanged={bumpPlaylists}
+        />
       );
     }
     if (screen === "home") {
