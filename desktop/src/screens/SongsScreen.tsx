@@ -12,6 +12,7 @@ import {
   fetchPlaylists,
   identifyTrack,
   queueCatalogDownload,
+  setTrackLiked,
   softDeleteTrack,
   type Availability,
   type IdentifyCandidate,
@@ -91,7 +92,7 @@ export default function SongsScreen({
   const [catalogOnly, setCatalogOnly] = useState(false);
   const [showOrphans, setShowOrphans] = useState(false);
 
-  const { play, current, isPlaying, toggle } = usePlayer();
+  const { play, current, isPlaying, toggle, playNext, addToQueue } = usePlayer();
   const toast = useToast();
 
   useEffect(() => {
@@ -185,6 +186,29 @@ export default function SongsScreen({
       queue.push({ ...t, albumId: t.album_id });
     });
     if (queue.length) play(queue, adjusted);
+  };
+
+  const handleLikeToggle = async (track: LibraryTrack) => {
+    const nextLiked = !track.is_liked;
+    // Optimistic flip so the heart fills the moment the user clicks.
+    // The server is authoritative on rollback if the request fails.
+    setRows((rs) =>
+      rs.map((r) => (r.mbid === track.mbid ? { ...r, is_liked: nextLiked } : r)),
+    );
+    const result = await setTrackLiked(track.mbid, nextLiked);
+    if (!result.success) {
+      setRows((rs) =>
+        rs.map((r) =>
+          r.mbid === track.mbid ? { ...r, is_liked: track.is_liked } : r,
+        ),
+      );
+      toast.show(result.message ?? "Could not save like", "err");
+      return;
+    }
+    // The first like in a fresh library auto-creates the Liked Songs
+    // smart playlist on the server — tell the sidebar to re-fetch so
+    // the new pin appears without a manual refresh.
+    if (nextLiked) onPlaylistsChanged();
   };
 
   const clickHeader = (key: SortKey) => {
@@ -316,6 +340,29 @@ export default function SongsScreen({
         { kind: "label", text: `${menu.track.artist} — ${menu.track.title}` },
         { kind: "separator" },
         {
+          kind: "item",
+          label: menu.track.is_liked ? "Remove from Liked Songs" : "Add to Liked Songs",
+          disabled: menu.track.availability === "unavailable",
+          onSelect: () => handleLikeToggle(menu.track),
+        },
+        {
+          kind: "item",
+          label: "Play next",
+          // Adding an unplayable row to the queue would just stall the
+          // player when next() lands on it — refuse at the source.
+          disabled: menu.track.availability === "unavailable",
+          onSelect: () =>
+            playNext({ ...menu.track, albumId: menu.track.album_id }),
+        },
+        {
+          kind: "item",
+          label: "Add to queue",
+          disabled: menu.track.availability === "unavailable",
+          onSelect: () =>
+            addToQueue({ ...menu.track, albumId: menu.track.album_id }),
+        },
+        { kind: "separator" },
+        {
           kind: "list",
           heading: "Add to playlist",
           emptyText: "(no playlists — create one from the sidebar)",
@@ -403,6 +450,7 @@ export default function SongsScreen({
             <thead className="sticky top-0 bg-[var(--color-bg)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
               <tr>
                 <th className="w-10"></th>
+                <th className="w-9"></th>
                 <th
                   onClick={() => clickHeader("title")}
                   className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
@@ -450,6 +498,26 @@ export default function SongsScreen({
                       {isCurrent && isPlaying ? (
                         <span className="text-[var(--color-accent)]">♪</span>
                       ) : null}
+                    </td>
+                    <td className="w-9 px-1 py-1.5 text-center">
+                      <button
+                        onClick={(e) => {
+                          // Heart toggles must not also trigger the row's
+                          // play-on-click handler — that would start
+                          // playback every time a user likes a track.
+                          e.stopPropagation();
+                          handleLikeToggle(t);
+                        }}
+                        aria-label={t.is_liked ? "Unlike" : "Like"}
+                        aria-pressed={t.is_liked}
+                        className={`text-base transition-colors ${
+                          t.is_liked
+                            ? "text-rose-400 hover:text-rose-300"
+                            : "text-[var(--color-text-muted)]/40 hover:text-rose-400"
+                        }`}
+                      >
+                        {t.is_liked ? "♥" : "♡"}
+                      </button>
                     </td>
                     <td
                       className={`px-3 py-1.5 truncate max-w-0 ${isCurrent ? "text-[var(--color-accent)]" : ""}`}

@@ -27,6 +27,11 @@ export type Availability = "local" | "drive" | "remote" | "unavailable";
 export type LibraryTrack = Track & {
   album_id: string | null;
   availability: Availability;
+  // Server-side hearted state. Present on every row served from
+  // /api/library/tracks; the heart toggle flips this through
+  // setTrackLiked and the consumer expects the update to surface
+  // optimistically.
+  is_liked: boolean;
   // Only present when the caller passed include_orphans=1; absent
   // rows are implicitly not orphans.
   orphan?: boolean;
@@ -428,6 +433,29 @@ export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
   if (!data.success)
     throw new Error(data.message ?? "orphans/playlists failed");
   return (data.playlists ?? []) as OrphanPlaylist[];
+}
+
+export async function setTrackLiked(
+  mbid: string,
+  liked: boolean,
+): Promise<{ success: boolean; liked?: boolean; message?: string }> {
+  const url = await backendUrl();
+  const r = await fetch(
+    `${url}/api/library/tracks/${encodeURIComponent(mbid)}/like`,
+    { method: liked ? "POST" : "DELETE" },
+  );
+  if (r.status === 404) {
+    // The mbid no longer exists in the library (purged, never inserted,
+    // or scrambled by a stale UI). Return a typed failure rather than
+    // throwing — callers branch on this to drop the row from the table.
+    return { success: false, message: "track not found" };
+  }
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    liked: typeof data.liked === "boolean" ? data.liked : undefined,
+    message: typeof data.message === "string" ? data.message : undefined,
+  };
 }
 
 export async function restoreTrack(mbid: string): Promise<ActionResult> {

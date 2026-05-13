@@ -18,8 +18,20 @@ type Props = {
 };
 
 export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
-  const { current, isPlaying, position, duration, toggle, next, prev, seek } =
-    usePlayer();
+  const {
+    current,
+    isPlaying,
+    position,
+    duration,
+    toggle,
+    next,
+    prev,
+    seek,
+    shuffle,
+    repeat,
+    toggleShuffle,
+    cycleRepeat,
+  } = usePlayer();
   const [base, setBase] = useState("");
 
   useEffect(() => {
@@ -88,6 +100,19 @@ export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
       </div>
       <div className="flex items-center gap-2 text-[var(--color-text-muted)]">
         <button
+          onClick={toggleShuffle}
+          aria-label="Shuffle"
+          aria-pressed={shuffle}
+          title={shuffle ? "Shuffle on" : "Shuffle off"}
+          className={`w-9 h-9 rounded-md text-sm hover:text-[var(--color-text)] ${
+            shuffle
+              ? "text-[var(--color-accent)]"
+              : "hover:bg-[var(--color-surface)]/60"
+          }`}
+        >
+          ⇄
+        </button>
+        <button
           onClick={prev}
           disabled={!current}
           aria-label="Previous"
@@ -110,6 +135,30 @@ export default function PlayerBar({ queueOpen, onToggleQueue }: Props) {
           className="w-9 h-9 rounded-full hover:text-[var(--color-text)] disabled:opacity-40"
         >
           ⏭
+        </button>
+        <button
+          onClick={cycleRepeat}
+          aria-label={`Repeat: ${repeat}`}
+          aria-pressed={repeat !== "off"}
+          title={
+            repeat === "off"
+              ? "Repeat off"
+              : repeat === "all"
+                ? "Repeat all"
+                : "Repeat one"
+          }
+          className={`relative w-9 h-9 rounded-md text-sm hover:text-[var(--color-text)] ${
+            repeat !== "off"
+              ? "text-[var(--color-accent)]"
+              : "hover:bg-[var(--color-surface)]/60"
+          }`}
+        >
+          ↻
+          {repeat === "one" && (
+            <span className="absolute top-0.5 right-1.5 text-[9px] font-bold">
+              1
+            </span>
+          )}
         </button>
         <button
           onClick={onToggleQueue}
