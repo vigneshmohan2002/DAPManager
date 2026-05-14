@@ -4,6 +4,7 @@ import { useToast } from "../components/Toast";
 import {
   fetchConfig,
   fetchStatus,
+  regenerateDailyMixes,
   saveConfig,
   startTagBackfill,
   type BackendStatus,
@@ -295,6 +296,32 @@ function LibraryTools({ ready }: { ready: boolean }) {
     }
   };
 
+  const [regenerating, setRegenerating] = useState(false);
+
+  const handleRegenMixes = async () => {
+    setRegenerating(true);
+    try {
+      const result = await regenerateDailyMixes();
+      if (!result.success) {
+        toast.show(result.message ?? "Couldn't regenerate", "err");
+        return;
+      }
+      if (result.mixes === 0) {
+        const why =
+          result.reason === "cold_start"
+            ? "Play more tracks first — we need more listening history."
+            : result.reason === "no_tags"
+              ? "Run the genre tag backfill first."
+              : "No mixes generated.";
+        toast.show(why);
+      } else {
+        toast.show(`Regenerated ${result.mixes} Daily Mix${result.mixes === 1 ? "" : "es"}.`);
+      }
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   return (
     <fieldset className="border border-[var(--color-border)] rounded-md px-4 pt-3 pb-4">
       <legend className="px-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
@@ -322,6 +349,24 @@ function LibraryTools({ ready }: { ready: boolean }) {
           className="shrink-0 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium disabled:opacity-50"
         >
           {backfilling ? "Running…" : kicking ? "Starting…" : "Backfill"}
+        </button>
+      </div>
+      <div className="mt-4 pt-4 border-t border-[var(--color-border)]/40 flex items-start gap-4">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm">Regenerate Daily Mixes</p>
+          <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
+            Clusters your top artists into 4–6 themed mixes shown on
+            Home. Needs at least eight artists with three or more
+            plays in the last 90 days, plus a finished tag backfill.
+            Pure-SQL — runs in milliseconds.
+          </p>
+        </div>
+        <button
+          onClick={handleRegenMixes}
+          disabled={!ready || regenerating}
+          className="shrink-0 px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm border border-[var(--color-border)] hover:bg-[var(--color-surface)]/70 disabled:opacity-50"
+        >
+          {regenerating ? "…" : "Regenerate"}
         </button>
       </div>
     </fieldset>

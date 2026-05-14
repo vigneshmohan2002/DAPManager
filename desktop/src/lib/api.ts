@@ -481,11 +481,19 @@ export type HomeJumpBackIn = {
   artist: string;
 };
 
+export type HomeDailyMix = {
+  playlist_id: string;
+  name: string;
+  tag: string;
+  track_count: number;
+};
+
 export type HomePayload = {
   recent: PlayStatsRecent[];
   top_artists: PlayStatsArtist[];
   liked: { total: number; preview: HomeLikedPreview[] };
   jump_back_in: HomeJumpBackIn[];
+  daily_mixes: HomeDailyMix[];
 };
 
 export async function fetchHome(): Promise<HomePayload> {
@@ -502,6 +510,26 @@ export async function fetchHome(): Promise<HomePayload> {
       preview: (data.liked?.preview ?? []) as HomeLikedPreview[],
     },
     jump_back_in: (data.jump_back_in ?? []) as HomeJumpBackIn[],
+    daily_mixes: (data.daily_mixes ?? []) as HomeDailyMix[],
+  };
+}
+
+export async function regenerateDailyMixes(): Promise<{
+  success: boolean;
+  mixes: number;
+  reason: string | null;
+  message?: string;
+}> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/daily-mixes/regenerate`, {
+    method: "POST",
+  });
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    mixes: Number(data.mixes ?? 0),
+    reason: typeof data.reason === "string" ? data.reason : null,
+    message: typeof data.message === "string" ? data.message : undefined,
   };
 }
 

@@ -86,6 +86,33 @@ export default function HomeScreen({
           <p className="py-6 text-sm text-[var(--color-accent)]">{error}</p>
         ) : !data ? null : (
           <div className="flex flex-col gap-10 pt-4">
+            {data.daily_mixes.length > 0 && (
+              <Section title="Daily Mixes">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {data.daily_mixes.map((m) => (
+                    <button
+                      key={m.playlist_id}
+                      onClick={() => onOpenPlaylist(m.playlist_id)}
+                      className="text-left group"
+                    >
+                      <div className="aspect-square rounded-md bg-gradient-to-br from-[var(--color-accent)]/40 via-[var(--color-surface)] to-[var(--color-bg-elevated)] flex items-center justify-center px-3">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-center text-[var(--color-text)] line-clamp-3">
+                          {m.tag || "Mix"}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 text-xs font-medium truncate">
+                        {m.name}
+                      </div>
+                      <div className="text-[11px] text-[var(--color-text-muted)]">
+                        {m.track_count}{" "}
+                        {m.track_count === 1 ? "track" : "tracks"}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </Section>
+            )}
+
             {data.jump_back_in.length > 0 && (
               <Section title="Jump back in">
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">

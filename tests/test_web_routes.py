@@ -2292,6 +2292,42 @@ def test_lyrics_post_clears_row_on_empty_lrc(
     assert len(delete_calls) == 1
 
 
+def test_daily_mixes_regenerate_returns_summary_on_master(
+    client, mock_config, _config_file_present,
+):
+    mock_config.is_master = True
+    summary = {
+        "mixes": 2,
+        "reason": None,
+        "details": [
+            {"playlist_id": "daily_mix_1", "name": "Daily Mix 1: Rock",
+             "tag": "rock", "artist_count": 5, "track_count": 40},
+            {"playlist_id": "daily_mix_2", "name": "Daily Mix 2: Jazz",
+             "tag": "jazz", "artist_count": 3, "track_count": 25},
+        ],
+    }
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.daily_mixes.regenerate_daily_mixes',
+               return_value=summary) as regen:
+        res = client.post('/api/library/daily-mixes/regenerate')
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is True
+    assert body["mixes"] == 2
+    assert body["details"][0]["tag"] == "rock"
+    regen.assert_called_once()
+
+
+def test_daily_mixes_regenerate_refused_on_satellite(
+    client, mock_config, _config_file_present,
+):
+    """Satellites get the rows via catalog sync — running the cluster
+    locally would compete with the master's authoritative version."""
+    mock_config.is_master = False
+    res = client.post('/api/library/daily-mixes/regenerate')
+    assert res.status_code == 400
+
+
 def test_artist_radio_returns_serialized_playable_tracks(
     client, mock_config, _config_file_present,
 ):
@@ -2481,14 +2517,15 @@ def test_wrapped_propagates_db_value_error_as_400(
     assert res.status_code == 400
 
 
-def test_home_bundles_four_cards_in_one_response(
+def test_home_bundles_cards_in_one_response(
     client, mock_config, _config_file_present,
 ):
-    """The Home screen does four conceptual fetches in one round trip —
+    """The Home screen does multiple conceptual fetches in one round trip —
     confirm the endpoint actually returns each section under its keyed
     name so the frontend's optional-chaining defaults don't silently
     swallow a regression."""
-    with patch('web_server.DatabaseManager') as MockDB:
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.daily_mixes.list_daily_mixes', return_value=[]):
         inst = MockDB.return_value.__enter__.return_value
         inst.recent_plays.return_value = [
             {
@@ -2526,3 +2563,4 @@ def test_home_bundles_four_cards_in_one_response(
     assert body["jump_back_in"] == [
         {"album_id": "rmb-1", "title": "Al", "artist": "X"}
     ]
+    assert body["daily_mixes"] == []

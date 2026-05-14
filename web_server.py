@@ -1413,6 +1413,35 @@ def api_library_track_lyrics(mbid: str):
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/daily-mixes/regenerate", methods=["POST"])
+def api_library_daily_mixes_regenerate():
+    """Regenerate Daily Mixes from the current top-artist + tag state.
+
+    Synchronous because the work is pure-SQL — no MB calls, no
+    network. Caller waits ~100ms for the full clustering pass.
+    Master-only: same reasoning as tag backfill — satellites get the
+    finished playlist rows via catalog sync.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.is_master:
+        return jsonify({
+            "success": False,
+            "message": (
+                "Daily Mixes are generated on the master — they'll "
+                "appear on this satellite after the next catalog sync."
+            ),
+        }), 400
+    from src.daily_mixes import regenerate_daily_mixes
+    try:
+        with DatabaseManager(config.db_path) as db:
+            summary = regenerate_daily_mixes(db)
+        return jsonify({"success": True, **summary})
+    except Exception as e:
+        logger.exception("api_library_daily_mixes_regenerate failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/artists/<path:name>/radio", methods=["GET"])
 def api_library_artist_radio(name: str):
     """Spotify-style Artist Radio: a shuffled queue seeded on the
@@ -1574,6 +1603,8 @@ def api_library_home():
                 "ORDER BY updated_at DESC LIMIT 6"
             ).fetchall()
             liked_preview = [dict(r) for r in liked_rows]
+            from src.daily_mixes import list_daily_mixes
+            daily_mixes = list_daily_mixes(db)
 
         # "Jump back in" is the last six distinct albums you played
         # from, derived from `recent` to avoid an extra DB call. Pulling
@@ -1607,6 +1638,7 @@ def api_library_home():
         "top_artists": top_artists,
         "liked": {"total": liked_total, "preview": liked_preview},
         "jump_back_in": jump_back_in,
+        "daily_mixes": daily_mixes,
     })
 
 

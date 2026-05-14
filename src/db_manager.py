@@ -2179,6 +2179,61 @@ class DatabaseManager:
         "COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id"
     )
 
+    def get_random_tracks_for_artists(
+        self,
+        artist_names: List[str],
+        limit: int = 40,
+    ) -> List[dict]:
+        """Random sample of tracks across the given artist names.
+
+        Powers Daily Mix generation: feed the cluster's artists, get
+        back a shuffled pool of their tracks. Soft-deleted rows are
+        excluded; the IN list is dropped to a no-op when empty so the
+        caller doesn't have to gate the call.
+        """
+        if not artist_names:
+            return []
+        names = [n for n in artist_names if n]
+        if not names:
+            return []
+        placeholders = ",".join("?" for _ in names)
+        cur = self.conn.execute(
+            f"SELECT {self._PLAYABLE_TRACK_COLS} FROM tracks "
+            f"WHERE artist IN ({placeholders}) COLLATE NOCASE "
+            "  AND deleted_at IS NULL "
+            "ORDER BY RANDOM() LIMIT ?",
+            (*names, int(limit)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        return rows
+
+    def ensure_system_playlist(
+        self,
+        playlist_id: str,
+        name: str,
+    ) -> str:
+        """Idempotent UPSERT for a system playlist with a reserved id.
+
+        Used for Liked Songs (Stage 11a) and Daily Mixes (Stage 14d).
+        Both have id schemes the rest of the code branches on, so
+        minting a UUID would defeat the lookup. Bumps name + updated_at
+        on conflict so a re-generated Daily Mix can shift its display
+        copy without churning a separate UPDATE.
+        """
+        self.conn.execute(
+            "INSERT INTO playlists "
+            "(playlist_id, name, spotify_url, updated_at, smart_rules) "
+            "VALUES (?, ?, '', CURRENT_TIMESTAMP, NULL) "
+            "ON CONFLICT(playlist_id) DO UPDATE SET "
+            "  name = excluded.name, "
+            "  updated_at = CURRENT_TIMESTAMP, "
+            "  deleted_at = NULL",
+            (playlist_id, name),
+        )
+        self.conn.commit()
+        return playlist_id
+
     def build_artist_radio(
         self,
         artist_name: str,

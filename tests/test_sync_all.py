@@ -21,14 +21,16 @@ def _cfg(**overrides):
     return base
 
 
-def test_sync_all_runs_all_four_steps_when_configured(db):
+def test_sync_all_runs_all_steps_when_configured(db):
     with patch("src.sync_all.main_run_catalog_pull") as mcp, \
          patch("src.sync_all.main_run_playlist_pull") as mpp, \
          patch("src.sync_all.main_run_playlist_push") as mpu, \
+         patch("src.sync_all.main_run_lyrics_pull") as mlp, \
          patch("src.sync_all.main_run_inventory_report") as mir:
         mcp.return_value = {"received": 0}
         mpp.return_value = {"received": 0}
         mpu.return_value = {"sent": 0}
+        mlp.return_value = {"received": 0}
         mir.return_value = {"items": 0}
 
         out = main_run_sync_all(db, _cfg())
@@ -38,16 +40,18 @@ def test_sync_all_runs_all_four_steps_when_configured(db):
         "pull_catalog",
         "pull_playlists",
         "push_playlists",
+        "pull_lyrics",
         "report_inventory",
     ]
     assert all(s["status"] == "ok" for s in out["steps"])
-    assert mcp.called and mpp.called and mpu.called and mir.called
+    assert mcp.called and mpp.called and mpu.called and mlp.called and mir.called
 
 
 def test_sync_all_skips_pulls_when_no_master_url(db):
     with patch("src.sync_all.main_run_catalog_pull") as mcp, \
          patch("src.sync_all.main_run_playlist_pull") as mpp, \
          patch("src.sync_all.main_run_playlist_push") as mpu, \
+         patch("src.sync_all.main_run_lyrics_pull") as mlp, \
          patch("src.sync_all.main_run_inventory_report") as mir:
         mir.return_value = {"items": 0}
 
@@ -57,8 +61,9 @@ def test_sync_all_skips_pulls_when_no_master_url(db):
     assert by_name["pull_catalog"]["status"] == "skipped"
     assert by_name["pull_playlists"]["status"] == "skipped"
     assert by_name["push_playlists"]["status"] == "skipped"
+    assert by_name["pull_lyrics"]["status"] == "skipped"
     assert by_name["report_inventory"]["status"] == "ok"
-    assert not mcp.called and not mpp.called and not mpu.called
+    assert not mcp.called and not mpp.called and not mpu.called and not mlp.called
     assert mir.called
 
 
@@ -66,10 +71,12 @@ def test_sync_all_skips_inventory_when_disabled(db):
     with patch("src.sync_all.main_run_catalog_pull") as mcp, \
          patch("src.sync_all.main_run_playlist_pull") as mpp, \
          patch("src.sync_all.main_run_playlist_push") as mpu, \
+         patch("src.sync_all.main_run_lyrics_pull") as mlp, \
          patch("src.sync_all.main_run_inventory_report") as mir:
         mcp.return_value = {}
         mpp.return_value = {}
         mpu.return_value = {}
+        mlp.return_value = {}
 
         out = main_run_sync_all(db, _cfg(report_inventory_to_host=False))
 
@@ -82,10 +89,12 @@ def test_sync_all_continues_on_sub_step_error(db):
     with patch("src.sync_all.main_run_catalog_pull") as mcp, \
          patch("src.sync_all.main_run_playlist_pull") as mpp, \
          patch("src.sync_all.main_run_playlist_push") as mpu, \
+         patch("src.sync_all.main_run_lyrics_pull") as mlp, \
          patch("src.sync_all.main_run_inventory_report") as mir:
         mcp.side_effect = RuntimeError("network down")
         mpp.return_value = {}
         mpu.return_value = {}
+        mlp.return_value = {}
         mir.return_value = {}
 
         out = main_run_sync_all(db, _cfg())
@@ -96,6 +105,7 @@ def test_sync_all_continues_on_sub_step_error(db):
     # Later steps still ran.
     assert by_name["pull_playlists"]["status"] == "ok"
     assert by_name["push_playlists"]["status"] == "ok"
+    assert by_name["pull_lyrics"]["status"] == "ok"
     assert by_name["report_inventory"]["status"] == "ok"
 
 
@@ -104,6 +114,7 @@ def test_sync_all_inventory_defaults_to_master_role(db):
     with patch("src.sync_all.main_run_catalog_pull"), \
          patch("src.sync_all.main_run_playlist_pull"), \
          patch("src.sync_all.main_run_playlist_push"), \
+         patch("src.sync_all.main_run_lyrics_pull"), \
          patch("src.sync_all.main_run_inventory_report") as mir:
         mir.return_value = {}
         cfg = _cfg(master_url="", is_master=True)
@@ -120,6 +131,7 @@ def test_sync_all_progress_callback_receives_updates(db):
     with patch("src.sync_all.main_run_catalog_pull", return_value={}), \
          patch("src.sync_all.main_run_playlist_pull", return_value={}), \
          patch("src.sync_all.main_run_playlist_push", return_value={}), \
+         patch("src.sync_all.main_run_lyrics_pull", return_value={}), \
          patch("src.sync_all.main_run_inventory_report", return_value={}):
         main_run_sync_all(db, _cfg(), progress_callback=messages.append)
     assert any("Sync All" in m.get("message", "") for m in messages)
