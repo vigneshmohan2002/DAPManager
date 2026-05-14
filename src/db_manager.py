@@ -203,6 +203,25 @@ class DatabaseManager:
                     fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """,
+            # Stage 14a: per-artist tag weights backfilled from
+            # MusicBrainz. Keyed by artist *name* (case-insensitive,
+            # via the table-level COLLATE NOCASE) because tracks.artist
+            # stores names, not mbids. ``mbid`` is the artist mbid we
+            # resolved at backfill time — kept for traceability and as
+            # the foreign key for any future MB-side updates. weight
+            # is MB's tag vote count, sorted desc to surface dominant
+            # genres first. fetched_at lets a future refresh job skip
+            # recently-backfilled artists.
+            "artist_tags": """
+                CREATE TABLE IF NOT EXISTS artist_tags (
+                    artist_name TEXT NOT NULL COLLATE NOCASE,
+                    mbid TEXT,
+                    tag TEXT NOT NULL,
+                    weight INTEGER NOT NULL DEFAULT 1,
+                    fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (artist_name, tag)
+                );
+            """,
         }
 
         # Indexes that pay off the common stats queries (group-by-mbid for
@@ -214,6 +233,11 @@ class DatabaseManager:
             "ON play_events(played_at)",
             "CREATE INDEX IF NOT EXISTS idx_play_events_track_mbid "
             "ON play_events(track_mbid)",
+            # "What other artists share this tag?" — the lookup that
+            # backs Daily Mix clustering. Per-tag scan would be O(n)
+            # over the whole table otherwise.
+            "CREATE INDEX IF NOT EXISTS idx_artist_tags_tag "
+            "ON artist_tags(tag)",
         ]
 
         try:
@@ -1984,6 +2008,153 @@ class DatabaseManager:
             (track_mbid, lrc, 1 if synced else 0, source),
         )
         self.conn.commit()
+
+    # --- Artist tags (Stage 14a) ------------------------------------------
+
+    # Genre-discovery noise on MusicBrainz — tags that appear on too
+    # many unrelated artists to be useful for clustering. Filtered out
+    # before persisting. Lowercased so the membership check ignores
+    # casing variance in MB's user-submitted tag pool.
+    _MB_NOISE_TAGS = frozenset({
+        "seen live", "favourite", "favourites", "favorite", "favorites",
+        "owned", "spotify", "soundtrack-no", "all", "best",
+    })
+
+    def get_distinct_artist_names(self) -> List[str]:
+        """All live artist names in the library, case-insensitive sorted.
+
+        Feeds the tag backfill — duplicate casings collapse to the
+        canonical capitalization so we don't re-fetch the same MB
+        artist three times. Soft-deleted tracks are excluded; the
+        artists that *only* appear on deleted rows would otherwise
+        keep showing up in every backfill pass.
+        """
+        cur = self.conn.execute(
+            "SELECT DISTINCT artist FROM tracks "
+            "WHERE deleted_at IS NULL "
+            "  AND artist IS NOT NULL AND artist != '' "
+            "ORDER BY artist COLLATE NOCASE"
+        )
+        rows = [r["artist"] for r in cur.fetchall()]
+        cur.close()
+        return rows
+
+    def get_artists_needing_tags(self, max_age_days: int = 30) -> List[str]:
+        """Artists with no artist_tags row, or rows older than
+        ``max_age_days``. Lets a resumed backfill skip the artists
+        we've already covered.
+        """
+        cur = self.conn.execute(
+            """
+            SELECT DISTINCT t.artist FROM tracks t
+            WHERE t.deleted_at IS NULL
+              AND t.artist IS NOT NULL AND t.artist != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM artist_tags at
+                  WHERE at.artist_name = t.artist
+                    AND at.fetched_at > datetime('now', ?)
+              )
+            ORDER BY t.artist COLLATE NOCASE
+            """,
+            (f"-{int(max_age_days)} days",),
+        )
+        rows = [r["artist"] for r in cur.fetchall()]
+        cur.close()
+        return rows
+
+    def record_artist_tags(
+        self,
+        artist_name: str,
+        mbid: Optional[str],
+        tags: List[dict],
+        top_n: int = 10,
+    ) -> int:
+        """Replace any cached tags for an artist with a fresh top-N set.
+
+        ``tags`` is a list of ``{"tag": str, "weight": int}`` dicts in
+        MB's order (any order works — we sort here). Noise tags from
+        ``_MB_NOISE_TAGS`` are dropped before truncation. Returns the
+        number of rows persisted (could be < top_n if MB returned
+        fewer tags or the filter ate most of them).
+
+        Empty-tag results still wipe any previous row so a re-fetch
+        that finds nothing isn't masked by yesterday's stale tags.
+        """
+        if not artist_name or not str(artist_name).strip():
+            return 0
+        # Sort by weight desc, drop noise, then truncate.
+        cleaned: List[tuple] = []
+        seen_tags: set = set()
+        for entry in sorted(
+            tags or [],
+            key=lambda t: -int(t.get("weight") or 0),
+        ):
+            tag = (entry.get("tag") or "").strip()
+            if not tag:
+                continue
+            tag_lower = tag.lower()
+            if tag_lower in self._MB_NOISE_TAGS:
+                continue
+            if tag_lower in seen_tags:
+                continue  # MB occasionally returns case-variant dupes
+            seen_tags.add(tag_lower)
+            weight = int(entry.get("weight") or 1)
+            cleaned.append((tag, weight))
+            if len(cleaned) >= top_n:
+                break
+
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM artist_tags WHERE artist_name = ?",
+                (artist_name,),
+            )
+            for tag, weight in cleaned:
+                cur.execute(
+                    "INSERT INTO artist_tags "
+                    "(artist_name, mbid, tag, weight, fetched_at) "
+                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    (artist_name, mbid, tag, weight),
+                )
+            self.conn.commit()
+        finally:
+            cur.close()
+        return len(cleaned)
+
+    def get_top_tags_for_artist(
+        self, artist_name: str, limit: int = 5,
+    ) -> List[dict]:
+        """Highest-weight tags for an artist. Returns ``[{tag, weight}]``.
+        Empty list when nothing's cached — the caller decides whether
+        that means "uncategorized" or "needs backfill"."""
+        if not artist_name:
+            return []
+        cur = self.conn.execute(
+            "SELECT tag, weight FROM artist_tags "
+            "WHERE artist_name = ? COLLATE NOCASE "
+            "ORDER BY weight DESC, tag COLLATE NOCASE LIMIT ?",
+            (artist_name, int(limit)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        return rows
+
+    def get_artists_by_tag(
+        self, tag: str, limit: int = 50,
+    ) -> List[dict]:
+        """Artists tagged with ``tag``, ordered by their weight on it.
+        Powers "more like this" / Daily Mix clustering lookups."""
+        if not tag:
+            return []
+        cur = self.conn.execute(
+            "SELECT artist_name, weight FROM artist_tags "
+            "WHERE tag = ? COLLATE NOCASE "
+            "ORDER BY weight DESC, artist_name COLLATE NOCASE LIMIT ?",
+            (tag, int(limit)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        return rows
 
     def apply_pushed_playlist_row(self, row: dict) -> str:
         """Apply a playlist pushed from a satellite, using last-writer-wins

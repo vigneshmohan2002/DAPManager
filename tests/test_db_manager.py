@@ -1722,6 +1722,76 @@ def test_lyrics_negative_cache_stores_null_lrc(db):
     assert row["source"] == "lrclib"
 
 
+def test_get_distinct_artist_names_excludes_soft_deleted(db):
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="Beatles"))
+    db.add_or_update_track(Track(mbid="m2", title="B", artist="Stones"))
+    db.add_or_update_track(Track(mbid="m3", title="C", artist="ghost"))
+    db.soft_delete_track("m3")
+    assert db.get_distinct_artist_names() == ["Beatles", "Stones"]
+
+
+def test_record_artist_tags_persists_top_n_by_weight(db):
+    incoming = [
+        {"tag": "indie rock", "weight": 5},
+        {"tag": "rock", "weight": 10},
+        {"tag": "alternative", "weight": 3},
+        {"tag": "pop", "weight": 1},
+    ]
+    persisted = db.record_artist_tags("Beatles", "mbid-1", incoming, top_n=3)
+    assert persisted == 3
+    top = db.get_top_tags_for_artist("Beatles")
+    assert [r["tag"] for r in top] == ["rock", "indie rock", "alternative"]
+
+
+def test_record_artist_tags_filters_mb_noise(db):
+    """seen-live / favourite / etc. are global MB noise tags that
+    appear on hundreds of unrelated artists — useless for genre
+    clustering. They must be dropped *before* the top-N truncation
+    so the legitimate tags aren't crowded out."""
+    incoming = [
+        {"tag": "seen live", "weight": 50},
+        {"tag": "favourite", "weight": 30},
+        {"tag": "indie rock", "weight": 5},
+    ]
+    db.record_artist_tags("Beatles", None, incoming, top_n=3)
+    top = db.get_top_tags_for_artist("Beatles")
+    assert [r["tag"] for r in top] == ["indie rock"]
+
+
+def test_record_artist_tags_replaces_existing(db):
+    db.record_artist_tags("X", None, [{"tag": "old", "weight": 5}])
+    db.record_artist_tags("X", None, [{"tag": "new", "weight": 5}])
+    top = db.get_top_tags_for_artist("X")
+    assert [r["tag"] for r in top] == ["new"]
+
+
+def test_record_artist_tags_empty_clears_previous(db):
+    """A re-fetch that finds nothing must clear stale rows so the UI
+    doesn't keep showing yesterday's wrong tag."""
+    db.record_artist_tags("X", None, [{"tag": "old", "weight": 5}])
+    assert db.record_artist_tags("X", None, []) == 0
+    assert db.get_top_tags_for_artist("X") == []
+
+
+def test_get_artists_by_tag_orders_by_weight(db):
+    db.record_artist_tags("A", None, [{"tag": "indie", "weight": 3}])
+    db.record_artist_tags("B", None, [{"tag": "indie", "weight": 10}])
+    db.record_artist_tags("C", None, [{"tag": "rock",  "weight": 7}])
+    rows = db.get_artists_by_tag("indie")
+    assert [r["artist_name"] for r in rows] == ["B", "A"]
+
+
+def test_get_artists_needing_tags_skips_recent(db):
+    """A resumed backfill must not re-fetch artists we covered
+    minutes ago — the rate limiter pays the same minute for each
+    re-fetch and would never finish on a 1000-artist library."""
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="X"))
+    db.add_or_update_track(Track(mbid="m2", title="B", artist="Y"))
+    db.record_artist_tags("X", None, [{"tag": "rock", "weight": 1}])
+    needing = db.get_artists_needing_tags(max_age_days=30)
+    assert needing == ["Y"]
+
+
 def test_get_lyrics_since_filters_by_fetched_at_cursor(db):
     db.upsert_lyrics("m1", "first", synced=False, source="lrclib")
     # Stamp the first row with an old cursor so the WHERE filters it
