@@ -83,6 +83,26 @@ def get_recordings_by_isrc(isrc: str):
     return musicbrainzngs.get_recordings_by_isrc(isrc)
 
 
+def search_artists(query: str, limit: int = 1):
+    """Search MB for an artist by free-text name. Returns the raw
+    musicbrainzngs response — caller picks the right hit. Rate-limited
+    via the same shared slot the rest of the module uses."""
+    _ensure_configured()
+    _wait_for_slot()
+    return musicbrainzngs.search_artists(query=query, limit=int(limit))
+
+
+def get_artist_tags(artist_mbid: str):
+    """Fetch an MB artist's tags. Returns the dict's ``artist`` payload,
+    which carries a ``tag-list`` of ``{name, count}`` entries; callers
+    map these into the local artist_tags schema. Two-step (search then
+    fetch) is unavoidable because MB's search endpoint doesn't include
+    tags inline."""
+    _ensure_configured()
+    _wait_for_slot()
+    return musicbrainzngs.get_artist_by_id(artist_mbid, includes=["tags"])
+
+
 def reset_for_tests() -> None:
     """Reset module state. Tests only."""
     global _useragent_set, _last_call

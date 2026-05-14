@@ -2116,6 +2116,18 @@ class DatabaseManager:
                     "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (artist_name, mbid, tag, weight),
                 )
+            if not cleaned:
+                # Sentinel row records "we tried this name and got
+                # nothing useful" so the incremental backfill can
+                # skip it next pass. tag='' is filtered out of the
+                # display queries below — only the freshness check
+                # sees it.
+                cur.execute(
+                    "INSERT INTO artist_tags "
+                    "(artist_name, mbid, tag, weight, fetched_at) "
+                    "VALUES (?, ?, '', 0, CURRENT_TIMESTAMP)",
+                    (artist_name, mbid),
+                )
             self.conn.commit()
         finally:
             cur.close()
@@ -2126,12 +2138,14 @@ class DatabaseManager:
     ) -> List[dict]:
         """Highest-weight tags for an artist. Returns ``[{tag, weight}]``.
         Empty list when nothing's cached — the caller decides whether
-        that means "uncategorized" or "needs backfill"."""
+        that means "uncategorized" or "needs backfill". Sentinel rows
+        (tag='') are filtered out — they exist to feed the freshness
+        check, not the display."""
         if not artist_name:
             return []
         cur = self.conn.execute(
             "SELECT tag, weight FROM artist_tags "
-            "WHERE artist_name = ? COLLATE NOCASE "
+            "WHERE artist_name = ? COLLATE NOCASE AND tag != '' "
             "ORDER BY weight DESC, tag COLLATE NOCASE LIMIT ?",
             (artist_name, int(limit)),
         )
