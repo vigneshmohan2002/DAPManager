@@ -1656,6 +1656,71 @@ def test_ensure_liked_songs_playlist_is_idempotent(db):
     assert "is_liked" in row["smart_rules"]
 
 
+def test_smart_playlist_with_genre_rule_filters_by_artist_tags(db):
+    """End-to-end: a smart playlist with a genre rule must route
+    through the artist_tags subquery and only return tracks whose
+    artist has the matching tag in the cache."""
+    from src.smart_playlist import serialize
+    db.add_or_update_track(Track(
+        mbid="m1", title="A", artist="Beatles", album="Al",
+        local_path="/m/a"))
+    db.add_or_update_track(Track(
+        mbid="m2", title="B", artist="Stones", album="Al",
+        local_path="/m/b"))
+    db.add_or_update_track(Track(
+        mbid="m3", title="C", artist="Uncategorized", album="Al",
+        local_path="/m/c"))
+    db.record_artist_tags("Beatles", "mb-1", [
+        {"tag": "rock", "weight": 10}
+    ])
+    db.record_artist_tags("Stones", "mb-2", [
+        {"tag": "blues rock", "weight": 8}
+    ])
+    # 'Uncategorized' has no artist_tags row.
+
+    rules = serialize({"match": "all", "rules": [
+        {"field": "genre", "op": "equals", "value": "rock"}
+    ]})
+    pid = db.create_playlist("Rock", smart_rules=rules)
+    rows = db.list_tracks_filtered(playlist_id=pid)
+    assert [r["mbid"] for r in rows] == ["m1"]
+
+
+def test_smart_playlist_genre_contains_picks_up_substring(db):
+    from src.smart_playlist import serialize
+    db.add_or_update_track(Track(
+        mbid="m1", title="A", artist="X", album="Al", local_path="/m/a"))
+    db.add_or_update_track(Track(
+        mbid="m2", title="B", artist="Y", album="Al", local_path="/m/b"))
+    db.record_artist_tags("X", None, [{"tag": "indie rock", "weight": 5}])
+    db.record_artist_tags("Y", None, [{"tag": "jazz", "weight": 5}])
+
+    rules = serialize({"match": "all", "rules": [
+        {"field": "genre", "op": "contains", "value": "rock"}
+    ]})
+    pid = db.create_playlist("Rocky", smart_rules=rules)
+    rows = db.list_tracks_filtered(playlist_id=pid)
+    assert [r["mbid"] for r in rows] == ["m1"]
+
+
+def test_smart_playlist_genre_rule_excludes_sentinel_uncategorized(db):
+    """Stage 14a's sentinel '' row marks 'we tried this artist and got
+    nothing useful'. It must never match a real genre filter — that
+    would silently include uncategorized artists in every Daily Mix."""
+    from src.smart_playlist import serialize
+    db.add_or_update_track(Track(
+        mbid="m1", title="A", artist="X", album="Al", local_path="/m/a"))
+    # Sentinel row from the backfill.
+    db.record_artist_tags("X", None, [])
+
+    rules = serialize({"match": "all", "rules": [
+        {"field": "genre", "op": "equals", "value": ""}
+    ]})
+    pid = db.create_playlist("Empty?", smart_rules=rules)
+    rows = db.list_tracks_filtered(playlist_id=pid)
+    assert rows == []
+
+
 def test_liked_songs_smart_playlist_resolves_to_liked_tracks(db):
     """End-to-end: like a track, then list_tracks_filtered against the
     Liked Songs playlist returns exactly the liked tracks."""

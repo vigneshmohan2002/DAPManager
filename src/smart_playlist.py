@@ -28,20 +28,64 @@ _FIELDS: dict[str, str] = {
     "tag_tier": "t.tag_tier",
     "tag_score": "t.tag_score",
     "is_liked": "t.is_liked",
+    # "genre" maps to a subquery against artist_tags rather than a
+    # column on tracks — see _build_genre_clause for the SQL. The
+    # value here is only used for the whitelist membership check.
+    "genre": "<subquery>",
 }
 
 _TEXT_OPS = {"contains", "equals", "starts_with", "ends_with"}
 _NUMERIC_OPS = {"gt", "lt", "equals"}
 _BOOLEAN_OPS = {"equals"}
+_GENRE_OPS = {"equals", "contains"}
 _NUMERIC_FIELDS = {"tag_score"}
 _BOOLEAN_FIELDS = {"is_liked"}
+# Fields whose predicate is a subquery (no single track column) — the
+# clause builder branches to a dedicated path for these.
+_SUBQUERY_FIELDS = {"genre"}
 _MATCH_VALUES = {"all", "any"}
 
 _ESCAPE = "\\"
 
 
 def _is_text_field(field: str) -> bool:
-    return field not in _NUMERIC_FIELDS and field not in _BOOLEAN_FIELDS
+    return (
+        field not in _NUMERIC_FIELDS
+        and field not in _BOOLEAN_FIELDS
+        and field not in _SUBQUERY_FIELDS
+    )
+
+
+def _build_genre_clause(op: str, value: Any) -> tuple[str, Any]:
+    """Genre filter joins tracks against the Stage 14a artist_tags
+    cache: a track passes when its artist has at least one matching
+    tag. Uses a subquery rather than a JOIN so the existing
+    list_tracks_filtered query doesn't need restructuring.
+
+    A track whose artist is uncategorized (no artist_tags row, or
+    only the sentinel '' row from the backfill) correctly fails the
+    membership check — sentinels have tag='' which never matches a
+    real user-supplied genre.
+    """
+    if op not in _GENRE_OPS:
+        raise ValueError(f"op {op!r} not valid for genre")
+    s = "" if value is None else str(value)
+    # Always exclude the Stage 14a sentinel rows (tag='') from the
+    # match set — they exist only to feed the freshness check, never
+    # to participate in user-visible filters.
+    if op == "equals":
+        return (
+            "t.artist IN (SELECT artist_name FROM artist_tags "
+            "WHERE tag != '' AND tag = ? COLLATE NOCASE)",
+            s,
+        )
+    # contains
+    escaped = _escape_like(s)
+    return (
+        "t.artist IN (SELECT artist_name FROM artist_tags "
+        "WHERE tag != '' AND tag LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+        f"%{escaped}%",
+    )
 
 
 def _coerce_bool(value: Any) -> int:
@@ -76,6 +120,13 @@ def _build_clause(field: Any, op: Any, value: Any) -> tuple[str, Any]:
     if not isinstance(op, str):
         raise ValueError(f"op must be a string, got {type(op).__name__}")
     col = _FIELDS[field]
+
+    if field in _SUBQUERY_FIELDS:
+        # Only `genre` lives here today; route on field name so future
+        # subquery-shaped predicates can slot in alongside.
+        if field == "genre":
+            return _build_genre_clause(op, value)
+        raise ValueError(f"unsupported subquery field: {field!r}")
 
     if field in _BOOLEAN_FIELDS:
         if op not in _BOOLEAN_OPS:

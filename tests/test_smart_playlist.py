@@ -213,3 +213,49 @@ def test_is_liked_ruleset_round_trips_through_serialize():
         "match": "all",
         "rules": [{"field": "is_liked", "op": "equals", "value": True}],
     }
+
+
+# --- genre subquery (Stage 14b) -------------------------------------------
+
+def test_build_where_genre_equals_uses_artist_tags_subquery():
+    """A genre predicate can't be a column comparison — it has to JOIN
+    against the Stage 14a artist_tags cache via an IN subquery."""
+    sql, params = build_where({"match": "all", "rules": [
+        {"field": "genre", "op": "equals", "value": "indie rock"}
+    ]})
+    assert "t.artist IN (SELECT artist_name FROM artist_tags" in sql
+    assert "tag = ?" in sql
+    assert "COLLATE NOCASE" in sql
+    assert params == ["indie rock"]
+
+
+def test_build_where_genre_contains_uses_like_with_escape():
+    sql, params = build_where({"match": "all", "rules": [
+        {"field": "genre", "op": "contains", "value": "rock"}
+    ]})
+    assert "tag LIKE ? ESCAPE '\\'" in sql
+    assert params == ["%rock%"]
+
+
+def test_genre_contains_escapes_user_wildcards():
+    sql, params = build_where({"match": "all", "rules": [
+        {"field": "genre", "op": "contains", "value": "100% rock"}
+    ]})
+    assert params == ["%100\\% rock%"]
+
+
+def test_coerce_rejects_unknown_op_for_genre():
+    with pytest.raises(ValueError, match="not valid for genre"):
+        coerce_ruleset({"rules": [
+            {"field": "genre", "op": "starts_with", "value": "rock"}
+        ]})
+
+
+def test_genre_ruleset_round_trips_through_serialize():
+    raw = serialize({"match": "any", "rules": [
+        {"field": "genre", "op": "equals", "value": "indie pop"},
+        {"field": "genre", "op": "contains", "value": "rock"},
+    ]})
+    parsed = parse_stored(raw)
+    assert parsed["match"] == "any"
+    assert len(parsed["rules"]) == 2
