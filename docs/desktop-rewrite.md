@@ -1259,6 +1259,210 @@ Decisions worth preserving:
 
 ---
 
+## Stage 14 — MusicBrainz tags + Artist Radio + Daily Mixes
+
+Recommendations from local data alone — no external rec API, no
+Spotify auth, no per-user data leaving the box. The user's
+`MusicBrainz tag backfill` answer to the Stage 11+ scoping question
+made this the third-tier integration to land. Ships in four
+small, independently revertable commits.
+
+### 14a — MB tag backfill foundation — _Shipped_
+
+The Stage 14a piece itself splits across three commits because
+the layer cake (schema → orchestrator → endpoint) is genuinely
+three layers of work, and the user's stated small-chunks
+preference rewards keeping them apart.
+
+**14a.1 — schema + DB layer** (`215a9e5`). New `artist_tags` table
+keyed by `(artist_name, tag)` because tracks.artist stores names,
+not MBIDs. The resolved MBID rides on the row as metadata for
+traceability. `record_artist_tags` filters MB noise tags (`seen
+live`, `favourite`, etc.) *before* the top-N truncation so the
+legitimate genre tags aren't crowded out. `idx_artist_tags_tag`
+pays for the per-tag scan that Daily Mix clustering depends on.
+
+**14a.2 — orchestrator** (`9b9234b`). `src/genre_backfill.py`
+walks the library's distinct artist names, resolves each to an MB
+artist via a search-then-fetch pair (unavoidable two requests
+because MB's search response doesn't carry tags inline), and
+persists the top-N tags. Match heuristic is conservative — exact
+case-insensitive name match OR MB ext:score ≥ 90 — because
+wrong-artist tags would poison Daily Mix clustering for the
+user's entire library. Per-artist exceptions are logged and
+counted but don't abort the run. The DB layer also gained a
+sentinel `tag=''` row to mark "we tried this name and got
+nothing useful" so the incremental backfill can skip it next
+pass; display queries filter via `WHERE tag != ''`.
+
+**14a.3 — endpoint + Settings UI** (`63797b8`). POST
+`/api/library/tags/backfill` rides the existing TaskManager so
+the job streams progress through `/api/status` the same way Audit
+and Sync do. Master-only — satellites would shred MB's rate-limit
+budget if each device hammered it independently. Settings grows
+a "Library tools" card with a Backfill button and a 1.5s-while-
+running / 5s-while-idle poll cadence so the in-progress artist
+name shows live.
+
+Decisions worth preserving:
+
+- **Two MB requests per artist, not one.** Search returns the
+  mbid but no tags; the `?inc=tags` lookup is a second call. For a
+  500-artist library this is ~17 minutes at 1 req/sec. The plan
+  to skip the resolve step (key tags directly on the search hit)
+  was tempting but the search response omits `tag-list` entirely.
+- **Sentinel `tag=''` rows.** The cleanest way to record "we
+  tried this and got nothing" while keeping the display queries
+  honest. The smart-playlist genre predicate (14b) and the
+  artist-tag readback queries both filter via `WHERE tag != ''`.
+- **Conservative match heuristic.** Exact-name match handles 95%
+  of the long tail (the user's library mostly has well-spelled
+  artist names); the ext:score ≥ 90 backstop catches "Beatles"
+  vs "The Beatles" and similar. Below that threshold we'd rather
+  leave an artist uncategorized than mislabel them.
+
+### 14b — Genre predicate for smart playlists — _Shipped (`7e3911a`)_
+
+Smart-playlist rule schema grows a new `genre` field with
+`equals` and `contains` ops. Unlike text/numeric/boolean
+predicates it can't be a single-column comparison — genre lives
+in `artist_tags`, not on `tracks`. The clause builder routes
+"genre" through a dedicated subquery path emitting:
+
+    t.artist IN (SELECT artist_name FROM artist_tags
+                 WHERE tag != '' AND tag {= | LIKE} ? COLLATE NOCASE)
+
+Keeping the WHERE-fragment shape contractual means the existing
+AND/OR combinator works without changes; only the per-field
+clause builder learned a new branch.
+
+Decisions worth preserving:
+
+- **`tag != ''` filters out 14a sentinel rows.** Otherwise an
+  uncategorized artist would silently pass a genre filter when
+  the filter value happens to be empty, which would silently
+  include them in every Daily Mix.
+- **No `tag_weight` op yet.** The plan sketched one but the
+  semantics aren't obvious — "weight > N on any tag" isn't
+  useful, "weight > N on a specific tag" needs two values. Wait
+  for a real usage need.
+
+### 14c — Artist Radio — _Shipped (`fbfb54a`)_
+
+Spotify-style Artist Radio: GET
+`/api/library/artists/<name>/radio` returns a shuffled queue with
+~30% seed-artist tracks and ~70% from artists sharing the seed's
+top MB tag.
+
+**DB.** `build_artist_radio(name, limit)` runs both pool queries
+(seed + related-by-top-tag) and Python-shuffles their union so
+the rows interleave — a per-SELECT `ORDER BY RANDOM()` would
+keep the two pools grouped. Falls back to seed-only when:
+the seed has no `artist_tags` row, or the seed's top tag has no
+other artists in the library. The related pool excludes the
+seed itself so a heavy-tag seed can't fill both slot pools with
+their own tracks.
+
+**API.** Available-only filter matches the album-tracks endpoint
+so `next()` can't land on a dead row.
+
+**UI.** ArtistDetailScreen grows a "📻 Start Radio" button.
+Toast copy adapts to whether the related pool is empty,
+non-empty, or untagged-altogether so users know to run the
+backfill if their radio feels narrow.
+
+Decisions worth preserving:
+
+- **Python-shuffle the combined pool.** Per-SELECT `RANDOM()`
+  keeps seed-vs-related rows grouped, which feels less like
+  radio and more like "here's their album, then their friends'
+  albums". The Python shuffle is O(N) on a 50-element queue —
+  cheap.
+- **Seed exclusion in the related subquery.** A heavily-tagged
+  seed artist could otherwise self-fill both pools and the
+  radio would be 100% the same artist.
+- **`_PLAYABLE_TRACK_COLS` constant factored out.** Both radio +
+  the daily-mix pool query SELECT the same columns and would
+  drift away from the album/playlist queries without
+  centralisation. The trade-off is one f-string per call site
+  for a cheap-to-read constant.
+
+### 14d — Daily Mixes — _Shipped (`f4bf106`)_
+
+4-6 themed playlists generated from the user's top artists
+clustered by their #1 MB tag. Each mix is a 40-track shuffled
+static playlist with a reserved id (`daily_mix_1`..`daily_mix_N`),
+persisted via the existing playlists + playlist_tracks tables so
+the sidebar listing + scoped Songs screen + catalog sync all
+work without changes.
+
+**Cold-start guard.** Below 8 artists with ≥3 plays in the last
+90 days, regenerate returns `{"mixes": 0, "reason":
+"cold_start"}` *and* purges any prior mixes so an install that
+went quiet doesn't show frozen tiles. The same purge runs at the
+start of every regen so a shrunk run doesn't leave orphaned
+high-index entries.
+
+**Clustering for v1.** Each top artist's #1 tag is the cluster
+key — two artists land in the same mix iff their strongest tag
+matches. More sophisticated approaches (Jaccard on full tag
+sets, k-means in weight-space) wait until v1 grouping proves too
+narrow in practice.
+
+**Persistence shape.** `ensure_system_playlist(pid, name)`
+generalizes the Stage 11a Liked Songs UPSERT so any reserved-id
+system playlist can ride the same idempotency path. Bumps `name`
+on conflict so a regenerated mix can rename its cluster tag
+without churning a separate UPDATE.
+
+**API.** Synchronous POST `/api/library/daily-mixes/regenerate`
+(pure-SQL, ~100ms total). Master-only — satellites get the rows
+via catalog sync. The existing `/api/library/home` payload grew
+a `daily_mixes` array so the Home screen renders tiles in a
+single round-trip.
+
+**UI.** Home gains a Daily Mixes row above Jump back in (only
+when non-empty). Each tile shows the cluster tag in a gradient
+square + track count. Settings' Library tools card grows a
+"Regenerate" button with toast copy that distinguishes `cold_start`
+from `no_tags` so users know whether to listen more or run the
+backfill.
+
+Decisions worth preserving:
+
+- **Static playlist rows, not smart rules.** Daily Mixes are
+  effectively a frozen-at-regen-time pool. The smart-playlist
+  rule engine doesn't have an expressive way to say "a random
+  40-track sample drawn from artists with top-tag X" without a
+  bespoke rule type that nothing else needs.
+- **Cold-start purge.** Without it, a user who used to qualify
+  but stopped listening would see the same Daily Mixes
+  indefinitely — worse than an honest empty state.
+- **Tag parsed back out of the name on read.** The Home tile
+  needs the cluster tag for its subtitle copy; storing it
+  separately would mean a parallel column on `playlists` that
+  nothing else uses. The parser is symmetric with what
+  `_format_mix_name` writes.
+
+### Stage 14 follow-ups (not yet started)
+
+- **`artist_tags` catalog-sync delta.** Currently master-only;
+  satellites won't show genre filters / Daily Mixes until they
+  pull the master's tag data. Same shape as Stage 13's
+  `pull_lyrics` — one new endpoint + cursor + apply method.
+- **Periodic regen via sync_scheduler.** The plan called for a
+  weekly tick that re-runs the backfill + daily-mix regen. v1
+  ships with manual buttons in Settings; the scheduler
+  integration is a thin wrapper around the existing entry
+  points.
+- **Artist-image source for Top Artists + Daily Mix tiles.**
+  Initial-in-a-circle placeholder works but is visually thin
+  next to Spotify's portrait grid. Wikidata's P18 (image) on
+  MB-linked artists is a candidate — needs caching and content-
+  type sniffing.
+
+---
+
 ## Keeping this doc current
 
 Update the "Shipped stages" table as each stage lands (same cadence
