@@ -2292,6 +2292,33 @@ def test_lyrics_post_clears_row_on_empty_lrc(
     assert len(delete_calls) == 1
 
 
+def test_tags_backfill_kicks_task_on_master(
+    client, mock_config, _config_file_present,
+):
+    import web_server
+    mock_config.is_master = True
+    with patch.object(web_server.task_manager, "start_task",
+                      return_value=(True, "ok")) as start:
+        res = client.post('/api/library/tags/backfill', json={})
+    assert res.status_code == 200
+    args, _ = start.call_args
+    # The task target is run_tag_backfill, given db_path + incremental.
+    assert args[0] is web_server.run_tag_backfill
+    assert args[1] == (mock_config.db_path, True)
+    assert args[2] == "Genre tag backfill"
+
+
+def test_tags_backfill_refuses_on_satellite(
+    client, mock_config, _config_file_present,
+):
+    """Each satellite hammering MB independently would shred the
+    rate-limit budget — the master runs the backfill once and the
+    catalog-sync delta fans the rows out."""
+    mock_config.is_master = False
+    res = client.post('/api/library/tags/backfill', json={})
+    assert res.status_code == 400
+
+
 def test_like_track_on_satellite_proxies_to_master_and_mirrors_locally(
     client, mock_config, _config_file_present,
 ):

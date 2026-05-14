@@ -241,6 +241,19 @@ def run_audit(db_path):
         audit_lib_logic(db)
 
 
+def run_tag_backfill(db_path, incremental=True, progress_callback=None):
+    """TaskManager target — kept out of the endpoint body so the
+    request handler stays thin and the job can also be invoked from
+    a future scheduler tick."""
+    from src.genre_backfill import backfill_artist_tags
+    with DatabaseManager(db_path) as db:
+        return backfill_artist_tags(
+            db,
+            progress_callback=progress_callback,
+            incremental=incremental,
+        )
+
+
 def build_suggestion_items(raw_items):
     """Normalize a suggestions payload into (search_query, mbid_guess) pairs.
 
@@ -1398,6 +1411,40 @@ def api_library_track_lyrics(mbid: str):
     except Exception as e:
         logger.exception("api_library_track_lyrics GET failed")
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/tags/backfill", methods=["POST"])
+def api_library_tags_backfill():
+    """Kick the MusicBrainz tag backfill in the background.
+
+    Body (all optional): ``{"incremental": bool}`` — when True (default)
+    skip artists with a fresh artist_tags row newer than 30 days. The
+    job runs in the existing TaskManager so concurrent requests collide
+    with the same "already running" message every other long-running
+    task uses.
+
+    Master-only — satellites get tag rows from catalog sync once a
+    future stage ships that delta. For now the satellite returns 400
+    so users don't accidentally hammer MB from every device.
+    """
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.is_master:
+        return jsonify({
+            "success": False,
+            "message": (
+                "Tag backfill runs on the master only — your satellite "
+                "will pick up tags from the next catalog sync."
+            ),
+        }), 400
+    data = request.json or {}
+    incremental = bool(data.get("incremental", True))
+    success, msg = task_manager.start_task(
+        run_tag_backfill,
+        (config.db_path, incremental),
+        "Genre tag backfill",
+    )
+    return jsonify({"success": success, "message": msg})
 
 
 @app.route("/api/library/wrapped", methods=["GET"])

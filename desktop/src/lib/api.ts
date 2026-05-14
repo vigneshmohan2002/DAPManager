@@ -555,6 +555,22 @@ export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
   return (data.playlists ?? []) as OrphanPlaylist[];
 }
 
+export async function startTagBackfill(
+  incremental = true,
+): Promise<{ success: boolean; message?: string }> {
+  const url = await backendUrl();
+  const r = await fetch(`${url}/api/library/tags/backfill`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ incremental }),
+  });
+  const data = await r.json();
+  return {
+    success: Boolean(data.success),
+    message: typeof data.message === "string" ? data.message : undefined,
+  };
+}
+
 export type LyricsResponse = {
   lrc: string | null;
   synced: boolean;

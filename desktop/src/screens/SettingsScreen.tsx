@@ -3,7 +3,10 @@ import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
 import {
   fetchConfig,
+  fetchStatus,
   saveConfig,
+  startTagBackfill,
+  type BackendStatus,
   type ConfigPayload,
   type ConfigValue,
 } from "../lib/api";
@@ -147,6 +150,7 @@ export default function SettingsScreen({
           <div className="text-sm text-[var(--color-text-muted)]">Loading…</div>
         ) : (
           <div className="max-w-3xl space-y-6">
+            <LibraryTools ready={ready} />
             {payload.groups.map((group) => (
               <fieldset
                 key={group.label}
@@ -229,5 +233,97 @@ export default function SettingsScreen({
         )}
       </div>
     </div>
+  );
+}
+
+// --- Library tools --------------------------------------------------------
+
+// Polls /api/status while a job is running so the button shows the
+// task's progress detail without forcing the user to re-click. The
+// poll stops as soon as the job goes idle to avoid burning the
+// network for the rest of the session.
+function LibraryTools({ ready }: { ready: boolean }) {
+  const [status, setStatus] = useState<BackendStatus | null>(null);
+  const [kicking, setKicking] = useState(false);
+  const toast = useToast();
+
+  // Backfill is the only TaskManager-driven job this card cares
+  // about — narrow the running indicator to that task name so a
+  // Library Scan running in another tab doesn't paint this row
+  // "in progress".
+  const backfilling = Boolean(
+    status?.running && status.task === "Genre tag backfill",
+  );
+
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const s = await fetchStatus();
+        if (cancelled) return;
+        setStatus(s);
+        // Fast poll while running, slow heartbeat while idle — the
+        // user is only on this screen briefly so 5s idle is fine.
+        timer = setTimeout(tick, s.running ? 1500 : 5000);
+      } catch {
+        if (!cancelled) timer = setTimeout(tick, 5000);
+      }
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [ready]);
+
+  const handleBackfill = async () => {
+    setKicking(true);
+    try {
+      const result = await startTagBackfill(true);
+      if (!result.success) {
+        toast.show(result.message ?? "Couldn't start backfill", "err");
+      } else {
+        toast.show("Tag backfill started");
+        // Force an immediate poll so the button flips to "Running"
+        // without waiting for the next 5s idle tick.
+        fetchStatus().then(setStatus).catch(() => {});
+      }
+    } finally {
+      setKicking(false);
+    }
+  };
+
+  return (
+    <fieldset className="border border-[var(--color-border)] rounded-md px-4 pt-3 pb-4">
+      <legend className="px-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+        Library tools
+      </legend>
+      <div className="mt-2 flex items-start gap-4">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm">Backfill genre tags from MusicBrainz</p>
+          <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
+            Walks your library and asks MusicBrainz for each artist's
+            top tags. Powers genre filters on smart playlists and the
+            Artist Radio feature. Rate-limited to ~1 request/sec, so a
+            500-artist library takes about 15 minutes. Incremental —
+            re-running skips artists already tagged in the last 30 days.
+          </p>
+          {backfilling && status?.detail && (
+            <p className="mt-2 text-xs text-[var(--color-text)] font-mono">
+              {status.detail}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={handleBackfill}
+          disabled={!ready || kicking || backfilling}
+          className="shrink-0 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium disabled:opacity-50"
+        >
+          {backfilling ? "Running…" : kicking ? "Starting…" : "Backfill"}
+        </button>
+      </div>
+    </fieldset>
   );
 }
