@@ -1787,6 +1787,68 @@ def test_lyrics_negative_cache_stores_null_lrc(db):
     assert row["source"] == "lrclib"
 
 
+def test_build_artist_radio_falls_back_to_seed_only_without_tags(db):
+    """A fresh install with no tag backfill yet still gets a usable
+    radio — it just won't be very wide. The UI's toast copy adapts
+    to top_tag=None so the user knows why."""
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="Beatles"))
+    db.add_or_update_track(Track(mbid="m2", title="B", artist="Beatles"))
+    db.add_or_update_track(Track(mbid="m3", title="C", artist="Other"))
+
+    result = db.build_artist_radio("Beatles", limit=10)
+    assert result["top_tag"] is None
+    assert result["related_count"] == 0
+    # Both seed tracks come back, "Other" doesn't.
+    mbids = {t["mbid"] for t in result["tracks"]}
+    assert mbids == {"m1", "m2"}
+
+
+def test_build_artist_radio_pulls_related_artists_by_top_tag(db):
+    db.add_or_update_track(Track(mbid="s1", title="A", artist="Beatles"))
+    db.add_or_update_track(Track(mbid="s2", title="B", artist="Beatles"))
+    db.add_or_update_track(Track(mbid="r1", title="C", artist="Stones"))
+    db.add_or_update_track(Track(mbid="r2", title="D", artist="Kinks"))
+    db.add_or_update_track(Track(mbid="x1", title="E", artist="JazzGuy"))
+    db.record_artist_tags("Beatles", None, [
+        {"tag": "rock", "weight": 10}
+    ])
+    db.record_artist_tags("Stones", None, [{"tag": "rock", "weight": 8}])
+    db.record_artist_tags("Kinks", None, [{"tag": "rock", "weight": 7}])
+    db.record_artist_tags("JazzGuy", None, [{"tag": "jazz", "weight": 5}])
+
+    result = db.build_artist_radio("Beatles", limit=10)
+    assert result["top_tag"] == "rock"
+    mbids = {t["mbid"] for t in result["tracks"]}
+    # The seed artist's tracks are in. Both rock-tagged related
+    # artists' tracks are in. JazzGuy is NOT.
+    assert "s1" in mbids or "s2" in mbids
+    assert "r1" in mbids or "r2" in mbids
+    assert "x1" not in mbids
+
+
+def test_build_artist_radio_excludes_seed_from_related_pool(db):
+    """The seed pool and related pool must not overlap — otherwise
+    a heavy-tag seed artist could fill both slot pools with their
+    own tracks and the radio wouldn't actually broaden the user's
+    listening."""
+    db.add_or_update_track(Track(mbid="s1", title="A", artist="Beatles"))
+    db.record_artist_tags("Beatles", None, [{"tag": "rock", "weight": 10}])
+
+    result = db.build_artist_radio("Beatles", limit=10)
+    # Only one track total — the seed. Related pool sees Beatles but
+    # the WHERE artist != ? filter excludes them.
+    artists = {t["artist"] for t in result["tracks"]}
+    assert artists == {"Beatles"}
+
+
+def test_build_artist_radio_skips_soft_deleted_tracks(db):
+    db.add_or_update_track(Track(mbid="m1", title="A", artist="Beatles"))
+    db.add_or_update_track(Track(mbid="m2", title="B", artist="Beatles"))
+    db.soft_delete_track("m2")
+    result = db.build_artist_radio("Beatles", limit=10)
+    assert {t["mbid"] for t in result["tracks"]} == {"m1"}
+
+
 def test_get_distinct_artist_names_excludes_soft_deleted(db):
     db.add_or_update_track(Track(mbid="m1", title="A", artist="Beatles"))
     db.add_or_update_track(Track(mbid="m2", title="B", artist="Stones"))

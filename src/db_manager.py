@@ -2162,13 +2162,97 @@ class DatabaseManager:
             return []
         cur = self.conn.execute(
             "SELECT artist_name, weight FROM artist_tags "
-            "WHERE tag = ? COLLATE NOCASE "
+            "WHERE tag = ? COLLATE NOCASE AND tag != '' "
             "ORDER BY weight DESC, artist_name COLLATE NOCASE LIMIT ?",
             (tag, int(limit)),
         )
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         return rows
+
+    # Columns used by the playable-row serializer (web_server's
+    # _public_track_row). Centralized so the radio + daily-mix queries
+    # don't drift away from the album/playlist queries.
+    _PLAYABLE_TRACK_COLS = (
+        "mbid, title, artist, album, track_number, disc_number, "
+        "local_path, dap_path, is_liked, "
+        "COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id"
+    )
+
+    def build_artist_radio(
+        self,
+        artist_name: str,
+        limit: int = 50,
+    ) -> dict:
+        """Generate an Artist Radio queue seeded on ``artist_name``.
+
+        Pool composition:
+          - ~30% tracks by the seed artist
+          - ~70% tracks by other artists sharing the seed's top MB tag
+
+        Falls back to seed-only when:
+          - the seed has no artist_tags row (Stage 14a backfill hasn't
+            covered them, or the backfill couldn't resolve them on MB)
+          - the seed's top tag has no other artists in the library
+
+        Both halves are SQL-RANDOM-sorted independently, then
+        interleaved by a Python shuffle so the user doesn't hear all
+        of the seed artist first then all related — RANDOM() per
+        SELECT keeps the rows grouped by which SELECT they came from.
+
+        Returns ``{"tracks": [...], "top_tag": str|None,
+        "seed_count": int, "related_count": int}``. The breakdown
+        feeds the UI's "Why am I hearing this?" tooltip.
+        """
+        import random
+        if not artist_name:
+            return {
+                "tracks": [], "top_tag": None,
+                "seed_count": 0, "related_count": 0,
+            }
+        limit = max(1, min(int(limit), 200))
+        seed_slots = max(1, limit // 3)
+        related_slots = limit - seed_slots
+
+        top_tags = self.get_top_tags_for_artist(artist_name, limit=1)
+        top_tag = top_tags[0]["tag"] if top_tags else None
+
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT {self._PLAYABLE_TRACK_COLS} FROM tracks "
+                "WHERE artist = ? COLLATE NOCASE "
+                "  AND deleted_at IS NULL "
+                "ORDER BY RANDOM() LIMIT ?",
+                (artist_name, seed_slots),
+            )
+            seed_rows = [dict(r) for r in cur.fetchall()]
+
+            related_rows: List[dict] = []
+            if top_tag and related_slots > 0:
+                cur.execute(
+                    f"SELECT {self._PLAYABLE_TRACK_COLS} FROM tracks t "
+                    "WHERE deleted_at IS NULL "
+                    "  AND artist != ? COLLATE NOCASE "
+                    "  AND artist IN ( "
+                    "    SELECT artist_name FROM artist_tags "
+                    "    WHERE tag = ? COLLATE NOCASE AND tag != '' "
+                    "  ) "
+                    "ORDER BY RANDOM() LIMIT ?",
+                    (artist_name, top_tag, related_slots),
+                )
+                related_rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+        combined = seed_rows + related_rows
+        random.shuffle(combined)
+        return {
+            "tracks": combined,
+            "top_tag": top_tag,
+            "seed_count": len(seed_rows),
+            "related_count": len(related_rows),
+        }
 
     def apply_pushed_playlist_row(self, row: dict) -> str:
         """Apply a playlist pushed from a satellite, using last-writer-wins

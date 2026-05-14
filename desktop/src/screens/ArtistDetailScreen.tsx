@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import AlbumCard from "../components/AlbumCard";
 import TopBar from "../components/TopBar";
+import { useToast } from "../components/Toast";
 import {
   albumCoverUrl,
   backendUrl,
   fetchAlbums,
   fetchArtistInfo,
+  fetchArtistRadio,
   type Album,
   type Artist,
   type ArtistInfo,
 } from "../lib/api";
+import { usePlayer } from "../player/PlayerContext";
 
 type Props = {
   artist: Artist;
@@ -25,6 +28,43 @@ export default function ArtistDetailScreen({ artist, onBack, onOpenAlbum }: Prop
   const [search, setSearch] = useState("");
   const [info, setInfo] = useState<ArtistInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(true);
+  const [radioLoading, setRadioLoading] = useState(false);
+  const { play } = usePlayer();
+  const toast = useToast();
+
+  const handleRadio = async () => {
+    setRadioLoading(true);
+    try {
+      const result = await fetchArtistRadio(artist.name);
+      if (result.tracks.length === 0) {
+        toast.show("No playable tracks found for this radio.", "err");
+        return;
+      }
+      const queue = result.tracks.map((t) => ({
+        ...t,
+        albumId: t.album_id,
+      }));
+      play(queue, 0);
+      // The breakdown tells users why the queue looks the way it does
+      // — especially important when the related pool is empty because
+      // the tag backfill hasn't run yet.
+      if (result.related_count === 0) {
+        toast.show(
+          result.top_tag
+            ? `Radio: ${artist.name} (no matching artists yet)`
+            : `Radio: ${artist.name} (run a tag backfill in Settings for richer mixes)`,
+        );
+      } else {
+        toast.show(
+          `Radio: ${artist.name} · ${result.related_count} related (${result.top_tag})`,
+        );
+      }
+    } catch (e) {
+      toast.show(`Radio failed: ${e}`, "err");
+    } finally {
+      setRadioLoading(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -77,12 +117,22 @@ export default function ArtistDetailScreen({ artist, onBack, onOpenAlbum }: Prop
         onSearch={setSearch}
       />
       <div className="flex-1 overflow-y-auto px-6 py-6">
-        <button
-          onClick={onBack}
-          className="mb-4 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-        >
-          ← All artists
-        </button>
+        <div className="mb-4 flex items-center justify-between">
+          <button
+            onClick={onBack}
+            className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          >
+            ← All artists
+          </button>
+          <button
+            onClick={handleRadio}
+            disabled={radioLoading || albums.length === 0}
+            title="Start a Spotify-style radio seeded on this artist"
+            className="px-4 py-1.5 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium disabled:opacity-40"
+          >
+            {radioLoading ? "Loading…" : "📻 Start Radio"}
+          </button>
+        </div>
         {infoLoading ? (
           <div className="mb-6 h-24 rounded-md bg-[var(--color-surface)]/40 animate-pulse" />
         ) : info ? (

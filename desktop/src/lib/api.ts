@@ -555,6 +555,33 @@ export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
   return (data.playlists ?? []) as OrphanPlaylist[];
 }
 
+export type ArtistRadio = {
+  tracks: LibraryTrack[];
+  top_tag: string | null;
+  seed_count: number;
+  related_count: number;
+};
+
+export async function fetchArtistRadio(
+  name: string,
+  limit = 50,
+): Promise<ArtistRadio> {
+  const url = await backendUrl();
+  const params = new URLSearchParams({ limit: String(limit) });
+  const r = await fetch(
+    `${url}/api/library/artists/${encodeURIComponent(name)}/radio?${params.toString()}`,
+  );
+  if (!r.ok) throw new Error(`radio: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "radio failed");
+  return {
+    tracks: (data.tracks ?? []) as LibraryTrack[],
+    top_tag: data.top_tag ?? null,
+    seed_count: Number(data.seed_count ?? 0),
+    related_count: Number(data.related_count ?? 0),
+  };
+}
+
 export async function startTagBackfill(
   incremental = true,
 ): Promise<{ success: boolean; message?: string }> {

@@ -2292,6 +2292,48 @@ def test_lyrics_post_clears_row_on_empty_lrc(
     assert len(delete_calls) == 1
 
 
+def test_artist_radio_returns_serialized_playable_tracks(
+    client, mock_config, _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.build_artist_radio.return_value = {
+            "tracks": [
+                {
+                    "mbid": "m1", "title": "A", "artist": "X",
+                    "album": "Al", "track_number": 1, "disc_number": 1,
+                    "local_path": "/m/a", "dap_path": None,
+                    "album_id": "Al|X", "is_liked": 0,
+                },
+                # Unavailable row — no local, no dap, no master configured.
+                {
+                    "mbid": "m2", "title": "B", "artist": "X",
+                    "album": "Al", "track_number": 2, "disc_number": 1,
+                    "local_path": None, "dap_path": None,
+                    "album_id": "Al|X", "is_liked": 0,
+                },
+            ],
+            "top_tag": "rock",
+            "seed_count": 2,
+            "related_count": 0,
+        }
+        res = client.get('/api/library/artists/X/radio?limit=10')
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["top_tag"] == "rock"
+    # Unavailable rows are stripped so next() can't land on a dead end.
+    assert [t["mbid"] for t in body["tracks"]] == ["m1"]
+    inst.build_artist_radio.assert_called_once_with("X", limit=10)
+
+
+def test_artist_radio_rejects_non_integer_limit(
+    client, mock_config, _config_file_present,
+):
+    res = client.get('/api/library/artists/X/radio?limit=many')
+    assert res.status_code == 400
+
+
 def test_tags_backfill_kicks_task_on_master(
     client, mock_config, _config_file_present,
 ):

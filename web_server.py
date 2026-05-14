@@ -1413,6 +1413,55 @@ def api_library_track_lyrics(mbid: str):
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/artists/<path:name>/radio", methods=["GET"])
+def api_library_artist_radio(name: str):
+    """Spotify-style Artist Radio: a shuffled queue seeded on the
+    artist with ~30% seed tracks and ~70% from artists sharing the
+    seed's top tag.
+
+    Query params:
+      limit: target queue length (default 50, capped at 200 in the DB
+             layer). Returned counts may be smaller when the library
+             doesn't have enough matching tracks.
+
+    On a fresh install (no Stage 14a tag backfill yet) the related
+    pool is empty and the queue is just the seed artist shuffled —
+    still useful, just not very wide. The UI's "Why am I hearing
+    this?" tooltip reads from ``top_tag`` to explain the choice.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    name = (name or "").strip()
+    if not name:
+        return jsonify({"success": False, "message": "name is required"}), 400
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except ValueError:
+        return jsonify({
+            "success": False, "message": "limit must be an integer",
+        }), 400
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            result = db.build_artist_radio(name, limit=limit)
+        has_master = _master_url_configured()
+        public = []
+        for row in result["tracks"]:
+            if _availability_for(row, has_master) == "unavailable":
+                continue
+            public.append(_public_track_row(row, has_master))
+        return jsonify({
+            "success": True,
+            "tracks": public,
+            "top_tag": result["top_tag"],
+            "seed_count": result["seed_count"],
+            "related_count": result["related_count"],
+        })
+    except Exception as e:
+        logger.exception("api_library_artist_radio failed for %r", name)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/tags/backfill", methods=["POST"])
 def api_library_tags_backfill():
     """Kick the MusicBrainz tag backfill in the background.
