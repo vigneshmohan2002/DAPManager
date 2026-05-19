@@ -1,8 +1,13 @@
 # Master-mode DAPManager. Copy to docker-compose.yml and edit.
 #
-# On first start the entrypoint seeds ./config/config.json with master
-# defaults. Visit http://localhost:5001/setup (or edit config.json) to
-# fill in Soulseek / Jellyfin / Lidarr credentials.
+# Recommended first-run path (handles everything automatically):
+#   Windows:  .\scripts\setup-master.ps1
+#   Linux/Mac: ./setup-master.sh
+#
+# Both scripts detect Tailscale, start containers, wire Prowlarr → Lidarr,
+# and push credentials into DAPManager. Pass Soulseek creds via env:
+#   Windows:  $env:SLSK_USERNAME="user"; $env:SLSK_PASSWORD="pass"; .\scripts\setup-master.ps1
+#   Linux/Mac: SLSK_USERNAME=user SLSK_PASSWORD=pass ./setup-master.sh
 #
 # The image bakes in sldl (slsk-batchdl) from upstream's GitHub release.
 # Bump or pin with --build-arg SLDL_VERSION=vX.Y.Z (amd64 + arm64).
