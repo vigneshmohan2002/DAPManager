@@ -300,6 +300,149 @@ if (-not $SkipArr) {
             Ok "Lidarr root folder /music set"
         } catch { Fail "could not set Lidarr root folder: $_" }
     }
+
+    # ── qBittorrent ───────────────────────────────────────────────────────────
+
+    $QbtUrl = 'http://localhost:8080'
+    Wait-Http -Url "$QbtUrl" -Name "qBittorrent"
+
+    # linuxserver/qbittorrent logs a generated temp password on first boot.
+    # Parse it, set a stable generated password via the WebAPI, then wire
+    # qBittorrent into Lidarr so downloads route automatically.
+    function New-RandomPassword {
+        $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+    }
+
+    Log "reading qBittorrent temporary password from container logs…"
+    $qbtTempPass = $null
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline -and -not $qbtTempPass) {
+        $logs = & docker logs qbittorrent 2>&1
+        $match = ($logs | Select-String 'temporary password[^:]*:\s*(\S+)' | Select-Object -Last 1)
+        if ($match) {
+            $qbtTempPass = $match.Matches[0].Groups[1].Value.Trim()
+        }
+        if (-not $qbtTempPass) { Start-Sleep -Seconds 3 }
+    }
+
+    if (-not $qbtTempPass) {
+        Warn "could not read qBittorrent temp password from logs — skipping qBittorrent wiring."
+        Warn "Visit $QbtUrl to configure manually, then add it in Lidarr Settings → Download Clients."
+    } else {
+        Ok "got qBittorrent temp password"
+
+        # Login with temp password to get a session cookie
+        try {
+            $qbtSession = $null
+            $loginResp = Invoke-WebRequest -Method POST -Uri "$QbtUrl/api/v2/auth/login" `
+                -ContentType 'application/x-www-form-urlencoded' `
+                -Body "username=admin&password=$qbtTempPass" `
+                -SessionVariable qbtSession -UseBasicParsing -ErrorAction Stop
+            if ($loginResp.Content -notmatch 'Ok') {
+                Warn "qBittorrent login failed (wrong temp password?) — skipping qBittorrent wiring."
+                $qbtSession = $null
+            }
+        } catch {
+            Warn "qBittorrent login request failed: $_ — skipping qBittorrent wiring."
+            $qbtSession = $null
+        }
+
+        if ($qbtSession) {
+            # Set a stable generated password
+            $qbtPassword = New-RandomPassword
+            $prefsJson   = [uri]::EscapeDataString("{`"web_ui_password`":`"$qbtPassword`"}")
+            try {
+                Invoke-WebRequest -Method POST -Uri "$QbtUrl/api/v2/app/setPreferences" `
+                    -ContentType 'application/x-www-form-urlencoded' `
+                    -Body "json=$prefsJson" `
+                    -WebSession $qbtSession -UseBasicParsing -ErrorAction Stop | Out-Null
+                Ok "qBittorrent password set"
+            } catch { Warn "could not set qBittorrent password: $_" }
+
+            # Check whether Lidarr already has a qBittorrent download client
+            $dcResp = Invoke-Arr GET $lidarrKey "$LidarrUrl/api/v1/downloadclient"
+            $existingQbt = ($dcResp.Content | ConvertFrom-Json) |
+                Where-Object { $_.implementation -eq 'QBittorrent' }
+
+            if ($existingQbt) {
+                Ok "qBittorrent already registered in Lidarr — skipping"
+            } else {
+                Log "adding qBittorrent to Lidarr…"
+                $dcPayload = @{
+                    name               = 'qBittorrent'
+                    enable             = $true
+                    protocol           = 'torrent'
+                    implementation     = 'QBittorrent'
+                    implementationName = 'qBittorrent'
+                    configContract     = 'QBittorrentSettings'
+                    fields             = @(
+                        @{ name = 'host';          value = 'qbittorrent' }
+                        @{ name = 'port';          value = 8080 }
+                        @{ name = 'useSsl';        value = $false }
+                        @{ name = 'username';      value = 'admin' }
+                        @{ name = 'password';      value = $qbtPassword }
+                        @{ name = 'musicCategory'; value = 'music' }
+                        @{ name = 'initialState';  value = 0 }
+                    )
+                    tags = @()
+                }
+                try {
+                    Invoke-Arr POST $lidarrKey "$LidarrUrl/api/v1/downloadclient" -Body $dcPayload | Out-Null
+                    Ok "qBittorrent added to Lidarr"
+                } catch { Warn "could not add qBittorrent to Lidarr: $_ — add manually in Lidarr Settings → Download Clients." }
+            }
+        }
+    }
+
+    # ── Public Prowlarr indexers (no credentials required) ────────────────────
+
+    Log "fetching available Prowlarr indexer schemas…"
+    try {
+        $schemaResp = Invoke-Arr GET $prowlarrKey "$ProwlarrUrl/api/v1/indexer/schema"
+        $allSchemas = $schemaResp.Content | ConvertFrom-Json
+        $publicSchemas = $allSchemas | Where-Object { $_.privacy -eq 'Public' }
+        Log "found $($publicSchemas.Count) public indexers in Prowlarr catalog"
+    } catch {
+        Warn "could not fetch Prowlarr indexer schemas: $_ — add indexers manually at $ProwlarrUrl"
+        $publicSchemas = @()
+    }
+
+    if ($publicSchemas.Count -gt 0) {
+        # Fetch already-added indexers so we can skip duplicates (idempotent)
+        $existingIndexers = @()
+        try {
+            $eiResp = Invoke-Arr GET $prowlarrKey "$ProwlarrUrl/api/v1/indexer"
+            $existingIndexers = ($eiResp.Content | ConvertFrom-Json) | ForEach-Object { $_.name }
+        } catch { }
+
+        $added = 0; $skipped = 0
+        foreach ($schema in $publicSchemas) {
+            if ($existingIndexers -contains $schema.name) { $skipped++; continue }
+            $indexerPayload = @{
+                name                    = $schema.name
+                enableRss               = $true
+                enableAutomaticSearch   = $true
+                enableInteractiveSearch = $true
+                protocol                = $schema.protocol
+                implementation          = $schema.implementation
+                implementationName      = $schema.implementationName
+                configContract          = $schema.configContract
+                fields                  = $schema.fields   # use schema defaults
+                tags                    = @()
+            }
+            try {
+                Invoke-Arr POST $prowlarrKey "$ProwlarrUrl/api/v1/indexer" -Body $indexerPayload | Out-Null
+                $added++
+            } catch {
+                # Non-fatal — some public schemas require a baseUrl tweak; skip silently
+            }
+        }
+        Ok "Prowlarr public indexers: added $added, skipped $skipped already-present"
+        if ($added -gt 0) {
+            Log "  → indexers auto-synced into Lidarr. Add private indexers at $ProwlarrUrl"
+        }
+    }
 }
 
 # ── Credentials ───────────────────────────────────────────────────────────────

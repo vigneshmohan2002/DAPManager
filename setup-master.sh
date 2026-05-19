@@ -226,6 +226,136 @@ print('yes' if any(f.get('path') == '/music' for f in folders) else 'no')
             && ok "Lidarr root folder /music set" \
             || warn "could not set Lidarr root folder — set it manually at $LIDARR_URL."
     fi
+
+    # ── qBittorrent ───────────────────────────────────────────────────────────
+
+    QBT_URL="${QBT_URL:-http://localhost:8080}"
+    wait_http "$QBT_URL" "qBittorrent"
+
+    log "reading qBittorrent temporary password from container logs…"
+    QBT_TEMP_PASS=""
+    for _ in $(seq 1 20); do
+        QBT_TEMP_PASS=$(docker logs qbittorrent 2>&1 \
+            | grep -oE 'temporary password[^:]*: [A-Za-z0-9]+' \
+            | tail -1 | sed 's/.*: //' || true)
+        [ -n "$QBT_TEMP_PASS" ] && break
+        sleep 3
+    done
+
+    if [ -z "$QBT_TEMP_PASS" ]; then
+        warn "could not read qBittorrent temp password from logs — skipping qBittorrent wiring."
+        warn "Visit $QBT_URL to configure manually, then add in Lidarr → Download Clients."
+    else
+        ok "got qBittorrent temp password"
+
+        # Login with temp password
+        QBT_SID=$(curl -sS -c - --max-time 5 \
+            -d "username=admin&password=${QBT_TEMP_PASS}" \
+            "$QBT_URL/api/v2/auth/login" | grep SID | awk '{print $7}' || true)
+
+        if [ -z "$QBT_SID" ]; then
+            warn "qBittorrent login failed — skipping qBittorrent wiring."
+        else
+            # Generate a stable password and set it
+            QBT_PASSWORD=$(python3 -c "import random,string; print(''.join(random.choices(string.ascii_letters+string.digits, k=24)))")
+            PREFS_JSON=$(python3 -c "import json,urllib.parse; print(urllib.parse.quote(json.dumps({'web_ui_password':'${QBT_PASSWORD}'})))")
+            curl -sS -b "SID=${QBT_SID}" -d "json=${PREFS_JSON}" \
+                "$QBT_URL/api/v2/app/setPreferences" >/dev/null && ok "qBittorrent password set"
+
+            # Check if Lidarr already has qBittorrent
+            existing_dc=$(arr_http GET "$LIDARR_KEY" "$LIDARR_URL/api/v1/downloadclient" || echo "[]")
+            has_qbt=$(printf '%s' "$existing_dc" | python3 -c "
+import json,sys
+clients = json.load(sys.stdin)
+print('yes' if any(c.get('implementation')=='QBittorrent' for c in clients) else 'no')
+" 2>/dev/null || echo "no")
+
+            if [ "$has_qbt" = "yes" ]; then
+                ok "qBittorrent already in Lidarr — skipping"
+            else
+                log "adding qBittorrent to Lidarr…"
+                dc_payload=$(python3 -c "
+import json
+print(json.dumps({
+    'name': 'qBittorrent', 'enable': True,
+    'protocol': 'torrent', 'implementation': 'QBittorrent',
+    'implementationName': 'qBittorrent', 'configContract': 'QBittorrentSettings',
+    'fields': [
+        {'name':'host',          'value':'qbittorrent'},
+        {'name':'port',          'value':8080},
+        {'name':'useSsl',        'value':False},
+        {'name':'username',      'value':'admin'},
+        {'name':'password',      'value':'${QBT_PASSWORD}'},
+        {'name':'musicCategory', 'value':'music'},
+        {'name':'initialState',  'value':0}
+    ], 'tags':[]
+}))")
+                arr_http POST "$LIDARR_KEY" "$LIDARR_URL/api/v1/downloadclient" "$dc_payload" >/dev/null \
+                    && ok "qBittorrent added to Lidarr" \
+                    || warn "could not add qBittorrent to Lidarr — add manually in Lidarr → Download Clients."
+            fi
+        fi
+    fi
+
+    # ── Public Prowlarr indexers (no credentials required) ────────────────────
+
+    log "fetching available Prowlarr indexer schemas…"
+    all_schemas=$(arr_http GET "$PROWLARR_KEY" "$PROWLARR_URL/api/v1/indexer/schema" || echo "[]")
+    public_count=$(printf '%s' "$all_schemas" | python3 -c "
+import json,sys
+schemas = json.load(sys.stdin)
+print(len([s for s in schemas if s.get('privacy')=='Public']))
+" 2>/dev/null || echo "0")
+    log "found $public_count public indexers in Prowlarr catalog"
+
+    if [ "$public_count" -gt 0 ]; then
+        # Fetch already-added indexers for idempotency
+        existing_names=$(arr_http GET "$PROWLARR_KEY" "$PROWLARR_URL/api/v1/indexer" 2>/dev/null \
+            | python3 -c "import json,sys; print('\n'.join(i['name'] for i in json.load(sys.stdin)))" \
+            2>/dev/null || echo "")
+
+        results=$(printf '%s' "$all_schemas" | python3 -c "
+import json, sys, urllib.request, urllib.error
+
+existing = set('''${existing_names}'''.strip().splitlines())
+schemas  = json.load(sys.stdin)
+public   = [s for s in schemas if s.get('privacy') == 'Public']
+
+added = 0; skipped = 0; errors = 0
+for s in public:
+    if s['name'] in existing:
+        skipped += 1
+        continue
+    payload = {
+        'name': s['name'],
+        'enableRss': True, 'enableAutomaticSearch': True,
+        'enableInteractiveSearch': True,
+        'protocol': s['protocol'],
+        'implementation': s['implementation'],
+        'implementationName': s['implementationName'],
+        'configContract': s['configContract'],
+        'fields': s['fields'],
+        'tags': []
+    }
+    req = urllib.request.Request(
+        '${PROWLARR_URL}/api/v1/indexer',
+        data=json.dumps(payload).encode(),
+        headers={'Content-Type':'application/json','X-Api-Key':'${PROWLARR_KEY}'},
+        method='POST'
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        added += 1
+    except:
+        errors += 1  # non-fatal; some schemas need a baseUrl tweak
+
+print(f'added={added} skipped={skipped} errors={errors}')
+")
+        added_n=$(echo "$results" | grep -oE 'added=[0-9]+' | cut -d= -f2)
+        skipped_n=$(echo "$results" | grep -oE 'skipped=[0-9]+' | cut -d= -f2)
+        ok "Prowlarr public indexers: added ${added_n:-0}, skipped ${skipped_n:-0} already-present"
+        [ "${added_n:-0}" -gt 0 ] && log "  → indexers auto-synced into Lidarr. Add private indexers at $PROWLARR_URL"
+    fi
 fi
 
 # ── Credentials ───────────────────────────────────────────────────────────────
