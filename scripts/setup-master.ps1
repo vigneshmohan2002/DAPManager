@@ -105,6 +105,8 @@ param(
     [string]$LidarrInternalUrl = 'http://lidarr:8686',
     [string]$ProwlarrUrl       = 'http://localhost:9696',
     [string]$ProwlarrInternalUrl = 'http://prowlarr:9696',
+    [string]$RutrackerUsername = $env:RUTRACKER_USERNAME,
+    [string]$RutrackerPassword = $env:RUTRACKER_PASSWORD,
     [string]$ComposeFile       = '.\docker-compose.yml',
     [switch]$SkipArr,
     [switch]$PrintOnly
@@ -443,6 +445,75 @@ if (-not $SkipArr) {
             Log "  → indexers auto-synced into Lidarr. Add private indexers at $ProwlarrUrl"
         }
     }
+
+    # ── Private indexers with credentials ────────────────────────────────────
+    # Pass RUTRACKER_USERNAME + RUTRACKER_PASSWORD (or -RutrackerUsername/-Password)
+    # to auto-register Rutracker in Prowlarr.  Other private trackers can be added
+    # the same way below — just clone the block and change the implementation name.
+
+    function Add-PrivateIndexer {
+        param(
+            [string]$IndexerName,       # Prowlarr implementation name, e.g. 'Rutracker'
+            [string]$DisplayName,       # Label shown in Prowlarr UI
+            [string]$Username,
+            [string]$Password,
+            [hashtable]$ExtraFields = @{}
+        )
+        if (-not $Username -or -not $Password) { return }
+
+        # Check if already present
+        $existing = @()
+        try {
+            $eiR = Invoke-Arr GET $prowlarrKey "$ProwlarrUrl/api/v1/indexer"
+            $existing = ($eiR.Content | ConvertFrom-Json) | ForEach-Object { $_.name }
+        } catch { }
+        if ($existing -contains $DisplayName) {
+            Ok "$DisplayName already in Prowlarr — skipping"
+            return
+        }
+
+        # Find schema
+        $schema = $allSchemas | Where-Object { $_.implementation -eq $IndexerName } | Select-Object -First 1
+        if (-not $schema) {
+            Warn "$IndexerName schema not found in Prowlarr (old Prowlarr version?); skipping."
+            return
+        }
+
+        # Merge username/password into the schema fields
+        $fields = @($schema.fields) | ForEach-Object {
+            $f = @{ name = $_.name; value = $_.value }
+            if ($_.name -eq 'username') { $f['value'] = $Username }
+            if ($_.name -eq 'password') { $f['value'] = $Password }
+            foreach ($k in $ExtraFields.Keys) {
+                if ($_.name -eq $k) { $f['value'] = $ExtraFields[$k] }
+            }
+            $f
+        }
+
+        $payload = @{
+            name                    = $DisplayName
+            enableRss               = $true
+            enableAutomaticSearch   = $true
+            enableInteractiveSearch = $true
+            protocol                = $schema.protocol
+            implementation          = $schema.implementation
+            implementationName      = $schema.implementationName
+            configContract          = $schema.configContract
+            fields                  = $fields
+            tags                    = @()
+        }
+        try {
+            Invoke-Arr POST $prowlarrKey "$ProwlarrUrl/api/v1/indexer" -Body $payload | Out-Null
+            Ok "$DisplayName added to Prowlarr"
+        } catch {
+            Warn "could not add $DisplayName to Prowlarr: $_ — add manually at $ProwlarrUrl"
+        }
+    }
+
+    if ($allSchemas) {
+        Add-PrivateIndexer -IndexerName 'Rutracker' -DisplayName 'Rutracker' `
+            -Username $RutrackerUsername -Password $RutrackerPassword
+    }
 }
 
 # ── Credentials ───────────────────────────────────────────────────────────────
@@ -526,7 +597,11 @@ Write-Host "  Next steps:" -ForegroundColor Yellow
 if (-not $SlskUsername) {
     Write-Host "    1. Add Soulseek credentials in Settings → Soulseek" -ForegroundColor Yellow
 }
-Write-Host "    • Add indexers in Prowlarr ($ProwlarrUrl) — they sync into Lidarr automatically" -ForegroundColor Yellow
+if (-not $RutrackerUsername) {
+    Write-Host "    • For lossless music: register at https://rutracker.org then re-run with" -ForegroundColor Yellow
+    Write-Host "      -RutrackerUsername <u> -RutrackerPassword <p>  (or env RUTRACKER_USERNAME/PASSWORD)" -ForegroundColor Yellow
+}
+Write-Host "    • Add more indexers in Prowlarr ($ProwlarrUrl) — they sync into Lidarr automatically" -ForegroundColor Yellow
 Write-Host "    • (Optional) Add Jellyfin credentials in Settings if not passed above" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  Full log: this terminal session" -ForegroundColor DarkGray

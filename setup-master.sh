@@ -16,6 +16,8 @@
 #   JELLYFIN_URL        Jellyfin server URL                (optional)
 #   JELLYFIN_API_KEY    Jellyfin API key                   (optional)
 #   JELLYFIN_USER_ID    Jellyfin user ID                   (optional)
+#   RUTRACKER_USERNAME  Rutracker.org login                (optional — lossless music)
+#   RUTRACKER_PASSWORD  Rutracker.org password             (optional)
 #   DAP_URL             how this script reaches DAPManager (default http://localhost:5001)
 #   LIDARR_URL          how this script reaches Lidarr     (default http://localhost:8686)
 #   PROWLARR_URL        how this script reaches Prowlarr   (default http://localhost:9696)
@@ -356,6 +358,72 @@ print(f'added={added} skipped={skipped} errors={errors}')
         ok "Prowlarr public indexers: added ${added_n:-0}, skipped ${skipped_n:-0} already-present"
         [ "${added_n:-0}" -gt 0 ] && log "  → indexers auto-synced into Lidarr. Add private indexers at $PROWLARR_URL"
     fi
+
+    # ── Private indexers with credentials ────────────────────────────────────
+    # Set RUTRACKER_USERNAME + RUTRACKER_PASSWORD to auto-add Rutracker.
+    # Re-runnable: skips the indexer if it's already present in Prowlarr.
+
+    add_private_indexer() {
+        local impl_name="$1" display="$2" username="$3" password="$4"
+        [ -z "$username" ] || [ -z "$password" ] && return 0
+
+        # Check if already present
+        local existing_names
+        existing_names=$(arr_http GET "$PROWLARR_KEY" "$PROWLARR_URL/api/v1/indexer" 2>/dev/null \
+            | python3 -c "import json,sys; print('\n'.join(i['name'] for i in json.load(sys.stdin)))" \
+            2>/dev/null || echo "")
+        if printf '%s\n' "$existing_names" | grep -qx "$display"; then
+            ok "$display already in Prowlarr — skipping"
+            return 0
+        fi
+
+        # Find schema
+        local schema_json
+        schema_json=$(printf '%s' "$all_schemas" | python3 -c "
+import json,sys
+schemas = json.load(sys.stdin)
+match = next((s for s in schemas if s.get('implementation')=='${impl_name}'), None)
+if match: print(json.dumps(match))
+" 2>/dev/null || echo "")
+        if [ -z "$schema_json" ]; then
+            warn "${impl_name} schema not found in Prowlarr (may need a newer Prowlarr); skipping."
+            return 0
+        fi
+
+        # Merge credentials into schema fields
+        local payload
+        payload=$(printf '%s' "$schema_json" | python3 -c "
+import json,sys
+s = json.load(sys.stdin)
+fields = []
+for f in s.get('fields', []):
+    fv = dict(f)
+    if fv.get('name') == 'username': fv['value'] = '${username}'
+    if fv.get('name') == 'password': fv['value'] = '${password}'
+    fields.append(fv)
+print(json.dumps({
+    'name': '${display}',
+    'enableRss': True, 'enableAutomaticSearch': True,
+    'enableInteractiveSearch': True,
+    'protocol': s['protocol'],
+    'implementation': s['implementation'],
+    'implementationName': s['implementationName'],
+    'configContract': s['configContract'],
+    'fields': fields,
+    'tags': []
+}))")
+
+        arr_http POST "$PROWLARR_KEY" "$PROWLARR_URL/api/v1/indexer" "$payload" >/dev/null \
+            && ok "$display added to Prowlarr" \
+            || warn "could not add $display to Prowlarr — add manually at $PROWLARR_URL"
+    }
+
+    # Cache schema list for reuse across private indexer calls
+    all_schemas="${all_schemas:-$(arr_http GET "$PROWLARR_KEY" "$PROWLARR_URL/api/v1/indexer/schema" 2>/dev/null || echo "[]")}"
+
+    RUTRACKER_USERNAME="${RUTRACKER_USERNAME:-}"
+    RUTRACKER_PASSWORD="${RUTRACKER_PASSWORD:-}"
+    add_private_indexer "Rutracker" "Rutracker" "$RUTRACKER_USERNAME" "$RUTRACKER_PASSWORD"
 fi
 
 # ── Credentials ───────────────────────────────────────────────────────────────
@@ -444,7 +512,11 @@ fi
 
 echo "  Next steps:"
 [ -z "$SLSK_USERNAME" ] && echo "    1. Add Soulseek credentials at $DAP_URL (Settings → Soulseek)"
-echo "    • Add indexers in Prowlarr ($PROWLARR_URL) — they sync into Lidarr automatically"
+if [ -z "$RUTRACKER_USERNAME" ]; then
+    echo "    • For lossless music: register at https://rutracker.org then re-run with:"
+    echo "        RUTRACKER_USERNAME=<u> RUTRACKER_PASSWORD=<p> ./setup-master.sh"
+fi
+echo "    • Add more indexers in Prowlarr ($PROWLARR_URL) — they sync into Lidarr automatically"
 echo "    • (Optional) Add Jellyfin credentials in Settings if not passed above"
 echo ""
 echo "  Full log: $LOG_FILE"
