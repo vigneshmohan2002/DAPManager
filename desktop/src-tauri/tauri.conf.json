@@ -35,6 +35,13 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../../web_server.py": "web_server.py",
+      "../../requirements.txt": "requirements.txt",
+      "../../src": "src",
+      "../../web/static": "web/static",
+      "../../web/templates": "web/templates"
+    }
   }
 }

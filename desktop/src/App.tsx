@@ -31,6 +31,9 @@ type BackendStatus = "booting" | "ready" | "failed";
 
 function App() {
   const [status, setStatus] = useState<BackendStatus>("booting");
+  // After 10 s of booting show a hint so the user doesn't force-quit
+  // during the first-launch venv + pip-install phase (can take minutes).
+  const [bootingSlowly, setBootingSlowly] = useState(false);
   const [screen, setScreen] = useState<string>("home");
   const [scopedPlaylistId, setScopedPlaylistId] = useState<string | null>(null);
   const [openAlbum, setOpenAlbum] = useState<Album | null>(null);
@@ -109,6 +112,13 @@ function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // Show "Installing dependencies…" hint after 10 s of booting.
+  useEffect(() => {
+    if (status !== "booting") return;
+    const timer = window.setTimeout(() => setBootingSlowly(true), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -315,9 +325,14 @@ function App() {
   // renderScreen() can surface the inline error message.
   if (status === "booting") {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-[var(--color-bg)]">
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-[var(--color-bg)]">
         <div className="titlebar-drag absolute inset-x-0 top-0 h-10" />
         <div className="w-5 h-5 border-2 border-[var(--color-text-muted)]/30 border-t-[var(--color-text-muted)] rounded-full animate-spin" />
+        {bootingSlowly && (
+          <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+            Installing dependencies on first launch…
+          </p>
+        )}
       </div>
     );
   }

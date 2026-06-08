@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{Manager, PhysicalSize, RunEvent, State, WebviewWindow, WindowEvent};
 
@@ -53,6 +53,9 @@ impl BackendHandle {
         cmd.arg(&script)
             .current_dir(&project_root)
             .env("DAPMANAGER_PORT", self.port.to_string())
+            // Prevent Python from writing __pycache__ into the read-only
+            // Contents/Resources directory when running from a bundled .app.
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         if let Some(p) = config_path {
@@ -72,13 +75,29 @@ impl BackendHandle {
     }
 }
 
-fn resolve_project_root() -> PathBuf {
-    // Dev/run-from-source: walk up from the src-tauri crate dir to the
-    // repo root (which contains web_server.py). An explicit env var
-    // overrides, so packaged builds can point anywhere.
+/// Resolve the directory that contains `web_server.py`.
+///
+/// Priority:
+///   1. `DAPMANAGER_ROOT` env var (explicit override, useful for CI / dev)
+///   2. Tauri's resource directory — populated at build time via
+///      `bundle.resources` in `tauri.conf.json`; the right answer for any
+///      installed `.app` on another machine.
+///   3. Dev fallback: walk up from `CARGO_MANIFEST_DIR` to the repo root.
+///      This is baked in at compile time and only works on the build machine,
+///      which is fine for `cargo tauri dev`.
+fn resolve_project_root(resource_dir: Option<PathBuf>) -> PathBuf {
     if let Ok(explicit) = std::env::var("DAPMANAGER_ROOT") {
         return PathBuf::from(explicit);
     }
+
+    // Packaged .app: Python sources are bundled into Contents/Resources.
+    if let Some(res) = resource_dir {
+        if res.join("web_server.py").exists() {
+            return res;
+        }
+    }
+
+    // Dev fallback: repo root is two levels above the src-tauri crate.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .parent()
@@ -91,8 +110,66 @@ fn resolve_python() -> String {
     std::env::var("DAPMANAGER_PYTHON").unwrap_or_else(|_| "python3".to_string())
 }
 
+/// Create (or reuse) a venv at `venv_dir` and ensure all requirements are
+/// installed. Returns the path to the venv Python binary, or falls back to
+/// `system_python` if venv creation fails (e.g. Python not found on PATH).
+///
+/// This is called from a background thread on first launch so the Tauri event
+/// loop — and the webview's "booting…" spinner — keep running during what can
+/// be a multi-minute `pip install` on a fresh machine.
+fn ensure_venv(project_root: &Path, venv_dir: &Path, system_python: &str) -> String {
+    let python_bin = if cfg!(target_os = "windows") {
+        venv_dir.join("Scripts").join("python.exe")
+    } else {
+        venv_dir.join("bin").join("python3")
+    };
+
+    if !python_bin.exists() {
+        eprintln!(
+            "DAPManager: creating venv at {} (first launch only)",
+            venv_dir.display()
+        );
+        let status = Command::new(system_python)
+            .args(["-m", "venv", venv_dir.to_str().unwrap_or("")])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status();
+        if let Err(e) = status {
+            eprintln!("DAPManager: venv creation failed: {e}");
+            return system_python.to_string();
+        }
+    }
+
+    if python_bin.exists() {
+        let req = project_root.join("requirements.txt");
+        if req.exists() {
+            eprintln!("DAPManager: installing Python requirements (this may take a minute on first launch)…");
+            let _ = Command::new(&python_bin)
+                .args([
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "--disable-pip-version-check",
+                    "-r",
+                    req.to_str().unwrap_or("requirements.txt"),
+                ])
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+        }
+        python_bin.to_string_lossy().into_owned()
+    } else {
+        eprintln!(
+            "DAPManager: venv creation produced no binary, falling back to {}",
+            system_python
+        );
+        system_python.to_string()
+    }
+}
+
 #[tauri::command]
-fn backend_url(state: State<BackendHandle>) -> String {
+fn backend_url(state: State<Arc<BackendHandle>>) -> String {
     format!("http://127.0.0.1:{}", state.port)
 }
 
@@ -233,7 +310,9 @@ mod chrome_tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let handle = BackendHandle::new(DEFAULT_BACKEND_PORT);
+    // Wrap in Arc so the handle can be shared with the background setup thread
+    // without blocking the Tauri event loop during first-launch pip install.
+    let handle = Arc::new(BackendHandle::new(DEFAULT_BACKEND_PORT));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -249,22 +328,29 @@ pub fn run() {
                 });
             }
 
-            let state: State<BackendHandle> = app.state();
-            let root = resolve_project_root();
-            let python = resolve_python();
+            // Resolve paths while we still hold a reference to `app`.
+            let maybe_resource_dir = app.path().resource_dir().ok();
+            let root = resolve_project_root(maybe_resource_dir.clone());
+
+            // Venv lives in app-data so it persists across app updates and
+            // never tries to write into the read-only Contents/Resources dir.
+            let venv_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| root.clone())
+                .join("venv");
 
             let home = app.path().home_dir().ok();
-            let config_path = home
-                .as_deref()
-                .map(seed_config::platform_config_path);
+            let config_path: Option<PathBuf> =
+                home.as_deref().map(seed_config::platform_config_path);
 
-            if let (Some(home_dir), Some(cfg_path)) = (home.as_deref(), config_path.as_deref()) {
-                if let Ok(resource_dir) = app.path().resource_dir() {
-                    match seed_config::seed_satellite_config(
-                        cfg_path,
-                        &resource_dir,
-                        home_dir,
-                    ) {
+            // Seed the satellite config synchronously (fast — just reads a
+            // small file and writes JSON) before handing off to the thread.
+            if let (Some(home_dir), Some(cfg_path)) =
+                (home.as_deref(), config_path.as_deref())
+            {
+                if let Some(ref resource_dir) = maybe_resource_dir {
+                    match seed_config::seed_satellite_config(cfg_path, resource_dir, home_dir) {
                         Ok(seed_config::SeedOutcome::Seeded { master_url, has_token }) => {
                             eprintln!(
                                 "DAPManager: seeded satellite config at {} (master={}, token={})",
@@ -283,25 +369,32 @@ pub fn run() {
                 }
             }
 
-            if let Err(e) = state.spawn(
-                root.clone(),
-                python.clone(),
-                config_path.as_deref(),
-            ) {
-                eprintln!(
-                    "DAPManager: failed to spawn Python backend ({} at {}): {}",
-                    python,
-                    root.display(),
-                    e
-                );
-            }
+            // Grab a cloned Arc so the thread owns its own reference.
+            let state: State<Arc<BackendHandle>> = app.state();
+            let backend = Arc::clone(&state);
+
+            // Run venv setup + spawn on a background thread.
+            // The webview's "booting…" spinner will keep animating while pip
+            // does its thing; waitForBackend polls until the server is up.
+            std::thread::spawn(move || {
+                let python = ensure_venv(&root, &venv_dir, &resolve_python());
+                if let Err(e) = backend.spawn(root.clone(), python.clone(), config_path.as_deref()) {
+                    eprintln!(
+                        "DAPManager: failed to spawn Python backend ({} at {}): {}",
+                        python,
+                        root.display(),
+                        e
+                    );
+                }
+            });
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
-                let state: State<BackendHandle> = app_handle.state();
+                let state: State<Arc<BackendHandle>> = app_handle.state();
                 state.kill();
             }
         });

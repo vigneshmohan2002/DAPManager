@@ -49,7 +49,9 @@ export async function backendUrl(): Promise<string> {
   return cachedBackend;
 }
 
-export async function waitForBackend(deadlineMs = 30_000): Promise<boolean> {
+// 5 minutes: on first launch the app creates a venv and runs `pip install`
+// before the Python server is ready. Give it enough time.
+export async function waitForBackend(deadlineMs = 300_000): Promise<boolean> {
   const url = await backendUrl();
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
