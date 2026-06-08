@@ -25,7 +25,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-DESKTOP_RELEASE_TAG = "desktop-v0.1.0"
+DESKTOP_RELEASE_TAG = "desktop-v0.2.0"
 GITHUB_REPO = "vigneshmohan2002/DAPManager"
 ASSET_NAME = "DAPManager-mac.zip"
 
