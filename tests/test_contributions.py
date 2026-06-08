@@ -139,9 +139,10 @@ def test_upload_requires_file_field(contrib_client):
 def test_upload_ingests_file_and_marks_ingested(contrib_client):
     import io
 
+    # No quality reported → verification only guards against an empty file.
     res = contrib_client.post("/api/contributions", json={
         "mbid": "mb-up", "artist": "Aphex Twin", "title": "Xtal",
-        "album": "SAW 85-92", "quality": FLAC_Q,
+        "album": "SAW 85-92",
     })
     cid = res.get_json()["contribution_id"]
 
@@ -160,3 +161,59 @@ def test_upload_ingests_file_and_marks_ingested(contrib_client):
         assert db.get_track_local_path("mb-up") == body["local_path"]
         # The fallback CONTRIB download was cleared.
         assert db.get_download_status(db.get_contribution(cid)["download_id"] or -1) is None
+
+
+def test_poll_times_out_attempting_to_needs_upload(contrib_client, monkeypatch):
+    res = contrib_client.post("/api/contributions", json={
+        "mbid": "mb-to", "artist": "A", "title": "B", "quality": FLAC_Q,
+    })
+    cid = res.get_json()["contribution_id"]
+    # Download is still pending, but the attempt window has elapsed → fall
+    # back to upload rather than waiting on a stuck master queue forever.
+    monkeypatch.setattr("web_server._attempt_timeout_seconds", lambda: 0)
+
+    body = contrib_client.get(f"/api/contributions/{cid}").get_json()
+    assert body["status"] == "needs_upload"
+    assert body["want_upload"] is True
+
+
+def test_upload_rejects_worse_quality_than_promised(contrib_client, monkeypatch):
+    import io
+
+    res = contrib_client.post("/api/contributions", json={
+        "mbid": "mb-bad", "artist": "A", "title": "B", "quality": FLAC_Q,
+    })
+    cid = res.get_json()["contribution_id"]
+
+    # The staged file probes as a low-bitrate MP3 — worse than the FLAC promised.
+    monkeypatch.setattr(
+        "src.audio_quality.read_quality",
+        lambda p: {"lossless": False, "bits_per_sample": 0,
+                   "sample_rate": 44100, "bitrate": 128000},
+    )
+    res = contrib_client.post(
+        f"/api/contributions/{cid}/upload",
+        data={"file": (io.BytesIO(b"not as good"), "b.mp3")},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 422
+    assert res.get_json()["status"] == "rejected"
+    with DatabaseManager(contrib_client._db_file) as db:
+        # Not ingested; left recoverable for a retry.
+        assert db.get_contribution(cid)["status"] == "needs_upload"
+        assert db.get_track_local_path("mb-bad") is None
+
+
+def test_upload_rejects_empty_file(contrib_client):
+    import io
+
+    res = contrib_client.post("/api/contributions", json={
+        "mbid": "mb-empty", "artist": "A", "title": "B",
+    })
+    cid = res.get_json()["contribution_id"]
+    res = contrib_client.post(
+        f"/api/contributions/{cid}/upload",
+        data={"file": (io.BytesIO(b""), "empty.flac")},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 422

@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 import threading
 
@@ -2701,6 +2702,35 @@ def catalog_queue_download():
     })
 
 
+def _attempt_timeout_seconds() -> int:
+    """How long a contribution may sit in 'attempting' before we give up on
+    the master acquiring it and ask the satellite to upload. Guards against a
+    master whose download queue is never processed (the row would otherwise
+    stay 'pending' forever and the upload fallback would never fire)."""
+    try:
+        cfg = getattr(config, "_config", {}) or {}
+        return int(cfg.get("contribution_attempt_timeout_seconds", 3600))
+    except (TypeError, ValueError):
+        return 3600
+
+
+def _contribution_age_seconds(contrib: dict) -> Optional[float]:
+    """Seconds since the contribution was created. ``created_at`` is a SQLite
+    CURRENT_TIMESTAMP string in UTC."""
+    raw = contrib.get("created_at")
+    if not raw:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        created = datetime.strptime(str(raw), "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError):
+        return None
+    return (datetime.now(timezone.utc) - created).total_seconds()
+
+
 def _evaluate_contribution(db, contrib: dict) -> dict:
     """Recompute a contribution's live status by comparing what the master
     now holds on disk against the satellite's target quality.
@@ -2742,7 +2772,14 @@ def _evaluate_contribution(db, contrib: dict) -> dict:
         if contrib.get("download_id")
         else None
     )
-    new_status = "attempting" if dl_status == "pending" else "needs_upload"
+    if dl_status == "pending":
+        # Still trying — unless we've been trying too long, in which case fall
+        # back to an upload so a stuck/unprocessed master queue can't stall it.
+        age = _contribution_age_seconds(contrib)
+        timed_out = age is not None and age >= _attempt_timeout_seconds()
+        new_status = "needs_upload" if timed_out else "attempting"
+    else:
+        new_status = "needs_upload"
     if new_status != status:
         db.update_contribution(contrib["id"], status=new_status)
         contrib = db.get_contribution(contrib["id"])
@@ -2868,6 +2905,7 @@ def upload_contribution(contribution_id: int):
     from werkzeug.utils import secure_filename
     from src.file_ingest import ingest_audio_file
     from src.library_scanner import LibraryScanner
+    from src.audio_quality import read_quality, meets_target
 
     try:
         with DatabaseManager(config.db_path) as db:
@@ -2877,12 +2915,33 @@ def upload_contribution(contribution_id: int):
                     "success": False, "message": "unknown contribution",
                 }), 404
 
+            target = None
+            if contrib.get("target_quality"):
+                try:
+                    target = json.loads(contrib["target_quality"])
+                except (TypeError, ValueError):
+                    target = None
+
             # Stage the upload under downloads/ before ingest moves it.
             staging_dir = os.path.join(config.downloads_dir, "_contrib")
             os.makedirs(staging_dir, exist_ok=True)
             safe_name = secure_filename(upload.filename) or "upload"
             tmp_path = os.path.join(staging_dir, f"{contribution_id}_{safe_name}")
             upload.save(tmp_path)
+
+            # Verify on the staged file *before* moving anything into the
+            # library, so a worse-than-promised or truncated upload can't
+            # overwrite a good copy or pollute the catalog.
+            reject = _verify_upload(tmp_path, target)
+            if reject is not None:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                db.update_contribution(contribution_id, status="needs_upload")
+                return jsonify({
+                    "success": False, "status": "rejected", "message": reject,
+                }), 422
 
             dest = ingest_audio_file(
                 db, LibraryScanner(db, config.picard_path), config.music_library,
@@ -2893,7 +2952,6 @@ def upload_contribution(contribution_id: int):
 
             acquired_q = None
             try:
-                from src.audio_quality import read_quality
                 acquired_q = json.dumps(read_quality(dest))
             except Exception:
                 pass
@@ -2908,6 +2966,32 @@ def upload_contribution(contribution_id: int):
         return jsonify({"success": False, "message": str(e)}), 500
 
     return jsonify({"success": True, "status": "ingested", "local_path": dest})
+
+
+def _verify_upload(path: str, target: Optional[dict]) -> Optional[str]:
+    """Return a rejection reason if the staged upload is empty, grossly
+    truncated, or worse than the satellite promised; ``None`` when it's good.
+    No ``target`` means the satellite reported no quality, so only the
+    empty-file check applies."""
+    from src.audio_quality import read_quality, meets_target
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "uploaded file is unreadable"
+    if size == 0:
+        return "uploaded file is empty"
+    if target:
+        promised = int(target.get("size_bytes") or 0)
+        # Tolerate container/transcode differences but catch gross truncation.
+        if promised and size < promised * 0.5:
+            return (
+                f"uploaded file is truncated ({size} bytes vs promised "
+                f"~{promised})"
+            )
+        if not meets_target(read_quality(path), target):
+            return "uploaded file is lower quality than promised"
+    return None
 
 
 @app.route("/api/audit", methods=["POST"])
