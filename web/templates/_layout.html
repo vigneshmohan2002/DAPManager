@@ -6,6 +6,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}DAP Manager{% endblock %}</title>
     <link rel="stylesheet" href="/static/tailwind.css">
+    <script>
+        // Inject Bearer token for all /api/ fetch calls so the UI works when
+        // api_token is set. Token is written server-side; never stored in JS.
+        window.DAP_TOKEN = "{{ api_token }}";
+        (function () {
+            const _fetch = window.fetch;
+            window.fetch = function (url, opts) {
+                if (window.DAP_TOKEN && typeof url === 'string' && url.startsWith('/api/')) {
+                    opts = Object.assign({}, opts);
+                    opts.headers = Object.assign({ 'Authorization': 'Bearer ' + window.DAP_TOKEN }, opts.headers);
+                }
+                return _fetch(url, opts);
+            };
+        })();
+    </script>
 </head>
 
 <body class="bg-[var(--color-bg)] text-[var(--color-text)] m-0 p-0">

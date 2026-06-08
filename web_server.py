@@ -337,6 +337,16 @@ def check_setup():
         init_app_logic()
 
 
+@app.context_processor
+def inject_api_token():
+    """Make api_token available in every rendered template so the JS fetch
+    patcher in _layout.html can attach the Bearer header automatically."""
+    if config is None:
+        return {"api_token": ""}
+    cfg_dict = getattr(config, "_config", {}) or {}
+    return {"api_token": cfg_dict.get("api_token", "") or ""}
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
