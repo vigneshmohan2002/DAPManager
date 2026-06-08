@@ -172,6 +172,11 @@
                         title="Publishes this device's MBID→path map. Requires report_inventory_to_host in config.">
                         Report Inventory <span class="sync-cursor" data-step="inventory_report"></span>
                     </button>
+                    <button onclick="triggerAction('/api/contribute', 'Contributing local tracks to master...'); setTimeout(loadSyncState, 2000);"
+                        class="btn btn-secondary"
+                        title="Offer this device's local tracks to the master: it tries to download each itself, and only asks for an upload when it can't match the quality. Requires master_url; gated by contribute_to_host.">
+                        Contribute <span class="sync-cursor" data-step="contribute"></span>
+                    </button>
                     <button onclick="triggerAction('/api/catalog/link-local', 'Scanning library to link catalog rows...');"
                         class="btn btn-secondary"
                         title="Scan music_library_path and bind unlinked catalog rows to on-disk files by MBID / ISRC / artist+title. Safe to re-run.">
@@ -230,37 +235,12 @@
 
 {% block scripts %}
 <script>
-    const SETTINGS_GROUPS = [
-        {
-            label: "Paths",
-            keys: ["music_library_path", "downloads_path"],
-        },
-        {
-            label: "DAP",
-            keys: ["dap_mount_point", "dap_music_dir_name", "dap_playlist_dir_name"],
-        },
-        {
-            label: "Downloader (Soulseek)",
-            keys: ["slsk_username", "slsk_password", "fast_search", "remove_ft", "desperate_mode", "strict_quality"],
-        },
-        {
-            label: "Jellyfin",
-            keys: ["jellyfin_url", "jellyfin_api_key", "jellyfin_user_id"],
-        },
-        {
-            label: "Multi-Device Sync",
-            keys: ["is_master", "device_id", "device_role", "master_url", "public_master_url", "report_inventory_to_host", "sync_interval_seconds", "sync_on_startup", "api_token"],
-        },
-        {
-            label: "Tagging (AcoustID / MusicBrainz)",
-            keys: ["acoustid_api_key", "contact_email"],
-        },
-    ];
-    const SETTINGS_SECRET_KEYS = new Set(["slsk_password", "jellyfin_api_key", "api_token", "acoustid_api_key"]);
-    const SETTINGS_BOOL_KEYS = new Set([
-        "fast_search", "remove_ft", "desperate_mode", "strict_quality",
-        "report_inventory_to_host", "is_master", "sync_on_startup",
-    ]);
+    // Field metadata is served by /api/config (sourced from
+    // src/config_keys.py) so the form never drifts from the backend. These
+    // start empty and are populated on load.
+    let SETTINGS_GROUPS = [];
+    let SETTINGS_SECRET_KEYS = new Set();
+    let SETTINGS_BOOL_KEYS = new Set();
     let settingsCurrent = {};
 
     async function loadSettings() {
@@ -274,6 +254,9 @@
                 return;
             }
             settingsCurrent = data.config || {};
+            if (Array.isArray(data.groups)) SETTINGS_GROUPS = data.groups;
+            if (Array.isArray(data.secret_keys)) SETTINGS_SECRET_KEYS = new Set(data.secret_keys);
+            if (Array.isArray(data.bool_keys)) SETTINGS_BOOL_KEYS = new Set(data.bool_keys);
             renderSettings();
             statusEl.textContent = '';
         } catch (e) {

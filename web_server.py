@@ -2022,6 +2022,7 @@ def sync_state():
         "last_playlist_sync": "playlist_pull",
         "last_playlist_push": "playlist_push",
         "last_inventory_report": "inventory_report",
+        "last_contribute": "contribute",
     }
     try:
         with DatabaseManager(config.db_path) as db:
@@ -2795,9 +2796,12 @@ def post_contribution():
                     })
 
             # Try to acquire it ourselves via the existing download pipeline.
+            # Reuse an in-flight download for the same track if one exists so
+            # the poll logic doesn't mistake "already queued" for "no attempt"
+            # and jump straight to asking for an upload.
             query = f"{artist} - {title}"
-            download_id = None
-            if not db.is_download_queued(query):
+            download_id = db.get_active_download_id(mbid, query)
+            if download_id is None:
                 download_id = db.queue_download(DownloadItem(
                     search_query=query, playlist_id="CONTRIB",
                     mbid_guess=mbid, status="pending",

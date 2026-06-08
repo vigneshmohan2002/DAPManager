@@ -65,6 +65,30 @@ def test_post_contribution_requires_artist_and_title(contrib_client):
     assert res.status_code == 400
 
 
+def test_post_links_existing_inflight_download(contrib_client):
+    # A download for this track is already queued (e.g. from a prior wishlist
+    # action). The contribution must attach to it, not leave download_id None
+    # (which the poll would read as "no attempt" → needs_upload).
+    from src.db_manager import DownloadItem
+    with DatabaseManager(contrib_client._db_file) as db:
+        existing = db.queue_download(DownloadItem(
+            search_query="A - B", playlist_id="CATALOG",
+            mbid_guess="mb-dup", status="pending",
+        ))
+
+    res = contrib_client.post("/api/contributions", json={
+        "mbid": "mb-dup", "artist": "A", "title": "B", "quality": FLAC_Q,
+    })
+    cid = res.get_json()["contribution_id"]
+    with DatabaseManager(contrib_client._db_file) as db:
+        assert db.get_contribution(cid)["download_id"] == existing
+
+    # Poll while that download is still pending → still attempting, no upload.
+    body = contrib_client.get(f"/api/contributions/{cid}").get_json()
+    assert body["status"] == "attempting"
+    assert body["want_upload"] is False
+
+
 def test_poll_reports_needs_upload_when_download_failed(contrib_client):
     res = contrib_client.post("/api/contributions", json={
         "mbid": "mb-2", "artist": "A", "title": "B", "quality": FLAC_Q,

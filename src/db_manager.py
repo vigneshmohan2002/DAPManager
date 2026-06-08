@@ -910,6 +910,40 @@ class DatabaseManager:
         cursor.close()
         return row is not None
 
+    def get_active_download_id(
+        self, mbid: Optional[str], search_query: str
+    ) -> Optional[int]:
+        """Return the id of a pending/failed queue row for this track, or
+        ``None``. Matches on ``mbid_guess`` first, then a normalized
+        ``search_query``. Lets a contribution attach to an in-flight download
+        instead of double-queuing (and being mistaken for a failed attempt)."""
+        cursor = self.conn.cursor()
+        try:
+            if mbid:
+                cursor.execute(
+                    "SELECT id FROM download_queue WHERE mbid_guess = ? "
+                    "AND status IN ('pending', 'failed') ORDER BY id LIMIT 1",
+                    (mbid,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row["id"]
+            target = self._normalize_query(search_query)
+            if not target:
+                return None
+            cursor.execute(
+                "SELECT id, search_query FROM download_queue "
+                "WHERE status IN ('pending', 'failed')"
+            )
+            for row in cursor.fetchall():
+                if self._normalize_query(row["search_query"]) == target:
+                    return row["id"]
+            return None
+        except sqlite3.Error:
+            return None
+        finally:
+            cursor.close()
+
     def is_download_queued(self, search_query: str) -> bool:
         """Return True if a normalized form of ``search_query`` is already
         pending or failed in the queue."""
