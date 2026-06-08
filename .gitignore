@@ -13,3 +13,13 @@ src/__pycache__/
 tests/__pycache__/
 .claude/settings.local.json
 desktop/.claude/settings.local.json
+
+# Local runtime files (credentials / data / generated working copies)
+/config/
+/data/
+/lidarr-config/
+/prowlarr-config/
+/qbittorrent-config/
+/docker-compose.yml
+/dapmanager-api-token.txt
+/logs/

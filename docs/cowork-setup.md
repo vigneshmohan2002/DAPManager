@@ -41,6 +41,34 @@ open mode (no token) the API is unauthenticated — keep it on LAN/Tailscale onl
 Paths in `save_config` / `validate-path` are on the **host running
 DAPManager**, not the browser machine.
 
+## This machine (Windows master)
+
+Live services on this host:
+
+| Service    | URL                          | How it runs                           |
+|------------|------------------------------|---------------------------------------|
+| DAPManager | http://localhost:5001        | Docker container `dapmanager`         |
+| Lidarr     | http://localhost:8686        | Docker container `lidarr`             |
+| Prowlarr   | http://localhost:9696        | **Native Windows process** — do NOT start a Prowlarr Docker container, port 9696 is taken |
+| slskd      | http://localhost:5030        | Docker container `slskd`              |
+| Soularr    | (internal)                   | Docker container `soularr`            |
+| Jellyfin   | http://localhost:8096        | Docker container `jellyfin`           |
+
+**Lidarr URL from inside the container:** use `http://host.docker.internal:8686`,
+not `http://localhost:8686` — `localhost` inside the container refers to the
+container itself.
+
+**Windows shell scripts / CRLF:** `.sh` files checked out on Windows may have
+CRLF line endings, which cause `exec: no such file or directory` inside the
+container. If you re-clone or the entrypoint breaks, run:
+```powershell
+Get-ChildItem scripts\*.sh | ForEach-Object {
+    $c = [IO.File]::ReadAllText($_.FullName) -replace "`r`n","`n"
+    [IO.File]::WriteAllText($_.FullName, $c, [Text.UTF8Encoding]::new($false))
+}
+```
+Then rebuild: `docker build -t dapmanager:latest . && docker restart dapmanager`.
+
 ## Contribution flow (satellite → master)
 
 A satellite offers a track by identifier + quality. The master first tries to
