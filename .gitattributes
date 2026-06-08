@@ -1,0 +1,5 @@
+# Shell scripts must always have LF line endings.
+# Windows git would otherwise check them out with CRLF, which breaks
+# the Linux container entrypoint ("exec: no such file or directory").
+scripts/*.sh text eol=lf
+*.sh         text eol=lf
