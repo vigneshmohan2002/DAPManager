@@ -2536,6 +2536,12 @@ def fleet_page():
     return render_template("fleet.html")
 
 
+@app.route("/contributions")
+def contributions_page():
+    """Master-side view of tracks satellites have offered, and their status."""
+    return render_template("contributions.html")
+
+
 @app.route("/orphans")
 def orphans_page():
     """Soft-deleted tracks and playlists, for review / restore / purge."""
@@ -2784,6 +2790,36 @@ def _evaluate_contribution(db, contrib: dict) -> dict:
         db.update_contribution(contrib["id"], status=new_status)
         contrib = db.get_contribution(contrib["id"])
     return contrib
+
+
+@app.route("/api/contributions", methods=["GET"])
+def list_contributions():
+    """List recent contributions for the dashboard. Quality JSON is parsed
+    into objects so the client doesn't have to.
+
+    Response: ``{success, contributions: [...]}``.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        limit = int(request.args.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        with DatabaseManager(config.db_path) as db:
+            rows = db.list_contributions(limit=limit)
+    except Exception as e:
+        logger.error(f"list_contributions failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    for row in rows:
+        for key in ("target_quality", "acquired_quality"):
+            if row.get(key):
+                try:
+                    row[key] = json.loads(row[key])
+                except (TypeError, ValueError):
+                    pass
+    return jsonify({"success": True, "contributions": rows})
 
 
 @app.route("/api/contributions", methods=["POST"])

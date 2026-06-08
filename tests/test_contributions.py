@@ -131,6 +131,26 @@ def test_poll_unknown_contribution_is_404(contrib_client):
     assert res.status_code == 404
 
 
+def test_list_contributions_returns_parsed_quality(contrib_client):
+    contrib_client.post("/api/contributions", json={
+        "device_id": "sat-7", "mbid": "mb-list", "artist": "A", "title": "B",
+        "quality": FLAC_Q,
+    })
+    res = contrib_client.get("/api/contributions")
+    assert res.status_code == 200
+    rows = res.get_json()["contributions"]
+    assert len(rows) == 1
+    assert rows[0]["device_id"] == "sat-7"
+    # Quality JSON is parsed into an object for the client.
+    assert rows[0]["target_quality"]["lossless"] is True
+
+
+def test_contributions_page_renders(contrib_client):
+    res = contrib_client.get("/contributions")
+    assert res.status_code == 200
+    assert b"Contributions" in res.data
+
+
 def test_upload_requires_file_field(contrib_client):
     res = contrib_client.post("/api/contributions/1/upload", json={})
     assert res.status_code == 400

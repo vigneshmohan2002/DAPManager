@@ -1,0 +1,97 @@
+{% extends "_layout.html" %}
+{% set current_page = 'contributions' %}
+{% block title %}DAP Manager — Contributions{% endblock %}
+
+{% block header %}
+<header class="app-header">
+    <h1>Contributions</h1>
+    <div class="subtitle">
+        Tracks satellites have offered. The master tries to download each itself;
+        only when it can't match the quality does the satellite upload the file.
+    </div>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-[1100px]">
+    <section class="card">
+        <div class="flex items-center justify-between mb-2.5">
+            <h2>Recent offers</h2>
+            <button onclick="loadContributions()" class="btn btn-secondary">Refresh</button>
+        </div>
+        <div id="contrib-container">
+            <div class="empty">Loading…</div>
+        </div>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // status → label + colour class, so an operator can scan the column.
+    const STATUS_META = {
+        attempting:   { label: 'Attempting',   cls: 'text-[var(--color-text-muted)]' },
+        have_better:  { label: 'Have better',  cls: 'text-[var(--color-accent)]' },
+        satisfied:    { label: 'Downloaded',   cls: 'text-[var(--color-accent)]' },
+        needs_upload: { label: 'Needs upload', cls: 'text-yellow-500' },
+        ingested:     { label: 'Ingested',     cls: 'text-green-500' },
+    };
+
+    function qualityLabel(q) {
+        if (!q || typeof q !== 'object') return '—';
+        const tier = q.lossless ? 'Lossless' : 'Lossy';
+        const bits = q.bits_per_sample ? `${q.bits_per_sample}-bit/` : '';
+        const sr = q.sample_rate ? `${(q.sample_rate / 1000).toFixed(1)}kHz` : '';
+        const br = q.bitrate ? ` · ${Math.round(q.bitrate / 1000)}kbps` : '';
+        return `${tier} ${bits}${sr}${br}`.trim();
+    }
+
+    async function loadContributions() {
+        const container = document.getElementById('contrib-container');
+        container.innerHTML = '<div class="empty">Loading…</div>';
+        try {
+            const resp = await fetch('/api/contributions');
+            const data = await resp.json();
+            if (!data.success) {
+                container.innerHTML = `<div class="empty">Error: ${data.message || 'unknown'}</div>`;
+                return;
+            }
+            const rows = data.contributions || [];
+            if (!rows.length) {
+                container.innerHTML = '<div class="empty">No contributions yet. Run "Contribute" on a satellite to populate this view.</div>';
+                return;
+            }
+            let html = '<table class="fleet-table"><thead><tr>'
+                + '<th>Device</th><th>Track</th><th>Status</th>'
+                + '<th>Promised</th><th>Master has</th><th>Updated</th>'
+                + '</tr></thead><tbody>';
+            for (const r of rows) {
+                const meta = STATUS_META[r.status] || { label: r.status, cls: '' };
+                const track = `${escapeHtml(r.artist || '')} — ${escapeHtml(r.title || '')}`;
+                html += `<tr>
+                    <td class="muted">${escapeHtml(r.device_id || '—')}</td>
+                    <td>${track}${r.album ? `<div class="muted text-xs">${escapeHtml(r.album)}</div>` : ''}</td>
+                    <td class="${meta.cls}">${escapeHtml(meta.label)}</td>
+                    <td class="muted">${escapeHtml(qualityLabel(r.target_quality))}</td>
+                    <td class="muted">${escapeHtml(qualityLabel(r.acquired_quality))}</td>
+                    <td class="muted">${escapeHtml(r.updated_at || '')}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        } catch (e) {
+            container.innerHTML = `<div class="empty">Failed to load: ${e}</div>`;
+        }
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    loadContributions();
+</script>
+{% endblock %}

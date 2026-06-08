@@ -1004,6 +1004,18 @@ class DatabaseManager:
         cursor.close()
         return dict(row) if row else None
 
+    def list_contributions(self, limit: int = 200) -> List[dict]:
+        """Recent contributions, newest first — backs the dashboard view."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM contributions ORDER BY updated_at DESC, id DESC "
+            "LIMIT ?",
+            (limit,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def update_contribution(self, contribution_id: int, **fields):
         """Patch a contribution row. Only known columns are written; always
         bumps ``updated_at``."""

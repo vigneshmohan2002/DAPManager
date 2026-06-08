@@ -10,7 +10,7 @@
 
 <body class="bg-[var(--color-bg)] text-[var(--color-text)] m-0 p-0">
     {# Each child template sets `current_page` so the sidebar can highlight
-       the active row. Values: dashboard | library | fleet | orphans. #}
+       the active row. Values: dashboard | library | fleet | contributions | orphans. #}
     {% set current = current_page|default('') %}
     <div class="app-shell">
         <aside class="app-sidebar">
@@ -24,6 +24,7 @@
 
                 <div class="app-nav-section">Manage</div>
                 <a href="/fleet" class="app-nav-item {% if current == 'fleet' %}active{% endif %}">Fleet</a>
+                <a href="/contributions" class="app-nav-item {% if current == 'contributions' %}active{% endif %}">Contributions</a>
                 <a href="/orphans" class="app-nav-item {% if current == 'orphans' %}active{% endif %}">Orphans</a>
 
                 {# Pages can append their own sections (e.g. library.html
