@@ -49,10 +49,20 @@ type PlayerState = {
   // heart-toggle path so the queue panel doesn't drift out of sync
   // with the rest of the app. No-op when the mbid isn't queued.
   setTrackLikedInQueue: (mbid: string, liked: boolean) => void;
+  // Sleep timer expiry (epoch ms) or null when no timer is set. The
+  // player auto-pauses when Date.now() reaches the target.
+  sleepTimerExpiresAt: number | null;
+  // Set a sleep timer for ``durationMs`` ms from now. ``null``
+  // cancels any running timer immediately.
+  setSleepTimer: (durationMs: number | null) => void;
 };
 
 const LS_SHUFFLE = "dap.player.shuffle";
 const LS_REPEAT = "dap.player.repeat";
+const LS_QUEUE = "dap.player.queue";
+// Bumped if the persisted-queue shape ever changes incompatibly so old
+// blobs are dropped silently instead of crashing the boot.
+const LS_QUEUE_VERSION = 1;
 
 function loadShuffle(): boolean {
   try {
@@ -71,6 +81,40 @@ function loadRepeat(): RepeatMode {
   }
 }
 
+type PersistedQueue = {
+  v: number;
+  queue: PlayerTrack[];
+  index: number;
+};
+
+function loadQueue(): PersistedQueue {
+  // Default to empty queue; any parse / shape failure also falls back
+  // to empty so a corrupted localStorage entry doesn't crash boot.
+  const empty: PersistedQueue = { v: LS_QUEUE_VERSION, queue: [], index: 0 };
+  try {
+    const raw = localStorage.getItem(LS_QUEUE);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== LS_QUEUE_VERSION) return empty;
+    const queue = Array.isArray(parsed.queue) ? parsed.queue : [];
+    // Re-validate each row's shape minimally — a stale dump from a
+    // pre-Stage-11f Track type (no is_liked) is fine, but a totally
+    // mismatched payload should drop.
+    const valid = queue.every(
+      (t: unknown) =>
+        typeof t === "object" &&
+        t !== null &&
+        typeof (t as PlayerTrack).mbid === "string" &&
+        typeof (t as PlayerTrack).title === "string",
+    );
+    if (!valid) return empty;
+    const idx = typeof parsed.index === "number" ? parsed.index : 0;
+    return { v: LS_QUEUE_VERSION, queue, index: Math.max(0, Math.min(idx, queue.length - 1)) };
+  } catch {
+    return empty;
+  }
+}
+
 const Ctx = createContext<PlayerState | null>(null);
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
@@ -80,14 +124,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audioRef.current.preload = "auto";
   }
 
-  const [queue, setQueue] = useState<PlayerTrack[]>([]);
-  const [index, setIndex] = useState(0);
+  // Hydrate from localStorage so the queue (and current index)
+  // survives a window reload — matches Spotify's behavior of picking
+  // back up where the user left off, minus playback state since
+  // browser autoplay restrictions block resuming without a user
+  // gesture anyway.
+  const persisted = loadQueue();
+  const [queue, setQueue] = useState<PlayerTrack[]>(persisted.queue);
+  const [index, setIndex] = useState(persisted.index);
   const [isPlaying, setIsPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [base, setBase] = useState<string>("");
   const [shuffle, setShuffle] = useState<boolean>(loadShuffle);
   const [repeat, setRepeat] = useState<RepeatMode>(loadRepeat);
+  // Sleep timer is intentionally NOT persisted — a fresh window
+  // shouldn't surprise the user with an old timer auto-firing.
+  const [sleepTimerExpiresAt, setSleepTimerExpiresAt] = useState<
+    number | null
+  >(null);
 
   // Pool of queue indices left to play in the current shuffle cycle.
   // Held in a ref so picking the next track doesn't itself trigger a
@@ -110,6 +165,42 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       /* see above */
     }
   }, [repeat]);
+
+  // Persist queue + index whenever either changes. Writes are
+  // batched naturally by React's render cycle — even a multi-track
+  // playNext lands in one setItem because the effect runs after the
+  // render that committed the new queue.
+  useEffect(() => {
+    try {
+      const payload: PersistedQueue = {
+        v: LS_QUEUE_VERSION,
+        queue,
+        index,
+      };
+      localStorage.setItem(LS_QUEUE, JSON.stringify(payload));
+    } catch {
+      /* over-quota / private mode — fall back to session-only */
+    }
+  }, [queue, index]);
+
+  // Fire the sleep timer: pause playback once the absolute expiry is
+  // reached, then clear the timer so the UI returns to "no timer". A
+  // single setTimeout for the exact remaining time avoids polling; it
+  // re-arms whenever the expiry changes (set/cancel/extend).
+  useEffect(() => {
+    if (sleepTimerExpiresAt === null) return;
+    const fire = () => {
+      audioRef.current?.pause();
+      setSleepTimerExpiresAt(null);
+    };
+    const remaining = sleepTimerExpiresAt - Date.now();
+    if (remaining <= 0) {
+      fire();
+      return;
+    }
+    const id = window.setTimeout(fire, remaining);
+    return () => window.clearTimeout(id);
+  }, [sleepTimerExpiresAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -318,6 +409,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setRepeat((r) => (r === "off" ? "all" : r === "all" ? "one" : "off"));
   }, []);
 
+  // Arm a sleep timer ``durationMs`` from now, or cancel it with null /
+  // a non-positive duration. We store an absolute expiry (not a remaining
+  // duration) so the firing effect doesn't drift across re-renders.
+  const setSleepTimer = useCallback((durationMs: number | null) => {
+    setSleepTimerExpiresAt(
+      durationMs === null || durationMs <= 0 ? null : Date.now() + durationMs,
+    );
+  }, []);
+
   const addToQueue = useCallback(
     (tracks: PlayerTrack | PlayerTrack[]) => {
       const items = Array.isArray(tracks) ? tracks : [tracks];
@@ -461,6 +561,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setTrackLikedInQueue,
+      sleepTimerExpiresAt,
+      setSleepTimer,
     }),
     [
       queue,
@@ -484,6 +586,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setTrackLikedInQueue,
+      sleepTimerExpiresAt,
+      setSleepTimer,
     ],
   );
 

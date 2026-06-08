@@ -38,12 +38,29 @@ export default function PlayerBar({
     repeat,
     toggleShuffle,
     cycleRepeat,
+    sleepTimerExpiresAt,
+    setSleepTimer,
   } = usePlayer();
   const [base, setBase] = useState("");
+  const [sleepMenuOpen, setSleepMenuOpen] = useState(false);
+  // Re-render periodically so the "minutes left" badge stays current
+  // while a timer runs; the actual pause is driven by the context.
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   useEffect(() => {
     backendUrl().then(setBase);
   }, []);
+
+  useEffect(() => {
+    if (sleepTimerExpiresAt === null) return;
+    const id = window.setInterval(() => setNowTick(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, [sleepTimerExpiresAt]);
+
+  const sleepMinutesLeft =
+    sleepTimerExpiresAt !== null
+      ? Math.max(0, Math.ceil((sleepTimerExpiresAt - nowTick) / 60000))
+      : null;
 
   const progress = duration > 0 ? (position / duration) * 100 : 0;
   const cover =
@@ -167,6 +184,62 @@ export default function PlayerBar({
             </span>
           )}
         </button>
+        <div className="relative">
+          <button
+            onClick={() => setSleepMenuOpen((o) => !o)}
+            aria-label="Sleep timer"
+            aria-pressed={sleepTimerExpiresAt !== null}
+            title={
+              sleepMinutesLeft !== null
+                ? `Sleep timer: ~${sleepMinutesLeft} min left`
+                : "Sleep timer"
+            }
+            className={`relative w-9 h-9 rounded-md text-sm hover:text-[var(--color-text)] ${
+              sleepTimerExpiresAt !== null
+                ? "text-[var(--color-accent)]"
+                : "hover:bg-[var(--color-surface)]/60"
+            }`}
+          >
+            ☾
+            {sleepMinutesLeft !== null && (
+              <span className="absolute top-0.5 right-0.5 text-[9px] font-bold">
+                {sleepMinutesLeft}
+              </span>
+            )}
+          </button>
+          {sleepMenuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setSleepMenuOpen(false)}
+              />
+              <div className="absolute bottom-full right-0 mb-1 z-20 w-32 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] py-1 shadow-lg">
+                {[15, 30, 45, 60].map((min) => (
+                  <button
+                    key={min}
+                    onClick={() => {
+                      setSleepTimer(min * 60000);
+                      setSleepMenuOpen(false);
+                    }}
+                    className="block w-full px-3 py-1 text-left text-sm hover:bg-[var(--color-bg-elevated)]"
+                  >
+                    {min} min
+                  </button>
+                ))}
+                <button
+                  onClick={() => {
+                    setSleepTimer(null);
+                    setSleepMenuOpen(false);
+                  }}
+                  disabled={sleepTimerExpiresAt === null}
+                  className="block w-full px-3 py-1 text-left text-sm hover:bg-[var(--color-bg-elevated)] disabled:opacity-40"
+                >
+                  Off
+                </button>
+              </div>
+            </>
+          )}
+        </div>
         <button
           onClick={onToggleLyrics}
           aria-label={lyricsOpen ? "Hide lyrics" : "Show lyrics"}
