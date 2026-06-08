@@ -2676,6 +2676,164 @@ def catalog_queue_download():
     })
 
 
+def _evaluate_contribution(db, contrib: dict) -> dict:
+    """Recompute a contribution's live status by comparing what the master
+    now holds on disk against the satellite's target quality.
+
+    Returns the (possibly updated) row as a dict. Lazy: this is where the
+    download worker's outcome gets reflected, so no worker hooks are needed.
+    """
+    from src.audio_quality import read_quality, meets_target
+
+    status = contrib["status"]
+    # Terminal states don't change.
+    if status in ("have_better", "satisfied", "ingested"):
+        return contrib
+
+    target = None
+    if contrib.get("target_quality"):
+        try:
+            target = json.loads(contrib["target_quality"])
+        except (TypeError, ValueError):
+            target = None
+
+    # Did the master acquire (or already have) a good-enough local copy?
+    local_path = db.get_track_local_path(contrib["mbid"]) if contrib.get("mbid") else None
+    if local_path and os.path.exists(local_path):
+        local_q = read_quality(local_path)
+        if meets_target(local_q, target):
+            db.update_contribution(
+                contrib["id"], status="satisfied",
+                acquired_quality=json.dumps(local_q),
+            )
+            contrib = db.get_contribution(contrib["id"])
+            return contrib
+
+    # No good-enough local copy. Look at the download we queued: still
+    # pending → keep attempting; failed or gone-without-a-match → we need
+    # the bytes from the satellite.
+    dl_status = (
+        db.get_download_status(contrib["download_id"])
+        if contrib.get("download_id")
+        else None
+    )
+    new_status = "attempting" if dl_status == "pending" else "needs_upload"
+    if new_status != status:
+        db.update_contribution(contrib["id"], status=new_status)
+        contrib = db.get_contribution(contrib["id"])
+    return contrib
+
+
+@app.route("/api/contributions", methods=["POST"])
+def post_contribution():
+    """A satellite offers a track it has locally. Master first tries to
+    acquire it itself; only if it can't match the satellite's quality does it
+    later ask for an upload.
+
+    Body: ``{device_id?, mbid, isrc?, artist, title, album?, quality}`` where
+    ``quality`` is an ``audio_quality.read_quality`` descriptor.
+    Response: ``{success, contribution_id, status}``.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    from src.audio_quality import read_quality, meets_target
+
+    data = request.json or {}
+    mbid = (data.get("mbid") or "").strip()
+    artist = (data.get("artist") or "").strip()
+    title = (data.get("title") or "").strip()
+    if not (artist and title):
+        return jsonify({
+            "success": False,
+            "message": "artist and title are required",
+        }), 400
+
+    target_q = data.get("quality") if isinstance(data.get("quality"), dict) else None
+    target_json = json.dumps(target_q) if target_q else None
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            # Already hold a same-or-better local copy? Nothing to do.
+            local_path = db.get_track_local_path(mbid) if mbid else None
+            if local_path and os.path.exists(local_path):
+                local_q = read_quality(local_path)
+                if meets_target(local_q, target_q):
+                    cid = db.create_contribution(
+                        device_id=data.get("device_id"), mbid=mbid,
+                        isrc=data.get("isrc"), artist=artist, title=title,
+                        album=data.get("album"), target_quality=target_json,
+                        acquired_quality=json.dumps(local_q),
+                        status="have_better",
+                    )
+                    return jsonify({
+                        "success": True, "contribution_id": cid,
+                        "status": "have_better",
+                    })
+
+            # Try to acquire it ourselves via the existing download pipeline.
+            query = f"{artist} - {title}"
+            download_id = None
+            if not db.is_download_queued(query):
+                download_id = db.queue_download(DownloadItem(
+                    search_query=query, playlist_id="CONTRIB",
+                    mbid_guess=mbid, status="pending",
+                ))
+            cid = db.create_contribution(
+                device_id=data.get("device_id"), mbid=mbid,
+                isrc=data.get("isrc"), artist=artist, title=title,
+                album=data.get("album"), target_quality=target_json,
+                status="attempting", download_id=download_id,
+            )
+    except Exception as e:
+        logger.error(f"post_contribution failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True, "contribution_id": cid, "status": "attempting",
+    })
+
+
+@app.route("/api/contributions/<int:contribution_id>", methods=["GET"])
+def get_contribution_status(contribution_id: int):
+    """Poll a contribution. Master recomputes status from what it now holds
+    on disk and tells the satellite whether to upload the file.
+
+    Response: ``{success, status, want_upload}``.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            contrib = db.get_contribution(contribution_id)
+            if contrib is None:
+                return jsonify({
+                    "success": False, "message": "unknown contribution",
+                }), 404
+            contrib = _evaluate_contribution(db, contrib)
+    except Exception as e:
+        logger.error(f"get_contribution_status failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({
+        "success": True,
+        "status": contrib["status"],
+        "want_upload": contrib["status"] == "needs_upload",
+    })
+
+
+@app.route("/api/contributions/<int:contribution_id>/upload", methods=["POST"])
+def upload_contribution(contribution_id: int):
+    """Receive the actual file from a satellite and ingest it into the
+    master's library. Multipart form field ``file``.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    return jsonify({
+        "success": False,
+        "message": "upload ingest not yet implemented",
+    }), 501
+
+
 @app.route("/api/audit", methods=["POST"])
 def audit():
     # Legacy audit (runs in background thread, logs to file)

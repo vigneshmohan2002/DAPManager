@@ -222,6 +222,40 @@ class DatabaseManager:
                     PRIMARY KEY (artist_name, tag)
                 );
             """,
+            # Master-side: tracks a satellite's offer to contribute a file.
+            # target_quality/acquired_quality are JSON quality descriptors
+            # (see src.audio_quality). status walks
+            # attempting → (have_better|needs_upload|satisfied) → ingested.
+            # download_id links the CONTRIB row master enqueued to try
+            # acquiring the track itself before asking for an upload.
+            "contributions": """
+                CREATE TABLE IF NOT EXISTS contributions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT,
+                    mbid TEXT,
+                    isrc TEXT,
+                    artist TEXT,
+                    title TEXT,
+                    album TEXT,
+                    target_quality TEXT,
+                    acquired_quality TEXT,
+                    status TEXT NOT NULL DEFAULT 'attempting',
+                    download_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """,
+            # Satellite-side: dedupe + polling state for tracks this device
+            # has offered to the master. Terminal statuses
+            # (have_better|satisfied|ingested) stop us re-POSTing every sync.
+            "contributed": """
+                CREATE TABLE IF NOT EXISTS contributed (
+                    mbid TEXT PRIMARY KEY,
+                    contribution_id INTEGER,
+                    status TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """,
         }
 
         # Indexes that pay off the common stats queries (group-by-mbid for
@@ -896,6 +930,120 @@ class DatabaseManager:
         except sqlite3.Error:
             return False
 
+    # --- Contributions (master side) ---
+    def create_contribution(
+        self,
+        *,
+        device_id: Optional[str],
+        mbid: Optional[str],
+        isrc: Optional[str],
+        artist: Optional[str],
+        title: Optional[str],
+        album: Optional[str],
+        target_quality: Optional[str],
+        status: str = "attempting",
+        download_id: Optional[int] = None,
+        acquired_quality: Optional[str] = None,
+    ) -> int:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO contributions "
+            "(device_id, mbid, isrc, artist, title, album, target_quality, "
+            " acquired_quality, status, download_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                device_id, mbid, isrc, artist, title, album, target_quality,
+                acquired_quality, status, download_id,
+            ),
+        )
+        self.conn.commit()
+        row_id = cursor.lastrowid
+        cursor.close()
+        return row_id or 0
+
+    def get_contribution(self, contribution_id: int) -> Optional[dict]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM contributions WHERE id = ?", (contribution_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return dict(row) if row else None
+
+    def update_contribution(self, contribution_id: int, **fields):
+        """Patch a contribution row. Only known columns are written; always
+        bumps ``updated_at``."""
+        allowed = {
+            "status", "acquired_quality", "download_id", "target_quality",
+        }
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        assignments = ", ".join(f"{k} = ?" for k in sets)
+        params = list(sets.values()) + [contribution_id]
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE contributions SET {assignments}, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+        cursor.close()
+
+    # --- Contributed (satellite side) ---
+    def upsert_contributed(
+        self, mbid: str, contribution_id: Optional[int], status: Optional[str]
+    ):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT INTO contributed (mbid, contribution_id, status, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(mbid) DO UPDATE SET "
+            "contribution_id = excluded.contribution_id, "
+            "status = excluded.status, updated_at = CURRENT_TIMESTAMP",
+            (mbid, contribution_id, status),
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def get_contributed(self, mbid: str) -> Optional[dict]:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM contributed WHERE mbid = ?", (mbid,))
+        row = cursor.fetchone()
+        cursor.close()
+        return dict(row) if row else None
+
+    def get_pending_contributed(self) -> List[dict]:
+        """Rows in a non-terminal state — still need polling/upload."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM contributed WHERE status NOT IN "
+            "('have_better', 'satisfied', 'ingested')"
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def get_contributable_tracks(self, limit: int = 50) -> List[Track]:
+        """Local tracks never offered to the master yet, capped at ``limit``.
+
+        Tracks already in ``contributed`` (in any state) are excluded — new
+        offers come from here, while in-flight ones are driven by
+        ``get_pending_contributed``.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT t.* FROM tracks t "
+            "LEFT JOIN contributed c ON c.mbid = t.mbid "
+            "WHERE t.local_path IS NOT NULL AND t.deleted_at IS NULL "
+            "AND c.mbid IS NULL "
+            "LIMIT ?",
+            (limit,),
+        )
+        tracks = [self._row_to_track(row) for row in cursor.fetchall()]
+        cursor.close()
+        return tracks
+
     def merge_albums(self, source_mbid: str, target_mbid: str):
         if not source_mbid or not target_mbid:
             return False
@@ -1112,6 +1260,17 @@ class DatabaseManager:
         items = [self._row_to_download_item(row) for row in cursor.fetchall()]
         cursor.close()
         return items
+
+    def get_download_status(self, download_id: int) -> Optional[str]:
+        """Return the queue row's status, or ``None`` if the row is gone
+        (removed on success)."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT status FROM download_queue WHERE id = ?", (download_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row["status"] if row else None
 
     def update_download_status(self, item_id: int, status: str):
         cursor = self.conn.cursor()
