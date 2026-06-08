@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}DAP Manager{% endblock %}</title>
     <link rel="stylesheet" href="/static/tailwind.css">
+    <script src="/static/qrcode.min.js" defer></script>
     <script>
         // Inject Bearer token for all /api/ fetch calls so the UI works when
         // api_token is set. Token is written server-side; never stored in JS.

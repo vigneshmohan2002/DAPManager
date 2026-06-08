@@ -184,6 +184,22 @@
                     </button>
                 </div>
             </div>
+
+            <div class="sync-group" id="add-satellite-card" style="display:none">
+                <h3>Add a Satellite</h3>
+                <div class="text-xs text-[var(--color-text-muted)] mb-3">
+                    Send this link to any device you want to set up as a satellite.
+                    Opening it downloads a pre-configured bundle with this master's URL already filled in.
+                </div>
+                <div class="flex gap-2 items-center mb-3">
+                    <input id="satellite-link" type="text" readonly
+                        class="flex-1 font-mono text-xs bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded px-2 py-1.5 text-[var(--color-text)] cursor-text select-all"
+                        style="min-width:0">
+                    <button onclick="copySatelliteLink()" class="btn btn-secondary" id="copy-satellite-btn">Copy</button>
+                    <a id="satellite-download-btn" href="#" class="btn btn-primary" download>Download</a>
+                </div>
+                <div id="satellite-qr" style="display:none; width:120px; height:120px"></div>
+            </div>
         </div>
 
         <div class="mt-5">
@@ -258,6 +274,7 @@
             if (Array.isArray(data.secret_keys)) SETTINGS_SECRET_KEYS = new Set(data.secret_keys);
             if (Array.isArray(data.bool_keys)) SETTINGS_BOOL_KEYS = new Set(data.bool_keys);
             renderSettings();
+            renderSatelliteCard(data.config || {});
             statusEl.textContent = '';
         } catch (e) {
             statusEl.textContent = 'Load failed: ' + e;
@@ -826,6 +843,43 @@
                 btn.textContent = originalText;
                 btn.disabled = false;
             });
+    }
+
+    // --- Satellite download card ---
+    function renderSatelliteCard(cfg) {
+        const card = document.getElementById('add-satellite-card');
+        if (!card) return;
+        if (!cfg.is_master) return;  // only show on master
+
+        const publicUrl = (cfg.public_master_url || '').replace(/\/$/, '');
+        if (!publicUrl) return;      // no URL → nothing useful to show
+
+        const token = window.DAP_TOKEN || '';
+        const shareUrl = publicUrl + '/download/mac' +
+            (token ? '?token=' + encodeURIComponent(token) : '');
+
+        document.getElementById('satellite-link').value = shareUrl;
+        document.getElementById('satellite-download-btn').href = shareUrl;
+        card.style.display = '';
+
+        // QR code (library loaded below)
+        const qrHost = document.getElementById('satellite-qr');
+        if (typeof window.QRCode !== 'undefined') {
+            qrHost.style.display = '';
+            qrHost.innerHTML = '';
+            window.QRCode.toString(shareUrl, { type: 'svg', margin: 0, width: 120 },
+                (err, svg) => { if (!err) qrHost.innerHTML = svg; });
+        }
+    }
+
+    function copySatelliteLink() {
+        const val = document.getElementById('satellite-link').value;
+        navigator.clipboard.writeText(val).then(() => {
+            const btn = document.getElementById('copy-satellite-btn');
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => btn.textContent = orig, 1500);
+        });
     }
 
     // --- Stats & Downloads ---
