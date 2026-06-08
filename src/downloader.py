@@ -11,6 +11,7 @@ from typing import List, Optional
 from .db_manager import DatabaseManager, DownloadItem, Track
 from .library_scanner import LibraryScanner
 from .utils import write_mbid_to_file
+from .audio_quality import library_path_for_track
 from . import tag_service
 from .lidarr_client import LidarrClient, LidarrError
 
@@ -341,42 +342,7 @@ class Downloader:
 
     def _get_library_path_for_track(self, track: Track) -> str:
         """Generate clean library path: D:/Music/Artist/Album/Song.flac"""
-        import re
-
-        # Get album from the track object (populated by Spotify or Scanner)
-        album = track.album or "Unknown Album"
-
-        # Sanitize names
-        safe_artist = (
-            re.sub(r'[\\/*?:"<>|]', "_", track.artist)
-            if track.artist
-            else "Unknown Artist"
-        )
-        safe_album = re.sub(r'[\\/*?:"<>|]', "_", album)
-        safe_title = (
-            re.sub(r'[\\/*?:"<>|]', "_", track.title)
-            if track.title
-            else "Unknown Title"
-        )
-        
-        # Add Track Number if available
-        prefix = ""
-        if track.track_number:
-            try:
-                tn = int(track.track_number)
-                prefix = f"{tn:02d} "
-            except (ValueError, TypeError):
-                pass
-
-        # Build library path
-        library_path = os.path.join(
-            self.music_library_dir,  # This should be D:/Music
-            safe_artist,
-            safe_album,
-            f"{prefix}{safe_title}.flac",
-        )
-
-        return library_path.replace("\\", "/")
+        return library_path_for_track(self.music_library_dir, track)
 
     def _process_success(self, item: DownloadItem):
         """Handles a successful download (Single Track or Album)"""
