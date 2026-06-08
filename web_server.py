@@ -326,6 +326,8 @@ def check_setup():
         "download_mac",
         "healthz",
         "static",
+        "api_docs",
+        "openapi_spec",
     ):
         return redirect(url_for("setup"))
 
@@ -354,7 +356,7 @@ from src.config_keys import (
     SECRET_KEYS as CONFIG_SECRET_KEYS,
 )
 
-API_AUTH_EXEMPT_PATHS = {"/api/status", "/api/healthz"}
+API_AUTH_EXEMPT_PATHS = {"/api/status", "/api/healthz", "/api/openapi.json"}
 
 
 @app.before_request
@@ -2570,6 +2572,20 @@ def fleet_page():
 def contributions_page():
     """Master-side view of tracks satellites have offered, and their status."""
     return render_template("contributions.html")
+
+
+@app.route("/docs")
+def api_docs():
+    """Swagger UI for the API. Reachable before setup so an agent can learn
+    the setup flow from a fresh install."""
+    return render_template("docs.html")
+
+
+@app.route("/api/openapi.json")
+def openapi_spec():
+    """The OpenAPI document backing /docs. Exempt from auth + setup gates."""
+    from src.openapi_spec import build_spec
+    return jsonify(build_spec())
 
 
 @app.route("/orphans")
