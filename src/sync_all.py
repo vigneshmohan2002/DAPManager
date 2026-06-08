@@ -24,6 +24,7 @@ from .catalog_sync import (
     main_run_playlist_pull,
     main_run_playlist_push,
 )
+from .contribution_sync import main_run_contribute
 from .db_manager import DatabaseManager
 from .inventory_sync import main_run_inventory_report
 
@@ -53,6 +54,12 @@ def main_run_sync_all(
     if report_inv is None:
         report_inv = is_master
     report_inv = _bool(report_inv)
+
+    # contribute_to_host defaults on when this device points at a master.
+    contribute = config.get("contribute_to_host")
+    if contribute is None:
+        contribute = bool(master_url)
+    contribute = _bool(contribute)
 
     def _report(msg: str):
         logger.info(msg)
@@ -91,6 +98,15 @@ def main_run_sync_all(
         _run("report_inventory", lambda: main_run_inventory_report(db, config))
     else:
         _skip("report_inventory", "report_inventory_to_host is disabled")
+
+    # Contribute local tracks up to the master (identifier-first, upload
+    # fallback). Only meaningful for satellites that point at a master.
+    if not master_url:
+        _skip("contribute", "master_url not configured")
+    elif contribute:
+        _run("contribute", lambda: main_run_contribute(db, config))
+    else:
+        _skip("contribute", "contribute_to_host is disabled")
 
     summary_line = ", ".join(
         f"{r['name']}={r['status']}" for r in results

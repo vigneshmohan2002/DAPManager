@@ -6,7 +6,17 @@ without exercising HTTP or the catalog sync clients themselves.
 
 from unittest.mock import patch
 
+import pytest
+
 from src.sync_all import main_run_sync_all
+
+
+@pytest.fixture(autouse=True)
+def _stub_contribute():
+    """Keep the new contribute step from doing real HTTP in orchestration
+    tests that don't focus on it."""
+    with patch("src.sync_all.main_run_contribute", return_value={"offered": 0}) as m:
+        yield m
 
 
 def _cfg(**overrides):
@@ -42,6 +52,7 @@ def test_sync_all_runs_all_steps_when_configured(db):
         "push_playlists",
         "pull_lyrics",
         "report_inventory",
+        "contribute",
     ]
     assert all(s["status"] == "ok" for s in out["steps"])
     assert mcp.called and mpp.called and mpu.called and mlp.called and mir.called
@@ -124,6 +135,43 @@ def test_sync_all_inventory_defaults_to_master_role(db):
     inv = next(s for s in out["steps"] if s["name"] == "report_inventory")
     assert inv["status"] == "ok"
     assert mir.called
+
+
+def test_contribute_runs_by_default_for_satellite(db, _stub_contribute):
+    with patch("src.sync_all.main_run_catalog_pull", return_value={}), \
+         patch("src.sync_all.main_run_playlist_pull", return_value={}), \
+         patch("src.sync_all.main_run_playlist_push", return_value={}), \
+         patch("src.sync_all.main_run_lyrics_pull", return_value={}), \
+         patch("src.sync_all.main_run_inventory_report", return_value={}):
+        cfg = _cfg()
+        cfg.pop("report_inventory_to_host", None)  # contribute_to_host unset too
+        out = main_run_sync_all(db, cfg)
+
+    step = next(s for s in out["steps"] if s["name"] == "contribute")
+    assert step["status"] == "ok"
+    assert _stub_contribute.called
+
+
+def test_contribute_skipped_when_disabled(db, _stub_contribute):
+    with patch("src.sync_all.main_run_catalog_pull", return_value={}), \
+         patch("src.sync_all.main_run_playlist_pull", return_value={}), \
+         patch("src.sync_all.main_run_playlist_push", return_value={}), \
+         patch("src.sync_all.main_run_lyrics_pull", return_value={}), \
+         patch("src.sync_all.main_run_inventory_report", return_value={}):
+        out = main_run_sync_all(db, _cfg(contribute_to_host=False))
+
+    step = next(s for s in out["steps"] if s["name"] == "contribute")
+    assert step["status"] == "skipped"
+    assert not _stub_contribute.called
+
+
+def test_contribute_skipped_without_master_url(db, _stub_contribute):
+    with patch("src.sync_all.main_run_inventory_report", return_value={}):
+        out = main_run_sync_all(db, _cfg(master_url="", is_master=True))
+
+    step = next(s for s in out["steps"] if s["name"] == "contribute")
+    assert step["status"] == "skipped"
+    assert not _stub_contribute.called
 
 
 def test_sync_all_progress_callback_receives_updates(db):

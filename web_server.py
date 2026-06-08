@@ -476,7 +476,7 @@ _FIRST_RUN_FIELDS = {
     "jellyfin_url", "jellyfin_api_key", "jellyfin_user_id",
     "lidarr_url", "lidarr_api_key", "lidarr_enabled",
     "acoustid_api_key", "contact_email",
-    "report_inventory_to_host",
+    "report_inventory_to_host", "contribute_to_host",
     "fast_search", "remove_ft", "desperate_mode", "strict_quality",
 }
 

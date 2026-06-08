@@ -51,6 +51,7 @@ def build_initial_config(
     acoustid_api_key: str = "",
     contact_email: str = "",
     report_inventory_to_host: bool = False,
+    contribute_to_host: bool = True,
     fast_search: bool = False,
     remove_ft: bool = False,
     desperate_mode: bool = False,
@@ -112,6 +113,7 @@ def build_initial_config(
             "slsk_password": "",
             "master_url": (master_url or "").rstrip("/"),
             "report_inventory_to_host": bool(report_inventory_to_host),
+            "contribute_to_host": bool(contribute_to_host),
         })
         if device_name:
             cfg["device_name"] = device_name
