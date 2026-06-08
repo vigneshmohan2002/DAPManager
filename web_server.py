@@ -209,6 +209,12 @@ def run_inventory_report(db_path, conf, progress_callback=None):
         main_run_inventory_report(db, conf._config, progress_callback=progress_callback)
 
 
+def run_contribute(db_path, conf, progress_callback=None):
+    from src.contribution_sync import main_run_contribute
+    with DatabaseManager(db_path) as db:
+        main_run_contribute(db, conf._config, progress_callback=progress_callback)
+
+
 def run_sync_all(db_path, conf, progress_callback=None):
     from src.sync_all import main_run_sync_all
     with DatabaseManager(db_path) as db:
@@ -1932,6 +1938,24 @@ def inventory_report():
         })
     success, msg = task_manager.start_task(
         run_inventory_report, (config.db_path, config), "Inventory Report"
+    )
+    return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/contribute", methods=["POST"])
+def contribute():
+    """Offer this device's local tracks to the master (identifier-first,
+    upload fallback). Runs as a background task; progress flows through the
+    /api/status channel."""
+    if not task_manager:
+        return jsonify({"success": False, "message": "Not initialized"})
+    if not config.master_url:
+        return jsonify({
+            "success": False,
+            "message": "master_url not configured. Set master_url in config.json to the master DAPManager's base URL.",
+        })
+    success, msg = task_manager.start_task(
+        run_contribute, (config.db_path, config), "Contribute"
     )
     return jsonify({"success": success, "message": msg})
 
