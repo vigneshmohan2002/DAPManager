@@ -2825,13 +2825,61 @@ def get_contribution_status(contribution_id: int):
 def upload_contribution(contribution_id: int):
     """Receive the actual file from a satellite and ingest it into the
     master's library. Multipart form field ``file``.
+
+    Response: ``{success, status, local_path}``.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    return jsonify({
-        "success": False,
-        "message": "upload ingest not yet implemented",
-    }), 501
+
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({
+            "success": False, "message": "multipart 'file' field is required",
+        }), 400
+
+    from werkzeug.utils import secure_filename
+    from src.file_ingest import ingest_audio_file
+    from src.library_scanner import LibraryScanner
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            contrib = db.get_contribution(contribution_id)
+            if contrib is None:
+                return jsonify({
+                    "success": False, "message": "unknown contribution",
+                }), 404
+
+            # Stage the upload under downloads/ before ingest moves it.
+            staging_dir = os.path.join(config.downloads_dir, "_contrib")
+            os.makedirs(staging_dir, exist_ok=True)
+            safe_name = secure_filename(upload.filename) or "upload"
+            tmp_path = os.path.join(staging_dir, f"{contribution_id}_{safe_name}")
+            upload.save(tmp_path)
+
+            dest = ingest_audio_file(
+                db, LibraryScanner(db, config.picard_path), config.music_library,
+                tmp_path, mbid_guess=contrib.get("mbid"),
+                artist=contrib.get("artist"), title=contrib.get("title"),
+                album=contrib.get("album"),
+            )
+
+            acquired_q = None
+            try:
+                from src.audio_quality import read_quality
+                acquired_q = json.dumps(read_quality(dest))
+            except Exception:
+                pass
+            db.update_contribution(
+                contribution_id, status="ingested", acquired_quality=acquired_q,
+            )
+            # The CONTRIB download we queued is now moot.
+            if contrib.get("download_id"):
+                db.remove_from_queue(contrib["download_id"])
+    except Exception as e:
+        logger.error(f"upload_contribution failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    return jsonify({"success": True, "status": "ingested", "local_path": dest})
 
 
 @app.route("/api/audit", methods=["POST"])

@@ -19,12 +19,15 @@ def contrib_client(monkeypatch, tmp_path):
     cfg.db_path = db_file
     cfg.music_library = str(tmp_path / "music")
     cfg.downloads_dir = str(tmp_path / "downloads")
+    cfg.picard_path = ""
     cfg.device_id = "master-dev"
     monkeypatch.setattr(web_server, "config", cfg)
     monkeypatch.setattr(web_server, "task_manager", TaskManager())
     # Bypass the first-run setup gate (before_request redirects to /setup
     # when no config file exists on disk).
     monkeypatch.setattr(web_server, "config_exists", lambda: True)
+    # LibraryScanner falls back to get_config() when picard_path is empty.
+    monkeypatch.setattr("src.library_scanner.get_config", lambda: cfg)
 
     web_server.app.config["TESTING"] = True
     with web_server.app.test_client() as client:
@@ -104,6 +107,32 @@ def test_poll_unknown_contribution_is_404(contrib_client):
     assert res.status_code == 404
 
 
-def test_upload_endpoint_stub_returns_501(contrib_client):
-    res = contrib_client.post("/api/contributions/1/upload")
-    assert res.status_code == 501
+def test_upload_requires_file_field(contrib_client):
+    res = contrib_client.post("/api/contributions/1/upload", json={})
+    assert res.status_code == 400
+
+
+def test_upload_ingests_file_and_marks_ingested(contrib_client):
+    import io
+
+    res = contrib_client.post("/api/contributions", json={
+        "mbid": "mb-up", "artist": "Aphex Twin", "title": "Xtal",
+        "album": "SAW 85-92", "quality": FLAC_Q,
+    })
+    cid = res.get_json()["contribution_id"]
+
+    res = contrib_client.post(
+        f"/api/contributions/{cid}/upload",
+        data={"file": (io.BytesIO(b"fake audio bytes"), "xtal.flac")},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "ingested"
+    assert body["local_path"].endswith("Aphex Twin/SAW 85-92/Xtal.flac")
+
+    with DatabaseManager(contrib_client._db_file) as db:
+        assert db.get_contribution(cid)["status"] == "ingested"
+        assert db.get_track_local_path("mb-up") == body["local_path"]
+        # The fallback CONTRIB download was cleared.
+        assert db.get_download_status(db.get_contribution(cid)["download_id"] or -1) is None
