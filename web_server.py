@@ -1961,6 +1961,36 @@ def contribute():
     return jsonify({"success": success, "message": msg})
 
 
+@app.route("/api/contribute/track", methods=["POST"])
+def contribute_track():
+    """Offer a single local track to the master and report the resulting
+    status. Synchronous so the library row gets immediate feedback — the offer
+    is a quick POST; a large upload only happens on a later poll when the
+    master's own download has failed.
+
+    Body: ``{mbid}``. Response: ``{success, status?, message?}``.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.master_url:
+        return jsonify({
+            "success": False,
+            "message": "master_url not configured. Set master_url in config.json to the master DAPManager's base URL.",
+        }), 409
+    mbid = ((request.json or {}).get("mbid") or "").strip()
+    if not mbid:
+        return jsonify({"success": False, "message": "mbid is required"}), 400
+
+    from src.contribution_sync import main_run_contribute_one
+    try:
+        with DatabaseManager(config.db_path) as db:
+            result = main_run_contribute_one(db, config._config, mbid)
+    except Exception as e:
+        logger.error(f"contribute_track failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify(result)
+
+
 @app.route("/api/playlists/push", methods=["POST"])
 def playlists_push():
     """Push locally-edited playlists to the master."""

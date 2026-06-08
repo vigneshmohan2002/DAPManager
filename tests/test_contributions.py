@@ -151,6 +151,21 @@ def test_contributions_page_renders(contrib_client):
     assert b"Contributions" in res.data
 
 
+def test_contribute_track_endpoint(contrib_client, monkeypatch):
+    monkeypatch.setattr(
+        "src.contribution_sync.main_run_contribute_one",
+        lambda db, cfg, mbid: {"success": True, "mbid": mbid, "status": "attempting"},
+    )
+    res = contrib_client.post("/api/contribute/track", json={"mbid": "m1"})
+    assert res.status_code == 200
+    assert res.get_json()["status"] == "attempting"
+
+
+def test_contribute_track_requires_mbid(contrib_client):
+    res = contrib_client.post("/api/contribute/track", json={})
+    assert res.status_code == 400
+
+
 def test_upload_requires_file_field(contrib_client):
     res = contrib_client.post("/api/contributions/1/upload", json={})
     assert res.status_code == 400

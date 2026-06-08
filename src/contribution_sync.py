@@ -88,27 +88,9 @@ def main_run_contribute(
         if not track.local_path or not os.path.exists(track.local_path):
             continue
         try:
-            quality = read_quality(track.local_path)
-            resp = session.post(
-                f"{master_url}/api/contributions",
-                json={
-                    "device_id": device_id,
-                    "mbid": track.mbid,
-                    "isrc": getattr(track, "isrc", None),
-                    "artist": track.artist,
-                    "title": track.title,
-                    "album": track.album,
-                    "quality": quality,
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json() or {}
-            db.upsert_contributed(
-                track.mbid, data.get("contribution_id"), data.get("status")
-            )
+            status = _offer_track(session, master_url, device_id, db, track)
             offered += 1
-            if data.get("status") == "have_better":
+            if status == "have_better":
                 satisfied += 1
         except Exception as e:
             logger.warning("contribute: offer failed for %s: %s", track.mbid, e)
@@ -121,19 +103,11 @@ def main_run_contribute(
         if not cid:
             continue
         try:
-            resp = session.get(
-                f"{master_url}/api/contributions/{cid}", timeout=30
-            )
-            resp.raise_for_status()
-            data = resp.json() or {}
-            status = data.get("status")
-            if data.get("want_upload"):
-                status = _upload_file(session, master_url, cid, db, mbid)
-                if status == "ingested":
-                    uploaded += 1
+            status = _poll_and_maybe_upload(session, master_url, db, cid, mbid)
+            if status == "ingested":
+                uploaded += 1
             elif status in TERMINAL:
-                satisfied += 1 if status != "ingested" else 0
-            db.upsert_contributed(mbid, cid, status)
+                satisfied += 1
         except Exception as e:
             logger.warning("contribute: poll/upload failed for %s: %s", mbid, e)
             errors += 1
@@ -145,6 +119,86 @@ def main_run_contribute(
     }
     _report(f"Contribute finished: {result}")
     return result
+
+
+def main_run_contribute_one(
+    db: DatabaseManager, config: dict, mbid: str
+) -> dict:
+    """Offer a single local track to the master and poll once. Used by the
+    per-track "Contribute" action. Idempotent: re-running a track already in a
+    terminal state is a no-op.
+
+    Returns ``{success, status?, message?, mbid}``.
+    """
+    role = (config.get("device_role") or "satellite").strip()
+    if role == "master":
+        return {"success": False, "mbid": mbid, "message": "device is master"}
+    master_url = (config.get("master_url") or "").rstrip("/")
+    if not master_url:
+        return {"success": False, "mbid": mbid, "message": "master_url not configured"}
+
+    track = db.get_track_by_mbid(mbid)
+    if track is None or not track.local_path or not os.path.exists(track.local_path):
+        return {
+            "success": False, "mbid": mbid,
+            "message": "track has no local file on this device",
+        }
+
+    device_id = (config.get("device_id") or "").strip() or None
+    api_token = (config.get("api_token") or "").strip() or None
+    session = _session(api_token=api_token)
+
+    existing = db.get_contributed(mbid)
+    cid = existing.get("contribution_id") if existing else None
+    status = existing.get("status") if existing else None
+    try:
+        if cid is None:
+            status = _offer_track(session, master_url, device_id, db, track)
+            row = db.get_contributed(mbid)
+            cid = row.get("contribution_id") if row else None
+        if cid and status not in TERMINAL:
+            status = _poll_and_maybe_upload(session, master_url, db, cid, mbid)
+    except Exception as e:
+        logger.warning("contribute_one failed for %s: %s", mbid, e)
+        return {"success": False, "mbid": mbid, "message": str(e)}
+
+    return {"success": True, "mbid": mbid, "status": status}
+
+
+def _offer_track(session, master_url, device_id, db, track) -> Optional[str]:
+    """POST one track offer, persist the returned state, return the status."""
+    quality = read_quality(track.local_path)
+    resp = session.post(
+        f"{master_url}/api/contributions",
+        json={
+            "device_id": device_id,
+            "mbid": track.mbid,
+            "isrc": getattr(track, "isrc", None),
+            "artist": track.artist,
+            "title": track.title,
+            "album": track.album,
+            "quality": quality,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json() or {}
+    status = data.get("status")
+    db.upsert_contributed(track.mbid, data.get("contribution_id"), status)
+    return status
+
+
+def _poll_and_maybe_upload(session, master_url, db, cid, mbid) -> Optional[str]:
+    """Poll one in-flight contribution; upload the file if the master asks.
+    Persists and returns the resulting status."""
+    resp = session.get(f"{master_url}/api/contributions/{cid}", timeout=30)
+    resp.raise_for_status()
+    data = resp.json() or {}
+    status = data.get("status")
+    if data.get("want_upload"):
+        status = _upload_file(session, master_url, cid, db, mbid)
+    db.upsert_contributed(mbid, cid, status)
+    return status
 
 
 def _upload_file(session, master_url, cid, db, mbid) -> Optional[str]:

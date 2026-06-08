@@ -305,6 +305,34 @@
         loadTracks();
     }
 
+    async function contributeSelected() {
+        const mbids = [...state.selected];
+        if (!mbids.length) { setFlash("Select tracks first.", "err"); return; }
+        setFlash(`Contributing ${mbids.length}…`);
+        const tally = {};
+        let fail = 0;
+        for (const mbid of mbids) {
+            try {
+                const r = await fetch("/api/contribute/track", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ mbid }),
+                });
+                const data = await r.json();
+                if (data.success) {
+                    const s = data.status || "offered";
+                    tally[s] = (tally[s] || 0) + 1;
+                } else {
+                    fail += 1;
+                }
+            } catch (_) { fail += 1; }
+        }
+        const summary = Object.entries(tally)
+            .map(([s, n]) => `${n} ${s}`).join(", ") || "done";
+        setFlash(`Contributed: ${summary}${fail ? `, ${fail} failed` : ""}.`,
+            fail ? "err" : "ok");
+    }
+
     async function reportInventory() {
         setFlash("Starting inventory report…");
         try {
@@ -471,6 +499,7 @@
             ${pickList}
             <div class="ctx-sep"></div>
             <div class="ctx-item" data-action="queue">Queue Download</div>
+            <div class="ctx-item" data-action="contribute" title="Offer the selected track(s) to the master. It downloads each itself and only asks for an upload when it can't match the quality.">Contribute to master</div>
             <div class="ctx-item danger" data-action="delete">Soft-Delete</div>
         `;
         menu.querySelectorAll(".ctx-item").forEach(el => {
@@ -481,6 +510,7 @@
                 closeContextMenu();
                 if (action === "add" && pid) addSelectedToPlaylist(pid);
                 else if (action === "queue") queueDownload();
+                else if (action === "contribute") contributeSelected();
                 else if (action === "delete") softDelete();
             });
         });

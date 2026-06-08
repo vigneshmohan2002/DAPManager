@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.db_manager import DatabaseManager, Track
-from src.contribution_sync import main_run_contribute
+from src.contribution_sync import main_run_contribute, main_run_contribute_one
 
 
 @pytest.fixture
@@ -79,6 +79,32 @@ def test_have_better_is_terminal_and_not_re_offered(db, tmp_path):
     post.assert_not_called()
     get.assert_not_called()
     assert out2["offered"] == 0
+
+
+def test_contribute_one_offers_and_polls(db, tmp_path):
+    f = tmp_path / "a.flac"
+    f.write_bytes(b"x")
+    db.add_or_update_track(Track(mbid="m1", title="T", artist="A", local_path=str(f)))
+
+    with patch("src.contribution_sync.requests.Session.post",
+               return_value=_resp({"contribution_id": 5, "status": "attempting"})), \
+         patch("src.contribution_sync.requests.Session.get",
+               return_value=_resp({"status": "attempting", "want_upload": False})):
+        out = main_run_contribute_one(db, _sat_config(), "m1")
+
+    assert out["success"] and out["status"] == "attempting"
+    assert db.get_contributed("m1")["contribution_id"] == 5
+
+
+def test_contribute_one_rejects_track_without_local_file(db):
+    out = main_run_contribute_one(db, _sat_config(), "nope")
+    assert out["success"] is False
+    assert "local file" in out["message"]
+
+
+def test_contribute_one_is_noop_for_master(db):
+    out = main_run_contribute_one(db, {"device_role": "master"}, "x")
+    assert out["success"] is False
 
 
 def test_poll_triggers_upload_when_master_wants_file(db, tmp_path):
