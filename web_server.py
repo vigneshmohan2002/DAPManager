@@ -352,6 +352,17 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/player")
+def player_page():
+    """Mobile-optimised PWA player for iOS Add-to-Home-Screen installs.
+
+    Streams audio from /api/stream/<mbid> which already supports HTTP Range
+    (206 Partial Content) for seeking, so the <audio> element works natively.
+    Uses the Media Session API for lock-screen / AirPods controls.
+    """
+    return render_template("player.html")
+
+
 @app.route("/setup")
 def setup():
     if config_exists():

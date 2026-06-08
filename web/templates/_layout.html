@@ -7,6 +7,15 @@
     <title>{% block title %}DAP Manager{% endblock %}</title>
     <link rel="stylesheet" href="/static/tailwind.css">
     <script src="/static/qrcode.min.js" defer></script>
+
+    {# PWA / iOS home-screen support — lets any Tailscale device install this
+       as a native-feeling app via Safari Share → Add to Home Screen. #}
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icon.svg">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="DAPManager">
+    <meta name="theme-color" content="#111111">
     <script>
         // Inject Bearer token for all /api/ fetch calls so the UI works when
         // api_token is set. Token is written server-side; never stored in JS.
@@ -45,6 +54,7 @@
 
                 <div class="app-nav-section">Help</div>
                 <a href="/docs" class="app-nav-item" target="_blank" rel="noopener">API Docs ↗</a>
+                <a href="/player" class="app-nav-item" target="_blank" rel="noopener">Mobile Player ↗</a>
 
                 {# Pages can append their own sections (e.g. library.html
                    injects the dynamic Playlists list) without forking the

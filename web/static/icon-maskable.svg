@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed dark background (no rounded corners — OS clips for maskable) -->
+  <rect width="512" height="512" fill="#111111"/>
+  <!-- Waveform centred with safe-zone padding (~10% inset) -->
+  <rect x="136" y="196" width="40" height="120" rx="20" fill="#ffffff" opacity="0.80"/>
+  <rect x="194" y="146" width="40" height="220" rx="20" fill="#ffffff"/>
+  <rect x="252" y="166" width="40" height="180" rx="20" fill="#ffffff" opacity="0.92"/>
+  <rect x="310" y="126" width="40" height="260" rx="20" fill="#ffffff"/>
+  <rect x="368" y="196" width="40" height="120" rx="20" fill="#ffffff" opacity="0.80"/>
+</svg>

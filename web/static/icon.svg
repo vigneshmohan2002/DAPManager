@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Rounded background -->
+  <rect width="512" height="512" rx="112" fill="#111111"/>
+  <!-- Audio waveform: 5 bars of varying height, centred -->
+  <rect x="116" y="186" width="44" height="140" rx="22" fill="#ffffff" opacity="0.80"/>
+  <rect x="178" y="126" width="44" height="260" rx="22" fill="#ffffff"/>
+  <rect x="240" y="156" width="44" height="200" rx="22" fill="#ffffff" opacity="0.92"/>
+  <rect x="302" y="106" width="44" height="300" rx="22" fill="#ffffff"/>
+  <rect x="364" y="186" width="44" height="140" rx="22" fill="#ffffff" opacity="0.80"/>
+</svg>
