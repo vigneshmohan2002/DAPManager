@@ -1,0 +1,116 @@
+name: Windows Dispatch
+
+# Triggered manually from Claude Code (or the GitHub Actions UI).
+# Requires a self-hosted runner on your Windows machine labelled "windows".
+# See docs/cowork-setup.md → "Self-hosted runner" for setup instructions.
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operation to run'
+        required: true
+        type: choice
+        options:
+          - health-check
+          - restart
+          - update
+          - run-script
+          - shell
+      args:
+        description: |
+          Extra arguments:
+            restart   → (ignored)
+            update    → (ignored)
+            run-script → name of script in scripts/ without extension, e.g. "setup-master"
+            shell     → raw PowerShell to execute (single-owner private repo only)
+        required: false
+        default: ''
+
+jobs:
+  dispatch:
+    runs-on: [self-hosted, windows]
+
+    steps:
+      # ── health-check ────────────────────────────────────────────────────────
+      - name: Check service health
+        if: inputs.operation == 'health-check'
+        shell: pwsh
+        run: |
+          $services = @(
+            @{ name = "DAPManager"; url = "http://localhost:5001/api/healthz" },
+            @{ name = "Lidarr";     url = "http://localhost:8686/api/v1/system/status" },
+            @{ name = "slskd";      url = "http://localhost:5030/api/v0/application" },
+            @{ name = "Jellyfin";   url = "http://localhost:8096/health" },
+            @{ name = "Prowlarr";   url = "http://localhost:9696/api/v1/system/status" }
+          )
+          $ok = $true
+          foreach ($svc in $services) {
+            try {
+              $r = Invoke-WebRequest -Uri $svc.url -UseBasicParsing -TimeoutSec 5
+              Write-Host "  OK  $($svc.name) ($($r.StatusCode))"
+            } catch {
+              Write-Host " FAIL $($svc.name) — $_"
+              $ok = $false
+            }
+          }
+          if (-not $ok) { exit 1 }
+
+      # ── restart ─────────────────────────────────────────────────────────────
+      - name: Restart Docker containers
+        if: inputs.operation == 'restart'
+        shell: pwsh
+        run: |
+          $containers = docker ps --format '{{.Names}}'
+          if ($containers) {
+            docker restart $containers
+            Write-Host "Restarted: $($containers -join ', ')"
+          } else {
+            Write-Host "No running containers found."
+          }
+
+      # ── update ──────────────────────────────────────────────────────────────
+      - name: Checkout latest code
+        if: inputs.operation == 'update'
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Rebuild and restart DAPManager container
+        if: inputs.operation == 'update'
+        shell: pwsh
+        run: |
+          Write-Host "Building dapmanager:latest..."
+          docker build -t dapmanager:latest .
+          Write-Host "Restarting dapmanager container..."
+          docker restart dapmanager
+          Write-Host "Done."
+
+      # ── run-script ──────────────────────────────────────────────────────────
+      - name: Checkout repo (for script access)
+        if: inputs.operation == 'run-script'
+        uses: actions/checkout@v4
+
+      - name: Run named PowerShell script
+        if: inputs.operation == 'run-script'
+        shell: pwsh
+        run: |
+          $script = "${{ inputs.args }}"
+          if ([string]::IsNullOrWhiteSpace($script)) {
+            Write-Error "args must be the script name (e.g. 'setup-master')"
+            exit 1
+          }
+          $path = "scripts\$script.ps1"
+          if (-not (Test-Path $path)) {
+            Write-Error "Script not found: $path"
+            exit 1
+          }
+          & ".\$path"
+
+      # ── shell ───────────────────────────────────────────────────────────────
+      # Raw PowerShell escape hatch. Safe only because this is a private
+      # single-owner repo — workflow_dispatch is gated to repo collaborators.
+      - name: Run PowerShell snippet
+        if: inputs.operation == 'shell'
+        shell: pwsh
+        run: ${{ inputs.args }}

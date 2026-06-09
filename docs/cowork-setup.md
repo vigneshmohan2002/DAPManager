@@ -69,6 +69,43 @@ Get-ChildItem scripts\*.sh | ForEach-Object {
 ```
 Then rebuild: `docker build -t dapmanager:latest . && docker restart dapmanager`.
 
+## Self-hosted runner (Windows dispatch)
+
+You can trigger operations on the Windows machine directly from a Claude Code
+remote session — no port forwarding, Tailscale, or VPN required. The runner
+makes an **outbound** HTTPS connection to GitHub, so it works behind any NAT.
+
+### One-time runner setup (on the Windows machine)
+
+1. Open **github.com → repo → Settings → Actions → Runners → New self-hosted runner**.
+2. Choose **Windows** and follow the download/configure steps exactly as shown.
+   - When `./config.cmd` asks for labels, add: `windows` (the workflow targets
+     `[self-hosted, windows]`).
+3. Install as a persistent Windows service so it survives reboots:
+   ```powershell
+   cd C:\actions-runner   # wherever you extracted the runner
+   .\svc.sh install
+   .\svc.sh start
+   ```
+   (Use `svc.cmd` if `svc.sh` isn't present — the installer generates the right one.)
+4. Verify: the runner shows as **Idle** on the GitHub Runners page.
+
+### Dispatching from Claude Code
+
+The workflow is `.github/workflows/windows-dispatch.yml`. Claude Code can
+trigger it via the GitHub MCP `actions_run_trigger` tool. Available operations:
+
+| `operation`   | `args`                             | What it does                                        |
+|---------------|------------------------------------|-----------------------------------------------------|
+| `health-check`| —                                  | Hits each service's health endpoint; fails if any is down |
+| `restart`     | —                                  | `docker restart` all running containers             |
+| `update`      | —                                  | `git checkout master` + `docker build` + `docker restart dapmanager` |
+| `run-script`  | script name without `.ps1`, e.g. `setup-master` | Runs `scripts/<name>.ps1` |
+| `shell`       | raw PowerShell                     | Executes arbitrary PowerShell (private-repo-only escape hatch) |
+
+Example: ask Claude Code to "restart the Windows containers" and it will call
+`actions_run_trigger` with `operation=restart`.
+
 ## Contribution flow (satellite → master)
 
 A satellite offers a track by identifier + quality. The master first tries to
