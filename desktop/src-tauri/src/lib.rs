@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use tauri::{Manager, PhysicalSize, RunEvent, State, WebviewWindow, WindowEvent};
+use tauri::{Emitter, Manager, PhysicalSize, RunEvent, State, WebviewWindow, WindowEvent};
 
 mod seed_config;
 
@@ -107,7 +107,33 @@ fn resolve_project_root(resource_dir: Option<PathBuf>) -> PathBuf {
 }
 
 fn resolve_python() -> String {
-    std::env::var("DAPMANAGER_PYTHON").unwrap_or_else(|_| "python3".to_string())
+    if let Ok(explicit) = std::env::var("DAPMANAGER_PYTHON") {
+        return explicit;
+    }
+
+    // On macOS, /usr/bin/python3 is an Xcode CLT stub. Invoked from a GUI
+    // app (non-interactively) it either hangs showing an install dialog or
+    // exits non-zero. Check real, known-good Python locations first so we
+    // don't block the background thread indefinitely.
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            "/opt/homebrew/bin/python3",   // Apple Silicon Homebrew (M1/M2/M3)
+            "/usr/local/bin/python3",      // Intel Homebrew / python.org pkg
+            "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+        ];
+        for p in candidates {
+            if std::path::Path::new(p).exists() {
+                eprintln!("DAPManager: using Python at {p}");
+                return p.to_string();
+            }
+        }
+        // Fall through to PATH lookup; if /usr/bin/python3 (the Xcode stub)
+        // is the only thing on PATH the venv check below will catch the error
+        // quickly rather than hanging.
+    }
+
+    "python3".to_string()
 }
 
 /// Create (or reuse) a venv at `venv_dir` and ensure all requirements are
@@ -373,18 +399,52 @@ pub fn run() {
             let state: State<Arc<BackendHandle>> = app.state();
             let backend = Arc::clone(&state);
 
-            // Run venv setup + spawn on a background thread.
-            // The webview's "booting…" spinner will keep animating while pip
-            // does its thing; waitForBackend polls until the server is up.
+            // Clone AppHandle so the background thread can emit events.
+            let app_handle = app.handle().clone();
+
+            // Run venv setup + spawn on a background thread so the Tauri
+            // event loop (and the webview spinner) keep running during the
+            // first-launch pip install.
+            //
+            // On failure the thread emits "backend-error" immediately so the
+            // frontend can surface the message in seconds rather than waiting
+            // the full 5-minute waitForBackend timeout.
             std::thread::spawn(move || {
-                let python = ensure_venv(&root, &venv_dir, &resolve_python());
-                if let Err(e) = backend.spawn(root.clone(), python.clone(), config_path.as_deref()) {
-                    eprintln!(
-                        "DAPManager: failed to spawn Python backend ({} at {}): {}",
-                        python,
-                        root.display(),
-                        e
+                let system_python = resolve_python();
+
+                // Quick probe: does the Python binary actually work?
+                // Avoids hanging on the macOS Xcode-CLT stub that shows a
+                // GUI install dialog when invoked from a sandboxed process.
+                let python_ok = if system_python.starts_with('/') {
+                    std::path::Path::new(&system_python).exists()
+                } else {
+                    std::process::Command::new(&system_python)
+                        .arg("--version")
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                };
+
+                if !python_ok {
+                    let msg = format!(
+                        "Python 3 not found (tried: {system_python}).\n\n\
+                         Install Python 3 and relaunch:\n\
+                         • https://www.python.org/downloads/\n\
+                         • or run  xcode-select --install  in Terminal"
                     );
+                    eprintln!("DAPManager: {msg}");
+                    let _ = app_handle.emit("backend-error", msg);
+                    return;
+                }
+
+                let python = ensure_venv(&root, &venv_dir, &system_python);
+                if let Err(e) = backend.spawn(root.clone(), python.clone(), config_path.as_deref()) {
+                    let msg = format!(
+                        "Failed to start Python backend.\n\nPython: {python}\nRoot: {}\nError: {e}",
+                        root.display()
+                    );
+                    eprintln!("DAPManager: {msg}");
+                    let _ = app_handle.emit("backend-error", msg);
                 }
             });
 
