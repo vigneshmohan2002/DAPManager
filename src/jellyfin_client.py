@@ -27,11 +27,11 @@ class JellyfinClient:
 
     def __init__(
         self,
-        db: DatabaseManager,
         base_url: str,
         api_key: str,
         user_id: str,
-        music_library_path: str,
+        db: Optional[DatabaseManager] = None,
+        music_library_path: str = "",
         progress_callback: Optional[Callable[[dict], None]] = None,
     ):
         if not base_url or not api_key or not user_id:
@@ -54,7 +54,8 @@ class JellyfinClient:
         self.session.mount("http://", HTTPAdapter(max_retries=retries))
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
 
-        os.makedirs(self.music_library_path, exist_ok=True)
+        if self.music_library_path:
+            os.makedirs(self.music_library_path, exist_ok=True)
 
     def _report(
         self,
@@ -80,6 +81,19 @@ class JellyfinClient:
         r = self.session.get(url, params=params, timeout=30)
         r.raise_for_status()
         return r.json()
+
+    def _post(self, path: str, params: Optional[dict] = None) -> None:
+        url = f"{self.base_url}{path}"
+        r = self.session.post(url, params=params, timeout=30)
+        r.raise_for_status()
+
+    def trigger_library_scan(self) -> None:
+        """Tell Jellyfin to re-scan all media libraries."""
+        try:
+            self._post("/Library/Refresh")
+            logger.info("Triggered Jellyfin library refresh")
+        except Exception as e:
+            logger.warning("Jellyfin library refresh failed: %s", e)
 
     def _stream_to_file(self, path: str, dest_path: str):
         url = f"{self.base_url}{path}"

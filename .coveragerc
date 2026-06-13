@@ -1,0 +1,27 @@
+# Coverage config for the E2E suite. The app runs inside the master/satellite
+# containers under `python -m coverage run`; this file is baked into the image
+# at /app/.coveragerc and referenced via --rcfile.
+[run]
+# parallel + a per-container data suffix so the two containers don't clobber
+# each other's data files in the shared /coverage volume.
+parallel = True
+# Flush coverage data on SIGTERM (docker stop) — the dev server never returns
+# from app.run(), so without this nothing is written on shutdown.
+sigterm = True
+# /app holds web_server.py + src/ (web/ is templates, no .py). A bare .py file
+# is not a valid `source` entry — it gets silently ignored — so we point at the
+# whole app dir to include web_server.py (where most endpoints live).
+source =
+    /app
+omit =
+    */tests/*
+    */sldl*
+
+[report]
+# Show line numbers that weren't executed, and don't fail on files with no code.
+show_missing = True
+skip_empty = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError

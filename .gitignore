@@ -11,8 +11,16 @@
 /*.zip
 src/__pycache__/
 tests/__pycache__/
+**/__pycache__/
 .claude/settings.local.json
 desktop/.claude/settings.local.json
+
+# Coverage + test artifacts (E2E harness)
+/htmlcov/
+.coverage
+.coverage.*
+/coverage.json
+*.stackdump
 
 # Local runtime files (credentials / data / generated working copies)
 /config/

@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -12,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         unzip \
         tini \
+        libicu-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # sldl (slsk-batchdl) — pinned self-contained release from upstream.
@@ -34,6 +36,11 @@ WORKDIR /app
 
 COPY requirements-server.txt ./
 RUN pip install -r requirements-server.txt
+# coverage is used by the E2E harness (scripts/run_e2e.py) to measure the app
+# while it runs inside the container; harmless in normal operation.
+RUN pip install "coverage>=7.3"
+
+COPY .coveragerc ./
 
 COPY src ./src
 COPY web ./web

@@ -31,6 +31,11 @@ from . import musicbrainz_client as mb
 
 logger = logging.getLogger(__name__)
 
+# File extensions whose tags we can read/write. Used by callers (e.g. the
+# retag pass) to skip unsupported files gracefully instead of treating each
+# one as an error on every run.
+TAGGABLE_EXTENSIONS = {".flac", ".mp3", ".ogg", ".m4a", ".mp4"}
+
 CONFIDENCE_GREEN = 0.90
 CONFIDENCE_YELLOW = 0.50
 
@@ -277,6 +282,60 @@ def _write_ogg(filepath: str, meta: dict) -> None:
     if meta.get("release_mbid"):
         audio["musicbrainz_albumid"] = _s(meta["release_mbid"])
     audio.save()
+
+
+def update_album_tags(
+    filepath: str,
+    album: str,
+    album_artist: Optional[str] = None,
+    release_mbid: Optional[str] = None,
+) -> str:
+    """Update only the album-level tags on a file, preserving everything else.
+
+    Unlike :func:`write_tags` (which rewrites the whole tag set and would blank
+    fields it isn't given, e.g. date), this touches just ``album``, optionally
+    ``albumartist``, and optionally ``musicbrainz_albumid`` — leaving title,
+    artist, track/disc numbers, date and all other tags intact. Used by edition
+    consolidation where only the album assignment changes.
+
+    Returns the container name on success; raises ValueError for unsupported
+    formats.
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if ext in (".m4a", ".mp4"):
+        audio = MP4(filepath)
+        audio["\xa9alb"] = _s(album)
+        if album_artist is not None:
+            audio["aART"] = _s(album_artist)
+        if release_mbid:
+            audio["----:com.apple.iTunes:MusicBrainz Album Id"] = [
+                _s(release_mbid).encode("utf-8")
+            ]
+        audio.save()
+        return "m4a"
+
+    if ext == ".flac":
+        audio = FLAC(filepath)
+    elif ext == ".mp3":
+        try:
+            audio = EasyID3(filepath)
+        except mutagen.id3.ID3NoHeaderError:
+            from mutagen.id3 import ID3
+            ID3().save(filepath)
+            audio = EasyID3(filepath)
+    elif ext == ".ogg":
+        audio = OggVorbis(filepath)
+    else:
+        raise ValueError(f"unsupported file format for tagging: {ext}")
+
+    audio["album"] = _s(album)
+    if album_artist is not None:
+        audio["albumartist"] = _s(album_artist)
+    if release_mbid:
+        audio["musicbrainz_albumid"] = _s(release_mbid)
+    audio.save()
+    return ext.lstrip(".")
 
 
 def _write_m4a(filepath: str, meta: dict) -> None:

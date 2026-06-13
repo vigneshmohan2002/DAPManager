@@ -91,6 +91,13 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.db_path)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys = ON;")
+            # Wait up to 5s for a write lock instead of failing immediately with
+            # "database is locked". The synchronous maintenance endpoints
+            # (consolidate/retag) can hold a write transaction while a
+            # background scan/sync runs; without this they collide. WAL is
+            # avoided deliberately — it misbehaves on the Windows Docker
+            # bind-mount that backs /data.
+            self.conn.execute("PRAGMA busy_timeout = 5000;")
             logger.info(f"Connected to database at {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"Error connecting to database: {e}")
@@ -254,6 +261,16 @@ class DatabaseManager:
                     contribution_id INTEGER,
                     status TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """,
+            # Split-album incidents the user has dismissed as false positives.
+            # incident_key is a stable hash of the incident's sorted album_ids
+            # (see split_album_detector.incident_key) so the same fragment
+            # combination stays hidden across rescans.
+            "split_album_dismissals": """
+                CREATE TABLE IF NOT EXISTS split_album_dismissals (
+                    incident_key TEXT PRIMARY KEY,
+                    dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """,
         }
@@ -2806,10 +2823,44 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
+    # --- Split-album dismissals ---
+    def get_dismissed_split_albums(self) -> set:
+        """Return the set of dismissed split-album incident keys."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT incident_key FROM split_album_dismissals")
+        keys = {row[0] for row in cursor.fetchall()}
+        cursor.close()
+        return keys
+
+    def dismiss_split_album(self, incident_key: str):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO split_album_dismissals (incident_key) VALUES (?)",
+            (incident_key,),
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def undismiss_split_album(self, incident_key: str):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM split_album_dismissals WHERE incident_key = ?",
+            (incident_key,),
+        )
+        self.conn.commit()
+        cursor.close()
+
     def update_track_local_path(self, mbid: str, path: str):
         if path:
             path = os.path.normpath(path).replace("\\", "/")
         cursor = self.conn.cursor()
+        # Release this path from any other track that currently owns it so the
+        # UNIQUE constraint on local_path doesn't block the reassignment.
+        if path:
+            cursor.execute(
+                "UPDATE tracks SET local_path = NULL WHERE local_path = ? AND mbid != ?",
+                (path, mbid),
+            )
         cursor.execute(
             "UPDATE tracks SET local_path = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
             (path, mbid),

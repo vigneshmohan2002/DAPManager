@@ -14,6 +14,7 @@ from .utils import write_mbid_to_file
 from .audio_quality import library_path_for_track
 from . import tag_service
 from .lidarr_client import LidarrClient, LidarrError
+from .jellyfin_client import JellyfinClient
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class Downloader:
         lidarr_client: Optional["LidarrClient"] = None,
         lidarr_quality_profile_id: Optional[int] = None,
         lidarr_root_folder_path: Optional[str] = None,
+        jellyfin_client: Optional["JellyfinClient"] = None,
     ):
         """
         Initializes the Downloader.
@@ -56,6 +58,7 @@ class Downloader:
         self.lidarr = lidarr_client
         self.lidarr_quality_profile_id = lidarr_quality_profile_id
         self.lidarr_root_folder_path = lidarr_root_folder_path
+        self.jellyfin_client = jellyfin_client
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)
@@ -121,7 +124,7 @@ class Downloader:
                 success_count += 1
 
             except subprocess.CalledProcessError as e:
-                error_message = f"STDOUT: {e.stdout.strip()} | STDERR: {e.stderr.strip()}"
+                error_message = f"STDOUT: {(e.stdout or '').strip()} | STDERR: {(e.stderr or '').strip()}"
                 logger.error(f"Download command failed: {error_message}")
                 self._process_failure(item, error_message)
                 fail_count += 1
@@ -139,6 +142,10 @@ class Downloader:
                 fail_count += 1
 
         report(f"Download queue finished. Success: {success_count}, Failed: {fail_count}")
+
+        if success_count > 0 and self.jellyfin_client:
+            report("Triggering Jellyfin library scan...")
+            self.jellyfin_client.trigger_library_scan()
 
     def _attempt_download(self, item: DownloadItem, item_callback=None):
         """
@@ -483,6 +490,19 @@ class Downloader:
         logger.info(f"Item {item.id} processing complete.")
 
 
+def _build_jellyfin_client(config: dict) -> Optional[JellyfinClient]:
+    url = (config.get("jellyfin_url") or "").strip()
+    api_key = (config.get("jellyfin_api_key") or "").strip()
+    user_id = (config.get("jellyfin_user_id") or "").strip()
+    if not url or not api_key or not user_id:
+        return None
+    try:
+        return JellyfinClient(base_url=url, api_key=api_key, user_id=user_id)
+    except Exception as e:
+        logger.warning("Could not build Jellyfin client for scan trigger: %s", e)
+        return None
+
+
 def _build_lidarr_client(config: dict) -> Optional[LidarrClient]:
     """Return a Lidarr client only on the master when sidecar is enabled.
 
@@ -524,6 +544,7 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
         return
 
     lidarr_client = _build_lidarr_client(config)
+    jellyfin_client = _build_jellyfin_client(config)
 
     # Initialize components
     scanner = LibraryScanner(db)  # No longer needs picard_path
@@ -539,6 +560,7 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
         lidarr_client=lidarr_client,
         lidarr_quality_profile_id=config.get("lidarr_quality_profile_id"),
         lidarr_root_folder_path=config.get("lidarr_root_folder_path"),
+        jellyfin_client=jellyfin_client,
     )
 
     # Run the queue

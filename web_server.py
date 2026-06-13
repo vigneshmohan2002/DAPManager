@@ -363,6 +363,12 @@ def player_page():
     return render_template("player.html")
 
 
+@app.route("/satellite")
+def satellite_page():
+    """iOS satellite PWA — 4-tab interface for remote music management."""
+    return render_template("satellite.html")
+
+
 @app.route("/setup")
 def setup():
     if config_exists():
@@ -3434,6 +3440,155 @@ def resolve_dupes():
         return jsonify({"success": True, "result": result})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
+
+@app.route("/api/library/split-albums", methods=["GET"])
+def api_split_albums():
+    """Detect albums that have been fragmented into multiple groups.
+
+    Uses two strategies: same-folder tracks assigned to different album groups
+    (metadata mismatch), and album-title similarity across groups from the same
+    artist. Returns a list of incidents the user can review and optionally merge.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        from src.split_album_detector import detect_split_albums
+        with DatabaseManager(config.db_path) as db:
+            incidents = detect_split_albums(db)
+        return jsonify({"success": True, "incidents": incidents, "count": len(incidents)})
+    except Exception as e:
+        logger.exception("api_split_albums failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/split-albums/merge", methods=["POST"])
+def api_split_albums_merge():
+    """Merge a secondary album group into the primary.
+
+    Body:
+      primary_album_id:    album_id of the group to keep
+      secondary_album_id:  album_id whose tracks get reassigned
+      target_album:        canonical album title to write
+      target_artist:       canonical artist to write
+      target_release_mbid: release MBID to write (or "" to clear)
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    primary = (data.get("primary_album_id") or "").strip()
+    secondary = (data.get("secondary_album_id") or "").strip()
+    target_album = (data.get("target_album") or "").strip()
+    target_artist = (data.get("target_artist") or "").strip()
+    target_release_mbid = (data.get("target_release_mbid") or "").strip() or None
+
+    if not primary or not secondary or not target_album or not target_artist:
+        return jsonify({
+            "success": False,
+            "message": "primary_album_id, secondary_album_id, target_album, and target_artist are required",
+        }), 400
+    if primary == secondary:
+        return jsonify({"success": False, "message": "primary and secondary must differ"}), 400
+
+    try:
+        from src.split_album_detector import merge_album_groups
+        with DatabaseManager(config.db_path) as db:
+            result = merge_album_groups(
+                db, primary, secondary, target_album, target_artist, target_release_mbid
+            )
+        return jsonify({"success": True, **result})
+    except Exception as e:
+        logger.exception("api_split_albums_merge failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+def _trigger_jellyfin_scan(context: str) -> None:
+    """Best-effort Jellyfin library refresh after a metadata mutation.
+
+    Swallows all errors (logged) so a Jellyfin outage never fails the request
+    that triggered it. ``context`` names the calling operation for the log line.
+    """
+    try:
+        from src.downloader import _build_jellyfin_client
+        jc = _build_jellyfin_client(config._config)
+        if jc:
+            jc.trigger_library_scan()
+    except Exception as e:
+        logger.warning("Jellyfin scan after %s failed: %s", context, e)
+
+
+@app.route("/api/library/consolidate-editions", methods=["POST"])
+def api_consolidate_editions():
+    """Fold base/standard album editions into their superset (deluxe) edition.
+
+    Body: ``{"dry_run": bool}`` — when true (default), returns the planned
+    changes without writing. Send ``{"dry_run": false}`` to apply.
+    Triggers a Jellyfin scan after a real run so the merged albums refresh.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    dry_run = bool(data.get("dry_run", True))
+    try:
+        from src.split_album_detector import consolidate_editions
+        with DatabaseManager(config.db_path) as db:
+            summary = consolidate_editions(db, dry_run=dry_run)
+        if not dry_run and summary.get("tracks_reassigned", 0) > 0:
+            _trigger_jellyfin_scan("consolidate")
+        return jsonify({"success": True, "dry_run": dry_run, **summary})
+    except Exception as e:
+        logger.exception("api_consolidate_editions failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/retag-files", methods=["POST"])
+def api_retag_files():
+    """Rewrite on-disk album tags to match the DB (repairs metadata-only edits).
+
+    Body: ``{"only_mismatched": bool}`` (default true). Triggers a Jellyfin
+    scan afterward so the corrected tags are picked up.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    only_mismatched = bool(data.get("only_mismatched", True))
+    try:
+        from src.split_album_detector import retag_files_from_db
+        with DatabaseManager(config.db_path) as db:
+            result = retag_files_from_db(db, only_mismatched=only_mismatched)
+        if result.get("tagged", 0) > 0:
+            _trigger_jellyfin_scan("retag")
+        return jsonify({"success": True, **result})
+    except Exception as e:
+        logger.exception("api_retag_files failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/split-albums/dismiss", methods=["POST"])
+def api_split_albums_dismiss():
+    """Dismiss a split-album incident as a false positive.
+
+    Body: ``{"key": "<incident key>"}`` — the stable key from the
+    detect response. ``{"key": ..., "undismiss": true}`` reverses it.
+    Dismissed incidents stay hidden across rescans.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"success": False, "message": "key is required"}), 400
+    undismiss = bool(data.get("undismiss"))
+    try:
+        with DatabaseManager(config.db_path) as db:
+            if undismiss:
+                db.undismiss_split_album(key)
+            else:
+                db.dismiss_split_album(key)
+        return jsonify({"success": True, "dismissed": not undismiss})
+    except Exception as e:
+        logger.exception("api_split_albums_dismiss failed")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route("/api/install_slsk", methods=["POST"])

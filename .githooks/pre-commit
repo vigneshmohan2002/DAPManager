@@ -1,0 +1,21 @@
+#!/bin/sh
+# Fast pre-commit gate: byte-compile all Python so a syntax error never lands.
+# Heavy integration tests run on pre-push instead (see .githooks/pre-push).
+#
+# Enable once per clone with:  git config core.hooksPath .githooks
+echo "[pre-commit] byte-compiling Python sources..."
+python - <<'PY'
+import compileall, sys
+ok = 1
+for target in ("src", "scripts", "tests"):
+    ok &= compileall.compile_dir(target, quiet=1)
+ok &= compileall.compile_file("web_server.py", quiet=1)
+sys.exit(0 if ok else 1)
+PY
+rc=$?
+if [ "$rc" != "0" ]; then
+    echo "[pre-commit] FAILED: Python syntax error — fix before committing."
+    exit 1
+fi
+echo "[pre-commit] OK"
+exit 0

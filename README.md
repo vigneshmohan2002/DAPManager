@@ -102,6 +102,38 @@ python -m pytest -q
 > `test_contributions`, `test_contribution_sync`, `test_openapi`) are
 > self-contained and should all pass.
 
+### End-to-end suite (real master + satellite containers, with coverage)
+
+`scripts/run_e2e.py` spins up an **isolated** master + satellite container pair
+on a private Docker network, seeds the master with N random files from your
+local `data/music` library, runs the full HTTP-driven suite
+(`tests/e2e/test_e2e_suite.py`) against both, and reports **code coverage of the
+app running inside the containers**:
+
+```powershell
+python scripts/run_e2e.py            # build, run, report coverage -> ./htmlcov
+python scripts/run_e2e.py --skip-build --files 10
+python scripts/run_e2e.py --keep     # leave the pair running for debugging
+```
+
+It uses only the Python standard library on the host (no pytest needed) — the
+app is launched under `coverage` inside the containers. Coverage of pure
+external-service integrations (Soulseek, Lidarr, Spotify, MusicBrainz, LRCLIB,
+Jellyfin, DAP sync) is necessarily low from E2E alone, since those need live
+services/credentials/hardware.
+
+### Git hooks (tests on commit & push)
+
+Versioned hooks live in `.githooks/`. Enable them **once per clone**:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+- **pre-commit** — byte-compiles all Python (fast syntax gate).
+- **pre-push** — runs the full E2E suite. Skips gracefully when Docker or
+  `data/music` is absent. Bypass a single push with `SKIP_E2E=1 git push`.
+
 ---
 
 ## What's new: satellite → master contribution
@@ -142,6 +174,48 @@ status and promised-vs-acquired quality.
 
 ---
 
+## Library maintenance (duplicates, split albums, editions, retag)
+
+Tools for keeping the library clean. All available in the Dashboard UI, over the
+HTTP API, and via the `scripts/dap_admin.py` CLI.
+
+- **Duplicates** — find/resolve multiple files mapped to one track; keeps the
+  highest-quality copy. "Resolve All" does the whole list at once.
+- **Split albums** — detect an album fragmented across entries (folder-based or
+  name-similarity), then merge with file-tag rewrite. False positives can be
+  dismissed permanently.
+- **Consolidate editions** — fold standard/base editions into their superset
+  (e.g. "Album" → "Album (Deluxe)") so every song lands on one album. Always
+  dry-run/preview first; apply is idempotent.
+- **Retag** — sync on-disk file tags to the database (only files that drifted).
+
+> **Key model:** DAPManager's UI reads the **database**; Jellyfin reads the
+> **embedded file tags**. Metadata operations that should reach Jellyfin
+> rewrite the file tags and trigger a scan — see
+> [docs/library-maintenance.md](docs/library-maintenance.md) for the full
+> table and the DB-vs-file-tags explanation.
+
+### CLI quick reference (`scripts/dap_admin.py`)
+
+```bash
+python scripts/dap_admin.py healthz
+python scripts/dap_admin.py duplicates list | resolve-all
+python scripts/dap_admin.py split-albums list | merge … | dismiss <key>
+python scripts/dap_admin.py library consolidate            # dry-run preview
+python scripts/dap_admin.py library consolidate --apply
+python scripts/dap_admin.py library retag                  # sync tags to DB
+```
+
+### Running it with an AI agent
+
+Every GUI action has a CLI/API equivalent with structured output, dry-runs, and
+idempotent applies — which makes DAPManager well-suited to being operated by an
+AI agent. See **[docs/agent-operations.md](docs/agent-operations.md)** for the
+maintenance runbook, a safety classification (read-only vs. reversible vs.
+destructive), and how to verify results.
+
+---
+
 ## Known limitations / next steps
 
 - **MBID mismatch:** if the master's auto-tagger resolves a *different* MBID than
@@ -164,7 +238,14 @@ status and promised-vs-acquired quality.
 - `web/templates/` — server-rendered pages (`index`, `library`, `fleet`,
   `contributions`, `orphans`, `setup`, `docs`).
 - `scripts/` — Windows/POSIX bootstrap + setup (`setup-master.ps1`,
-  `bootstrap-master.ps1`, …).
+  `bootstrap-master.ps1`, …), plus `dap_admin.py` (admin CLI) and
+  `test_satellite_e2e.py` (end-to-end smoke test).
+- `src/split_album_detector.py` — split-album detection, edition consolidation,
+  retag-from-DB.
+- `src/tag_service.py` — file tag read/write, incl. `update_album_tags()`
+  (targeted album-level writer).
 - `docs/` — `onboarding.md` (master/satellite deployment), `cowork-setup.md`
-  (browser/agent setup), `roadmap.md`, `desktop-rewrite.md`.
-- `tests/` — pytest suite.
+  (browser/agent setup), `library-maintenance.md` (duplicates/splits/editions/
+  retag), `agent-operations.md` (AI-agent runbook), `roadmap.md`,
+  `desktop-rewrite.md`.
+- `tests/` — pytest suite (`tests/e2e/` is the satellite end-to-end suite).
