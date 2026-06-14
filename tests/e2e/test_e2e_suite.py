@@ -223,12 +223,15 @@ class TestMaster(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
 
-    def test_scrub_dangling(self):
+    def test_scrub_dangling_dry_run(self):
+        # Default is dry-run: reports counts, writes nothing.
         status, data = _req(MASTER, "POST", "/api/library/scrub-dangling", {}, timeout=120)
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
+        self.assertTrue(data["dry_run"])
         self.assertIn("scanned", data)
         self.assertIn("cleared", data)
+        self.assertIn("fraction", data)
 
     def test_audit_results(self):
         """Incomplete-album audit (DB-side) returns without error."""

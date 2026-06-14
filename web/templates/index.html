@@ -1140,14 +1140,47 @@
         fetch('/api/library/scrub-dangling', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({ dry_run: true })
         })
             .then(res => res.json())
             .then(data => {
                 if (!data.success) { status.textContent = 'Error: ' + data.message; return; }
-                status.textContent = `Scanned ${data.scanned} local tracks, cleared ${data.cleared} dangling link${data.cleared !== 1 ? 's' : ''} (files missing from disk).`;
+                if (!data.cleared) {
+                    status.textContent = `Scanned ${data.scanned} local tracks — no dangling links found.`;
+                    return;
+                }
+                const pct = Math.round((data.fraction || 0) * 100);
+                status.textContent = `${data.cleared} dangling link${data.cleared !== 1 ? 's' : ''} found (${pct}% of ${data.scanned} linked tracks) — files missing from disk.`;
+                let html = '';
+                if (pct > 20) {
+                    html += `<p style="color:#e57373; font-size:12px;">⚠ That's ${pct}% of your linked tracks. If the library volume is healthy this is suspicious — verify before applying.</p>`;
+                }
+                html += '<ul style="margin:6px 0; padding-left:18px; font-size:12px; color:var(--color-text-muted);">';
+                (data.sample || []).forEach(p => { html += `<li>${p}</li>`; });
+                html += '</ul>';
+                html += `<button onclick="applyScrubDangling()" class="btn btn-primary">Clear ${data.cleared} Dangling Link${data.cleared !== 1 ? 's' : ''}</button>`;
+                list.innerHTML = html;
             })
             .catch(err => status.textContent = 'Network error: ' + err);
+    }
+
+    function applyScrubDangling() {
+        const list = document.getElementById('consolidate-list');
+        const status = document.getElementById('consolidate-status');
+        const btn = list.querySelector('button');
+        if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
+        fetch('/api/library/scrub-dangling', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dry_run: false })
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) { status.textContent = 'Error: ' + data.message; if (btn) btn.disabled = false; return; }
+                status.textContent = `Cleared ${data.cleared} dangling link${data.cleared !== 1 ? 's' : ''}.`;
+                list.innerHTML = '';
+            })
+            .catch(err => { status.textContent = 'Network error: ' + err; if (btn) btn.disabled = false; });
     }
 
     let currentAuditDetails = null;

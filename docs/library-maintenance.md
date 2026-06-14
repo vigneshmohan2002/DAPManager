@@ -161,9 +161,16 @@ Renamed/removed files (e.g. after a duplicate cleanup) can leave **dangling
 - `POST /api/library/scrub-dangling` walks every track with a local file, and
   for any whose file is missing, **clears `local_path`** (keeping the catalog
   row, so the track falls back to its DAP path / master stream / unavailable
-  state). Returns `{scanned, cleared, sample}`.
+  state). **Dry-run by default** — send `{"dry_run": false}` to apply. Returns
+  `{dry_run, scanned, cleared, fraction, sample}`.
 
-UI: **Scrub Dangling Files** button. CLI: `library scrub-dangling`.
+UI: **Scrub Dangling Files** button (previews, then an Apply button). CLI:
+`library scrub-dangling` (preview) / `library scrub-dangling --apply`.
 
 > It clears the broken link only — it never deletes catalog rows or audio. Must
 > run where the library lives (the container, for the bind-mounted `/data`).
+>
+> ⚠️ **Always preview.** On a bind mount, a transient I/O hiccup can make a
+> file briefly look missing. If the preview reports an implausibly large
+> fraction (the CLI/UI warn above ~20%), the volume is probably unhealthy — do
+> *not* apply; fix the mount first.

@@ -3543,17 +3543,20 @@ def api_consolidate_editions():
 
 @app.route("/api/library/scrub-dangling", methods=["POST"])
 def api_scrub_dangling():
-    """Clear local_path on tracks whose file is missing from disk.
+    """Find/clear local_path on tracks whose file is missing from disk.
 
-    Dangling links accumulate when files are renamed/removed outside DAPManager.
-    The catalog row is kept; only the broken link is cleared. Returns
-    ``{scanned, cleared, sample}``.
+    Body: ``{"dry_run": bool}`` — defaults to **true** (preview only). Send
+    ``{"dry_run": false}`` to actually clear. The catalog row is kept; only the
+    broken link is cleared. Returns ``{dry_run, scanned, cleared, fraction,
+    sample}``.
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.json or {}
+    dry_run = bool(data.get("dry_run", True))
     try:
         with DatabaseManager(config.db_path) as db:
-            result = db.clear_missing_local_paths()
+            result = db.clear_missing_local_paths(dry_run=dry_run)
         return jsonify({"success": True, **result})
     except Exception as e:
         logger.exception("api_scrub_dangling failed")

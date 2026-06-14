@@ -2850,16 +2850,23 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
-    def clear_missing_local_paths(self) -> dict:
-        """Null out ``local_path`` for tracks whose file no longer exists on disk.
+    def clear_missing_local_paths(self, dry_run: bool = True) -> dict:
+        """Find (and optionally clear) ``local_path`` for tracks whose file is gone.
 
         These dangling links accumulate when a file is renamed/removed outside
-        DAPManager (e.g. after a duplicate cleanup). The catalog row is kept —
-        only the broken file link is cleared, so the track falls back to its DAP
-        path / master stream / unavailable state instead of pointing at nothing.
+        DAPManager (e.g. after a duplicate cleanup). Only the broken file link is
+        cleared (the catalog row is kept) so the track falls back to its DAP path
+        / master stream / unavailable state instead of pointing at nothing.
+
+        **Dry-run by default**: with ``dry_run=True`` nothing is written — it just
+        reports what *would* be cleared. This is a deliberate safety guard: on a
+        bind mount a transient I/O hiccup could make ``os.path.isfile`` return
+        False for files that really exist, and clearing on that would be
+        destructive. Always preview before applying.
 
         Must run where the files live (the container, for the bind-mounted
-        library). Returns ``{scanned, cleared, sample}``.
+        library). Returns ``{dry_run, scanned, cleared, fraction, sample}``
+        where ``cleared`` is the would-clear count in dry-run mode.
         """
         cursor = self.conn.cursor()
         cursor.execute(
@@ -2872,17 +2879,21 @@ class DatabaseManager:
             path = (dict(r).get("local_path") or "").strip()
             if path and not os.path.isfile(path):
                 missing.append((dict(r)["mbid"], path))
-        for mbid, _path in missing:
-            cursor.execute(
-                "UPDATE tracks SET local_path = NULL, updated_at = CURRENT_TIMESTAMP "
-                "WHERE mbid = ?",
-                (mbid,),
-            )
-        self.conn.commit()
+        if not dry_run:
+            for mbid, _path in missing:
+                cursor.execute(
+                    "UPDATE tracks SET local_path = NULL, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE mbid = ?",
+                    (mbid,),
+                )
+            self.conn.commit()
         cursor.close()
+        scanned = len(rows)
         return {
-            "scanned": len(rows),
+            "dry_run": dry_run,
+            "scanned": scanned,
             "cleared": len(missing),
+            "fraction": round(len(missing) / scanned, 3) if scanned else 0.0,
             "sample": [p for _m, p in missing[:20]],
         }
 

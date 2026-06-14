@@ -30,7 +30,7 @@ Commands:
     library artists               List artists
     library consolidate [--apply] Fold editions into superset (dry-run default)
     library retag [--all]         Sync on-disk tags to DB (mismatched only)
-    library scrub-dangling        Clear local_path for files missing from disk
+    library scrub-dangling [--apply]  Clear local_path for missing files (dry-run default)
 
 See docs/agent-operations.md for workflows and safety notes.
 """
@@ -279,16 +279,25 @@ def cmd_library_retag(server, token, args):
             print(f"    {e}")
 
 
-def cmd_library_scrub_dangling(server, token, _args):
+def cmd_library_scrub_dangling(server, token, args):
+    dry_run = not getattr(args, "apply", False)
     code, data = _req("POST", f"{server}/api/library/scrub-dangling",
-                       {}, token=token, timeout=600)
+                       {"dry_run": dry_run}, token=token, timeout=600)
     if not data.get("success"):
         print(f"  ERROR: {data.get('message')}")
         return
+    label = "WOULD CLEAR (dry-run)" if dry_run else "CLEARED"
+    frac = data.get("fraction", 0)
     print(f"  scanned : {data.get('scanned')}")
-    print(f"  cleared : {data.get('cleared')}")
+    print(f"  {label} : {data.get('cleared')}  ({frac:.0%} of linked rows)")
     for p in (data.get("sample") or []):
         print(f"    {p}")
+    if dry_run and data.get("cleared"):
+        if frac and frac > 0.2:
+            print(f"\n  WARNING: that's {frac:.0%} of your linked tracks — if the "
+                  "library volume is mounted/healthy this is suspicious. "
+                  "Verify before --apply.")
+        print("\n  Re-run with --apply to clear these links.")
 
 
 def cmd_library_albums(server, token, _args):
@@ -379,7 +388,9 @@ def main():
     retag_p = lib_sub.add_parser("retag")
     retag_p.add_argument("--all", action="store_true",
                          help="Retag every file (default: only files whose tags differ from DB)")
-    lib_sub.add_parser("scrub-dangling")
+    scrub_p = lib_sub.add_parser("scrub-dangling")
+    scrub_p.add_argument("--apply", action="store_true",
+                         help="Clear the dangling links (default is dry-run preview)")
 
     args = p.parse_args()
     server = args.server.rstrip("/")
