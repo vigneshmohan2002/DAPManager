@@ -188,6 +188,7 @@ HTTP API, and via the `scripts/dap_admin.py` CLI.
   (e.g. "Album" → "Album (Deluxe)") so every song lands on one album. Always
   dry-run/preview first; apply is idempotent.
 - **Retag** — sync on-disk file tags to the database (only files that drifted).
+- **Scrub dangling** — clear `local_path` for tracks whose file is missing.
 
 > **Key model:** DAPManager's UI reads the **database**; Jellyfin reads the
 > **embedded file tags**. Metadata operations that should reach Jellyfin

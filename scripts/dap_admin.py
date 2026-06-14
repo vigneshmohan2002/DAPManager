@@ -30,6 +30,7 @@ Commands:
     library artists               List artists
     library consolidate [--apply] Fold editions into superset (dry-run default)
     library retag [--all]         Sync on-disk tags to DB (mismatched only)
+    library scrub-dangling        Clear local_path for files missing from disk
 
 See docs/agent-operations.md for workflows and safety notes.
 """
@@ -278,6 +279,18 @@ def cmd_library_retag(server, token, args):
             print(f"    {e}")
 
 
+def cmd_library_scrub_dangling(server, token, _args):
+    code, data = _req("POST", f"{server}/api/library/scrub-dangling",
+                       {}, token=token, timeout=600)
+    if not data.get("success"):
+        print(f"  ERROR: {data.get('message')}")
+        return
+    print(f"  scanned : {data.get('scanned')}")
+    print(f"  cleared : {data.get('cleared')}")
+    for p in (data.get("sample") or []):
+        print(f"    {p}")
+
+
 def cmd_library_albums(server, token, _args):
     code, data = _req("GET", f"{server}/api/library/albums", token=token)
     albums = data.get("albums") or []
@@ -366,6 +379,7 @@ def main():
     retag_p = lib_sub.add_parser("retag")
     retag_p.add_argument("--all", action="store_true",
                          help="Retag every file (default: only files whose tags differ from DB)")
+    lib_sub.add_parser("scrub-dangling")
 
     args = p.parse_args()
     server = args.server.rstrip("/")
@@ -416,6 +430,8 @@ def main():
             cmd_library_consolidate(server, token, args)
         elif lib_cmd == "retag":
             cmd_library_retag(server, token, args)
+        elif lib_cmd == "scrub-dangling":
+            cmd_library_scrub_dangling(server, token, args)
         else:
             lib_p.print_help()
     else:

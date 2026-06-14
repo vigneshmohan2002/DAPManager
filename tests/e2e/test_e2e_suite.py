@@ -223,6 +223,13 @@ class TestMaster(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
 
+    def test_scrub_dangling(self):
+        status, data = _req(MASTER, "POST", "/api/library/scrub-dangling", {}, timeout=120)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["success"])
+        self.assertIn("scanned", data)
+        self.assertIn("cleared", data)
+
     def test_audit_results(self):
         """Incomplete-album audit (DB-side) returns without error."""
         status, data = _req(MASTER, "GET", "/api/audit/results")

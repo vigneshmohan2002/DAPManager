@@ -14,8 +14,17 @@ sys.exit(0 if ok else 1)
 PY
 rc=$?
 if [ "$rc" != "0" ]; then
-    echo "[pre-commit] FAILED: Python syntax error — fix before committing."
+    echo "[pre-commit] FAILED: Python syntax error - fix before committing."
     exit 1
 fi
+
+echo "[pre-commit] running fast host unit tests (tests/unit)..."
+PYTHONPATH=. python -m unittest discover -s tests/unit -q
+rc=$?
+if [ "$rc" != "0" ]; then
+    echo "[pre-commit] FAILED: unit tests did not pass."
+    exit 1
+fi
+
 echo "[pre-commit] OK"
 exit 0

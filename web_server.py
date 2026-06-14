@@ -3541,6 +3541,25 @@ def api_consolidate_editions():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/library/scrub-dangling", methods=["POST"])
+def api_scrub_dangling():
+    """Clear local_path on tracks whose file is missing from disk.
+
+    Dangling links accumulate when files are renamed/removed outside DAPManager.
+    The catalog row is kept; only the broken link is cleared. Returns
+    ``{scanned, cleared, sample}``.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        with DatabaseManager(config.db_path) as db:
+            result = db.clear_missing_local_paths()
+        return jsonify({"success": True, **result})
+    except Exception as e:
+        logger.exception("api_scrub_dangling failed")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/library/retag-files", methods=["POST"])
 def api_retag_files():
     """Rewrite on-disk album tags to match the DB (repairs metadata-only edits).

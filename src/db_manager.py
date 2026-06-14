@@ -2850,6 +2850,42 @@ class DatabaseManager:
         self.conn.commit()
         cursor.close()
 
+    def clear_missing_local_paths(self) -> dict:
+        """Null out ``local_path`` for tracks whose file no longer exists on disk.
+
+        These dangling links accumulate when a file is renamed/removed outside
+        DAPManager (e.g. after a duplicate cleanup). The catalog row is kept —
+        only the broken file link is cleared, so the track falls back to its DAP
+        path / master stream / unavailable state instead of pointing at nothing.
+
+        Must run where the files live (the container, for the bind-mounted
+        library). Returns ``{scanned, cleared, sample}``.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT mbid, local_path FROM tracks "
+            "WHERE deleted_at IS NULL AND local_path IS NOT NULL AND local_path != ''"
+        )
+        rows = cursor.fetchall()
+        missing = []
+        for r in rows:
+            path = (dict(r).get("local_path") or "").strip()
+            if path and not os.path.isfile(path):
+                missing.append((dict(r)["mbid"], path))
+        for mbid, _path in missing:
+            cursor.execute(
+                "UPDATE tracks SET local_path = NULL, updated_at = CURRENT_TIMESTAMP "
+                "WHERE mbid = ?",
+                (mbid,),
+            )
+        self.conn.commit()
+        cursor.close()
+        return {
+            "scanned": len(rows),
+            "cleared": len(missing),
+            "sample": [p for _m, p in missing[:20]],
+        }
+
     def update_track_local_path(self, mbid: str, path: str):
         if path:
             path = os.path.normpath(path).replace("\\", "/")

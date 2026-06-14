@@ -79,6 +79,7 @@
             </p>
             <button onclick="previewConsolidate()" class="btn btn-secondary">Preview Edition Merge</button>
             <button onclick="retagFiles()" class="btn btn-secondary" style="margin-left:8px;">Sync File Tags to DB</button>
+            <button onclick="scrubDangling()" class="btn btn-secondary" style="margin-left:8px;">Scrub Dangling Files</button>
             <div id="consolidate-container" class="mt-2.5 hidden">
                 <p id="consolidate-status" class="text-sm text-[var(--color-text-muted)]">Loading…</p>
                 <div id="consolidate-list" class="text-sm"></div>
@@ -1124,6 +1125,27 @@
                 if (data.tagged > 0) msg += ' Jellyfin scan triggered.';
                 if ((data.errors || []).length) msg += ` ${data.errors.length} error(s).`;
                 status.textContent = msg;
+            })
+            .catch(err => status.textContent = 'Network error: ' + err);
+    }
+
+    function scrubDangling() {
+        const container = document.getElementById('consolidate-container');
+        const list = document.getElementById('consolidate-list');
+        const status = document.getElementById('consolidate-status');
+        container.classList.remove('hidden');
+        list.innerHTML = '';
+        status.textContent = 'Scanning for dangling file links…';
+
+        fetch('/api/library/scrub-dangling', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) { status.textContent = 'Error: ' + data.message; return; }
+                status.textContent = `Scanned ${data.scanned} local tracks, cleared ${data.cleared} dangling link${data.cleared !== 1 ? 's' : ''} (files missing from disk).`;
             })
             .catch(err => status.textContent = 'Network error: ' + err);
     }

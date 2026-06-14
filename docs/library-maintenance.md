@@ -153,11 +153,17 @@ every file already matches the DB.
 
 ---
 
-## Known data-hygiene gap
+## Scrub dangling file links
 
-Soft-deleted / renamed files can leave **dangling `local_path` rows** — DB rows
-pointing at files that no longer exist on disk. These are harmless to tagging
-(retag skips them) but show up as `availability: unavailable` or as a `None`
-album when you inspect the file. A "purge dangling local_paths" cleanup is a
-sensible future addition; for now they're counted in retag output as
-`skipped`/dangling rather than errored.
+Renamed/removed files (e.g. after a duplicate cleanup) can leave **dangling
+`local_path` rows** — DB rows pointing at files that no longer exist on disk.
+
+- `POST /api/library/scrub-dangling` walks every track with a local file, and
+  for any whose file is missing, **clears `local_path`** (keeping the catalog
+  row, so the track falls back to its DAP path / master stream / unavailable
+  state). Returns `{scanned, cleared, sample}`.
+
+UI: **Scrub Dangling Files** button. CLI: `library scrub-dangling`.
+
+> It clears the broken link only — it never deletes catalog rows or audio. Must
+> run where the library lives (the container, for the bind-mounted `/data`).
