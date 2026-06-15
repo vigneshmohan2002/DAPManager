@@ -1,0 +1,62 @@
+name: CI
+
+# Fast, dependency-light checks that run on the server for every push / PR.
+# The heavy end-to-end suite (master + satellite containers) stays local via
+# the pre-push hook — it needs Docker and a music library CI doesn't have.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  unit:
+    name: Byte-compile + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Byte-compile all Python (syntax gate)
+        run: |
+          python - <<'PY'
+          import compileall, sys
+          ok = 1
+          for target in ("src", "scripts", "tests"):
+              ok &= compileall.compile_dir(target, quiet=1)
+          ok &= compileall.compile_file("web_server.py", quiet=1)
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: Run host unit tests (no external deps)
+        run: PYTHONPATH=. python -m unittest discover -s tests/unit -v
+
+  contribution-suites:
+    name: Self-contained pytest suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install server deps + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-server.txt pytest
+
+      - name: Run self-contained suites
+        # These suites are vouched as self-contained in the README; the
+        # env/ordering-sensitive web_routes block is intentionally excluded.
+        run: |
+          PYTHONPATH=. pytest -q \
+            tests/test_audio_quality.py \
+            tests/test_file_ingest.py \
+            tests/test_contributions.py \
+            tests/test_contribution_sync.py \
+            tests/test_openapi.py

@@ -30,6 +30,18 @@ python scripts/dap_admin.py [--server URL] [--token TOKEN] <command>
 Full command list: run `python scripts/dap_admin.py --help`, or see the table in
 [library-maintenance.md](library-maintenance.md).
 
+## Quick health report
+
+Start here. `sweep` is a **read-only** preview that reports everything pending
+(duplicates, split albums, edition merges, dangling links) without changing
+anything, and prints the exact command to fix each:
+
+```bash
+python scripts/dap_admin.py sweep
+```
+
+Use it to decide what (if anything) the standard run below needs to do.
+
 ## Standard maintenance run (safe to schedule)
 
 This is the routine an agent can run on a cadence (e.g. nightly, or after a

@@ -199,6 +199,7 @@ HTTP API, and via the `scripts/dap_admin.py` CLI.
 ### CLI quick reference (`scripts/dap_admin.py`)
 
 ```bash
+python scripts/dap_admin.py sweep                          # read-only "what's pending" report
 python scripts/dap_admin.py healthz
 python scripts/dap_admin.py duplicates list | resolve-all
 python scripts/dap_admin.py split-albums list | merge … | dismiss <key>

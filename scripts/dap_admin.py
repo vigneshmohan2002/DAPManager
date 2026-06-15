@@ -10,6 +10,7 @@ Server defaults to http://localhost:5001. Pass --token when api_token is set.
 Commands:
     status                        Show server task status
     healthz                       Liveness/readiness check
+    sweep                         Read-only maintenance health report (what's pending)
     scan                          Run library scan
     download                      Run the download queue
     download-request <query...>   Queue a track for download (satellite->master)
@@ -300,6 +301,48 @@ def cmd_library_scrub_dangling(server, token, args):
         print("\n  Re-run with --apply to clear these links.")
 
 
+def cmd_sweep(server, token, _args):
+    """Read-only maintenance health report: what cleanup is pending.
+
+    Previews only (no mutations) — apply actions stay explicit per-command.
+    Chains the dry-run/list endpoints the agent runbook describes.
+    """
+    print("\n=== DAPManager maintenance sweep (preview only) ===\n")
+
+    _, st = _req("GET", f"{server}/api/status", token=token)
+    print(f"server: {st.get('message', '?')}\n")
+
+    _, dups = _req("GET", f"{server}/api/duplicates", token=token)
+    ndup = len(dups.get("duplicates") or [])
+    print(f"  duplicates           : {ndup} group(s)"
+          + ("   -> dap_admin duplicates resolve-all" if ndup else ""))
+
+    _, spl = _req("GET", f"{server}/api/library/split-albums", token=token)
+    nspl = len(spl.get("incidents") or [])
+    print(f"  split albums         : {nspl} incident(s)"
+          + ("   -> dap_admin split-albums list" if nspl else ""))
+
+    _, con = _req("POST", f"{server}/api/library/consolidate-editions",
+                  {"dry_run": True}, token=token)
+    ncon = con.get("albums_merged", 0)
+    print(f"  edition consolidation: {ncon} album(s), {con.get('tracks_reassigned', 0)} track(s)"
+          + ("   -> dap_admin library consolidate --apply" if ncon else ""))
+
+    _, scr = _req("POST", f"{server}/api/library/scrub-dangling",
+                  {"dry_run": True}, token=token, timeout=600)
+    nscr = scr.get("cleared", 0)
+    frac = scr.get("fraction", 0)
+    note = ""
+    if nscr:
+        note = "   -> dap_admin library scrub-dangling --apply"
+        if frac and frac > 0.2:
+            note += f"  (WARNING: {frac:.0%} — verify volume health first)"
+    print(f"  dangling file links  : {nscr}" + note)
+
+    total = ndup + nspl + ncon + nscr
+    print(f"\n  {'all clean — nothing pending.' if total == 0 else 'items pending (see arrows above).'}\n")
+
+
 def cmd_library_albums(server, token, _args):
     code, data = _req("GET", f"{server}/api/library/albums", token=token)
     albums = data.get("albums") or []
@@ -341,6 +384,7 @@ def main():
 
     sub.add_parser("status")
     sub.add_parser("healthz")
+    sub.add_parser("sweep")
     sub.add_parser("scan")
     sub.add_parser("download")
     sub.add_parser("jellyfin-pull")
@@ -399,6 +443,7 @@ def main():
     dispatch = {
         "status": cmd_status,
         "healthz": cmd_healthz,
+        "sweep": cmd_sweep,
         "scan": cmd_scan,
         "download": cmd_download,
         "download-request": cmd_download_request,
