@@ -369,6 +369,32 @@ class TestSatellite(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertGreater(len(body), 0, "proxied stream returned no bytes")
 
+    def test_contribute_flow(self):
+        """Satellite offers its local tracks to the master.
+
+        The test-master is configured with attempt_timeout=0, so it requests an
+        upload immediately rather than waiting an hour — exercising the
+        contribute -> offer -> upload -> ingest path (contribution_sync,
+        file_ingest, audio_quality). Assertions are lenient: the point is to run
+        the code paths for coverage and confirm nothing 5xx's, since exact
+        end-state depends on background-task timing."""
+        _, lib = _req(SATELLITE, "GET", "/api/library/tracks?local_only=1")
+        local = [t for t in (lib.get("tracks") or [])
+                 if t.get("availability") == "local"]
+        if not local:
+            self.skipTest("satellite has no local tracks to contribute")
+
+        status, data = _req(SATELLITE, "POST", "/api/contribute")
+        self.assertEqual(status, 200)
+        self.assertTrue(data.get("success"), f"contribute rejected: {data}")
+        # let the background offer/upload task run to completion
+        _wait_idle(SATELLITE, timeout=120)
+        # master's contribution list endpoint works and is a list
+        cstatus, contribs = _req(MASTER, "GET", "/api/contributions")
+        self.assertEqual(cstatus, 200)
+        self.assertTrue(contribs.get("success"))
+        self.assertIsInstance(contribs.get("contributions"), list)
+
     def test_like_proxies_to_master(self):
         _, lib = _req(SATELLITE, "GET", "/api/library/tracks")
         tracks = lib.get("tracks", []) if isinstance(lib, dict) else []

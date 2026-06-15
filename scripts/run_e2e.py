@@ -74,6 +74,22 @@ def wait_healthy(url, name, timeout=120):
     return False
 
 
+def scan_and_wait(url, name, timeout=200):
+    """Trigger a library scan and block until it finishes."""
+    try:
+        req = urllib.request.Request(url + "/api/scan", method="POST")
+        urllib.request.urlopen(req, timeout=30).read()
+    except Exception as e:
+        print(f"  {name} scan trigger note: {e}")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _, d = http(url, "/api/status")
+        if isinstance(d, dict) and not d.get("running"):
+            break
+        time.sleep(2)
+    print(f"  {name} status: {http(url, '/api/status')[1]}")
+
+
 def pick_files(library_dir, n):
     flacs = []
     for root, _dirs, files in os.walk(library_dir):
@@ -121,6 +137,10 @@ def base_config(is_master):
             "is_master": True, "device_role": "master",
             "public_master_url": f"http://{MASTER_NAME}:5001",
             "master_url": "",
+            # 0 = request an upload immediately instead of waiting an hour for
+            # the master's own acquire attempt — exercises the upload/ingest
+            # path within a test run.
+            "contribution_attempt_timeout_seconds": 0,
         })
     else:
         cfg.update({
@@ -166,6 +186,8 @@ def main():
     ap = argparse.ArgumentParser(description="DAPManager E2E harness")
     ap.add_argument("--skip-build", action="store_true")
     ap.add_argument("--files", type=int, default=10)
+    ap.add_argument("--sat-files", type=int, default=3,
+                    help="files to seed on the satellite (for the contribute flow)")
     ap.add_argument("--library", default=os.path.join(REPO, "data", "music"))
     ap.add_argument("--keep", action="store_true", help="leave the pair running")
     args = ap.parse_args()
@@ -191,9 +213,16 @@ def main():
 
     print(f"== Workspace: {work} ==")
 
-    print("== Seeding master with random library files ==")
-    files = pick_files(args.library, args.files)
-    seed_master_music(files, args.library, os.path.join(master_data, "music"))
+    print("== Seeding master + satellite with random library files ==")
+    # Pick master files plus a few DIFFERENT files for the satellite, so the
+    # satellite has local tracks the master lacks — exercising the contribute
+    # (offer -> upload -> ingest) path.
+    picked = pick_files(args.library, args.files + args.sat_files)
+    master_files = picked[: args.files]
+    sat_files = picked[args.files: args.files + args.sat_files]
+    seed_master_music(master_files, args.library, os.path.join(master_data, "music"))
+    seed_master_music(sat_files, args.library, os.path.join(sat_data, "music"))
+    print(f"  master: {len(master_files)} files | satellite: {len(sat_files)} files")
     write_config(master_cfg, is_master=True)
     write_config(sat_cfg, is_master=False)
 
@@ -208,19 +237,9 @@ def main():
             run_quiet(["docker", "logs", "--tail", "40", MASTER_NAME])
             raise SystemExit("containers did not become healthy")
 
-        print("== Scanning master library ==")
-        try:
-            req = urllib.request.Request(MASTER_URL + "/api/scan", method="POST")
-            urllib.request.urlopen(req, timeout=30).read()
-        except Exception as e:
-            print(f"  scan trigger note: {e}")
-        # wait for the scan to finish before driving the suite
-        for _ in range(90):
-            _, d = http(MASTER_URL, "/api/status")
-            if isinstance(d, dict) and not d.get("running"):
-                break
-            time.sleep(2)
-        print(f"  master status: {http(MASTER_URL, '/api/status')[1]}")
+        print("== Scanning libraries (master + satellite) ==")
+        scan_and_wait(MASTER_URL, "master")
+        scan_and_wait(SAT_URL, "satellite")
 
         print("== Running E2E suite ==")
         env = dict(os.environ, E2E_MASTER=MASTER_URL, E2E_SATELLITE=SAT_URL,
