@@ -20,6 +20,15 @@ SECRET_KEYS = frozenset({
     "lidarr_api_key",
 })
 
+# Runtime/UI defaults for optional keys introduced after many installations
+# already had a config.json. The config endpoint overlays these without
+# rewriting the user's file; saving Settings persists any explicit changes.
+DEFAULT_VALUES = {
+    "artist_tag_max_age_days": 30,
+    "library_maintenance_interval_seconds": 604800,
+    "library_maintenance_on_startup": False,
+}
+
 EDITABLE_KEYS = frozenset({
     "music_library_path",
     "downloads_path",
@@ -42,12 +51,14 @@ EDITABLE_KEYS = frozenset({
     "report_inventory_to_host",
     "contribute_to_host",
     "contribution_attempt_timeout_seconds",
-    "is_master",
     "sync_interval_seconds",
     "sync_on_startup",
     "api_token",
     "acoustid_api_key",
     "contact_email",
+    "library_maintenance_interval_seconds",
+    "library_maintenance_on_startup",
+    "artist_tag_max_age_days",
     "lidarr_enabled",
     "lidarr_url",
     "lidarr_api_key",
@@ -64,8 +75,8 @@ BOOL_KEYS = frozenset({
     "strict_quality",
     "report_inventory_to_host",
     "contribute_to_host",
-    "is_master",
     "sync_on_startup",
+    "library_maintenance_on_startup",
     "lidarr_enabled",
     "lidarr_watch_enabled",
 })
@@ -96,7 +107,6 @@ GROUPS = [
         "jellyfin_user_id",
     ]),
     ("Multi-Device Sync", [
-        "is_master",
         "device_id",
         "device_role",
         "master_url",
@@ -111,6 +121,9 @@ GROUPS = [
     ("Tagging (AcoustID / MusicBrainz)", [
         "acoustid_api_key",
         "contact_email",
+        "artist_tag_max_age_days",
+        "library_maintenance_interval_seconds",
+        "library_maintenance_on_startup",
     ]),
     ("Lidarr Sidecar (master only)", [
         "lidarr_enabled",

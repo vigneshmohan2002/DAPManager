@@ -384,12 +384,12 @@ function playIdx(idx, list) {
 
   const img = $("cover-img"), ph = $("cover-ph");
   if (t.album_id) {
-    img.src = "/api/library/albums/"+encodeURIComponent(t.album_id)+"/cover";
+    img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(t.album_id)+"/cover");
     img.style.display=""; ph.style.display="none";
     img.onerror = () => { img.style.display="none"; ph.style.display=""; };
   } else { img.style.display="none"; ph.style.display=""; }
 
-  audio.src = "/api/stream/"+encodeURIComponent(t.mbid);
+  audio.src = window.dapApiUrl("/api/stream/"+encodeURIComponent(t.mbid));
   audio.load(); audio.play().catch(()=>{});
 
   const lb = $("btn-like");
@@ -466,7 +466,7 @@ function syncMediaSession(t) {
   if (!("mediaSession" in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({
     title:t.title||"Unknown", artist:t.artist||"", album:t.album||"",
-    artwork: t.album_id?[{src:"/api/library/albums/"+encodeURIComponent(t.album_id)+"/cover",sizes:"512x512",type:"image/jpeg"}]:[]
+    artwork: t.album_id?[{src:window.dapApiUrl("/api/library/albums/"+encodeURIComponent(t.album_id)+"/cover"),sizes:"512x512",type:"image/jpeg"}]:[]
   });
   navigator.mediaSession.setActionHandler("play",          ()=>audio.play().catch(()=>{}));
   navigator.mediaSession.setActionHandler("pause",         ()=>audio.pause());
@@ -498,7 +498,7 @@ function renderLibrary(filter="") {
   el.querySelectorAll("img[data-album]").forEach(img => {
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting) {
-        img.src = "/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover";
+        img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover");
         img.style.display="";
         img.onerror = ()=>img.remove();
         obs.disconnect();
@@ -522,7 +522,7 @@ async function openAlbum(albumId) {
   $("album-meta-sub").textContent   = album.artist || "—";
 
   const artImg = $("album-art-img");
-  artImg.src = "/api/library/albums/"+encodeURIComponent(albumId)+"/cover";
+  artImg.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(albumId)+"/cover");
   artImg.style.display="";
   artImg.onerror = ()=>artImg.remove();
 

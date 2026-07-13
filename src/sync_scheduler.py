@@ -22,18 +22,25 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 STARTUP_DELAY_SECONDS = 1.0
+STARTUP_RETRY_SECONDS = 30.0
 
 
 class SyncScheduler:
     def __init__(
         self,
         interval_seconds: int,
-        trigger: Callable[[], None],
+        trigger: Callable[[], Optional[bool]],
         run_on_startup: bool = False,
+        startup_delay_seconds: Optional[float] = None,
     ):
         self.interval_seconds = int(interval_seconds or 0)
         self.trigger = trigger
         self.run_on_startup = bool(run_on_startup)
+        self.startup_delay_seconds = (
+            float(STARTUP_DELAY_SECONDS)
+            if startup_delay_seconds is None
+            else max(0.0, float(startup_delay_seconds))
+        )
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -65,20 +72,28 @@ class SyncScheduler:
 
     def _loop(self) -> None:
         if self.run_on_startup:
-            if self._stop.wait(STARTUP_DELAY_SECONDS):
+            if self._stop.wait(self.startup_delay_seconds):
                 return
-            self._safe_trigger(reason="startup")
+            # TaskManager can be occupied by another startup job. A callback
+            # may return False to ask for a bounded retry rather than losing a
+            # weekly/monthly job until its entire interval elapses.
+            while not self._safe_trigger(reason="startup"):
+                if self._stop.wait(STARTUP_RETRY_SECONDS):
+                    return
 
         while not self._stop.is_set():
             if self._stop.wait(self.interval_seconds):
                 return
             self._safe_trigger(reason="interval")
 
-    def _safe_trigger(self, reason: str) -> None:
+    def _safe_trigger(self, reason: str) -> bool:
         try:
             logger.debug(f"SyncScheduler firing ({reason})")
-            self.trigger()
+            return self.trigger() is not False
         except Exception as e:
             logger.warning(
                 f"SyncScheduler trigger failed ({reason}): {e}", exc_info=True
             )
+            # Exceptions are left to the next ordinary interval rather than
+            # hammered every retry window.
+            return True

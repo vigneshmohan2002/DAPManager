@@ -17,6 +17,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .config_manager import is_authority_config
 from .db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -64,14 +65,12 @@ def main_run_inventory_report(
         raise ValueError("device_id is missing from config")
 
     items = _build_items(db)
-    role = (config.get("device_role") or "satellite").strip()
-
     def _report(msg: str):
         logger.info(msg)
         if progress_callback:
             progress_callback({"message": msg})
 
-    if role == "master":
+    if is_authority_config(config):
         _report(f"Recording own inventory ({len(items)} items)")
         written = db.replace_device_inventory(device_id, items)
         _stamp_cursor(db)

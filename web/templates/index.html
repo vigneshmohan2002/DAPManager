@@ -1282,17 +1282,24 @@
     }
 
     // --- Satellite download card ---
-    function renderSatelliteCard(cfg) {
+    async function renderSatelliteCard(cfg) {
         const card = document.getElementById('add-satellite-card');
         if (!card) return;
-        if (!cfg.is_master) return;  // only show on master
+        const role = String(cfg.device_role || 'satellite').toLowerCase();
+        if (!['master', 'standalone'].includes(role)) return;
 
         const publicUrl = (cfg.public_master_url || '').replace(/\/$/, '');
         if (!publicUrl) return;      // no URL → nothing useful to show
 
-        const token = window.DAP_TOKEN || '';
-        const shareUrl = publicUrl + '/download/mac' +
-            (token ? '?token=' + encodeURIComponent(token) : '');
+        let shareUrl;
+        try {
+            const response = await fetch('/api/satellite-bundle-link');
+            const payload = await response.json();
+            if (!response.ok || !payload.success) return;
+            shareUrl = payload.url;
+        } catch (_) {
+            return;
+        }
 
         document.getElementById('satellite-link').value = shareUrl;
         document.getElementById('satellite-download-btn').href = shareUrl;

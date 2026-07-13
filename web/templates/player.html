@@ -437,7 +437,7 @@ function playIdx(idx) {
     const img = document.getElementById("cover-img");
     const ph  = document.getElementById("cover-ph");
     if (t.album_id) {
-        img.src     = "/api/library/albums/" + encodeURIComponent(t.album_id) + "/cover";
+        img.src     = window.dapApiUrl("/api/library/albums/" + encodeURIComponent(t.album_id) + "/cover");
         img.style.display = "";
         ph.style.display  = "none";
         img.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
@@ -447,7 +447,7 @@ function playIdx(idx) {
     }
 
     /* Load & play */
-    audio.src = "/api/stream/" + encodeURIComponent(t.mbid);
+    audio.src = window.dapApiUrl("/api/stream/" + encodeURIComponent(t.mbid));
     audio.load();
     audio.play().catch(() => {});
 
@@ -542,7 +542,7 @@ function syncMediaSession(t) {
         artist:  t.artist || "Unknown Artist",
         album:   t.album  || "",
         artwork: t.album_id ? [{
-            src:   "/api/library/albums/" + encodeURIComponent(t.album_id) + "/cover",
+            src:   window.dapApiUrl("/api/library/albums/" + encodeURIComponent(t.album_id) + "/cover"),
             sizes: "512x512",
             type:  "image/jpeg"
         }] : []

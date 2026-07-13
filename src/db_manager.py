@@ -912,6 +912,77 @@ class DatabaseManager:
         cursor.close()
         return row["local_path"] if row and row["local_path"] else None
 
+    def find_local_tracks_by_identity(
+        self,
+        *,
+        mbid: Optional[str] = None,
+        isrc: Optional[str] = None,
+        artist: Optional[str] = None,
+        title: Optional[str] = None,
+        album: Optional[str] = None,
+    ) -> List[dict]:
+        """Return safe local candidates for a possibly mismatched track id.
+
+        Contribution offers originate on another device, whose tagger may
+        resolve a different recording MBID from the master's downloader.  An
+        MBID-only lookup therefore produces false misses and needless file
+        uploads.  Match progressively by recording MBID, ISRC, exact
+        artist/title/album, then artist/title, with both metadata fallbacks
+        accepted *only when they are unambiguous*.
+
+        Results are ordered by match confidence and de-duplicated by path.
+        Fuzzy matching is deliberately excluded: asking for an upload is
+        preferable to treating a different recording as the same track.
+        """
+        candidates: List[dict] = []
+        seen_paths = set()
+
+        def add_rows(sql: str, params: tuple, match: str, *, unique=False):
+            cur = self.conn.execute(sql, params)
+            rows = [dict(row) for row in cur.fetchall()]
+            cur.close()
+            if unique and len(rows) != 1:
+                return
+            for row in rows:
+                path = row.get("local_path")
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                row["identity_match"] = match
+                candidates.append(row)
+
+        select = (
+            "SELECT mbid, isrc, artist, title, album, local_path FROM tracks "
+            "WHERE deleted_at IS NULL AND local_path IS NOT NULL "
+            "AND local_path != '' AND "
+        )
+        if mbid:
+            add_rows(select + "mbid = ?", (mbid,), "mbid")
+        if isrc:
+            add_rows(
+                select + "isrc = ? COLLATE NOCASE",
+                (isrc,),
+                "isrc",
+            )
+        if artist and title and album:
+            add_rows(
+                select
+                + "artist = ? COLLATE NOCASE AND title = ? COLLATE NOCASE "
+                  "AND album = ? COLLATE NOCASE",
+                (artist, title, album),
+                "artist_title_album",
+                unique=True,
+            )
+        if artist and title:
+            add_rows(
+                select
+                + "artist = ? COLLATE NOCASE AND title = ? COLLATE NOCASE",
+                (artist, title),
+                "artist_title",
+                unique=True,
+            )
+        return candidates
+
     def has_queued_mbid(self, mbid: str) -> bool:
         """True if any row in download_queue already targets this MBID,
         regardless of status. Used by the release watcher to avoid
@@ -1080,8 +1151,22 @@ class DatabaseManager:
         """Rows in a non-terminal state — still need polling/upload."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT * FROM contributed WHERE status NOT IN "
+            "SELECT * FROM contributed WHERE status IS NULL OR status NOT IN "
             "('have_better', 'satisfied', 'ingested')"
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.close()
+        return rows
+
+    def list_contributed(self, limit: int = 200) -> List[dict]:
+        """Recent outgoing offers with track labels for the satellite UI."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT c.rowid AS local_id, c.mbid, c.contribution_id, c.status, "
+            "c.updated_at, t.artist, t.title, t.album "
+            "FROM contributed c LEFT JOIN tracks t ON t.mbid = c.mbid "
+            "ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?",
+            (max(1, min(500, int(limit))),),
         )
         rows = [dict(r) for r in cursor.fetchall()]
         cursor.close()
@@ -1090,16 +1175,18 @@ class DatabaseManager:
     def get_contributable_tracks(self, limit: int = 50) -> List[Track]:
         """Local tracks never offered to the master yet, capped at ``limit``.
 
-        Tracks already in ``contributed`` (in any state) are excluded — new
-        offers come from here, while in-flight ones are driven by
-        ``get_pending_contributed``.
+        Tracks already in ``contributed`` with a master-side id are excluded —
+        new offers come from here, while in-flight ones are driven by
+        ``get_pending_contributed``.  A legacy/malformed row without a
+        contribution id is intentionally offered again so it cannot strand a
+        track forever.
         """
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT t.* FROM tracks t "
             "LEFT JOIN contributed c ON c.mbid = t.mbid "
             "WHERE t.local_path IS NOT NULL AND t.deleted_at IS NULL "
-            "AND c.mbid IS NULL "
+            "AND (c.mbid IS NULL OR c.contribution_id IS NULL) "
             "LIMIT ?",
             (limit,),
         )
@@ -2354,6 +2441,165 @@ class DatabaseManager:
         finally:
             cur.close()
         return len(cleaned)
+
+    def get_artist_tags_since(
+        self, since_iso: Optional[str] = None,
+    ) -> List[dict]:
+        """Return authoritative per-artist tag snapshots for replica sync.
+
+        A tag refresh replaces an artist's complete set, so shipping flat
+        rows would leave removed tags behind on satellites.  Each returned
+        item therefore nests the artist's current tags and carries the most
+        recent ``fetched_at`` as its delta cursor.  The sentinel ``tag=''``
+        row used for MusicBrainz misses becomes ``tags=[]`` in the wire
+        representation, preserving both replacement and freshness semantics.
+
+        The cursor boundary is intentionally inclusive. SQLite's
+        ``CURRENT_TIMESTAMP`` has one-second resolution, so a refresh can
+        commit after a pull's snapshot query yet still receive the exact same
+        timestamp as that pull's ``as_of``. Replaying the boundary on the next
+        request closes that race; ``apply_artist_tags_row`` makes the replay
+        idempotent by comparing equal-timestamp snapshot content.
+        """
+        sql = (
+            "SELECT artist_name, mbid, tag, weight, fetched_at "
+            "FROM artist_tags"
+        )
+        params: tuple = ()
+        if since_iso:
+            sql += (
+                " WHERE artist_name IN ("
+                "   SELECT artist_name FROM artist_tags "
+                "   GROUP BY artist_name HAVING MAX(fetched_at) >= ?"
+                " )"
+            )
+            params = (since_iso,)
+        sql += (
+            " ORDER BY artist_name COLLATE NOCASE, "
+            "fetched_at DESC, weight DESC, tag COLLATE NOCASE"
+        )
+
+        cur = self.conn.execute(sql, params)
+        raw_rows = [dict(row) for row in cur.fetchall()]
+        cur.close()
+
+        grouped: dict = {}
+        order: List[str] = []
+        for row in raw_rows:
+            # The table's PK is case-insensitive for artist_name. Preserve
+            # the stored spelling while grouping on the same semantics.
+            key = (row.get("artist_name") or "").casefold()
+            if not key:
+                continue
+            if key not in grouped:
+                order.append(key)
+                grouped[key] = {
+                    "artist_name": row["artist_name"],
+                    "mbid": row.get("mbid"),
+                    "fetched_at": row.get("fetched_at"),
+                    "tags": [],
+                }
+            snapshot = grouped[key]
+            if not snapshot.get("mbid") and row.get("mbid"):
+                snapshot["mbid"] = row["mbid"]
+            fetched_at = row.get("fetched_at")
+            if fetched_at and (
+                not snapshot.get("fetched_at")
+                or fetched_at > snapshot["fetched_at"]
+            ):
+                snapshot["fetched_at"] = fetched_at
+            tag = (row.get("tag") or "").strip()
+            if tag:
+                snapshot["tags"].append({
+                    "tag": tag,
+                    "weight": int(row.get("weight") or 0),
+                })
+        return [grouped[key] for key in order]
+
+    def apply_artist_tags_row(self, row: dict) -> str:
+        """Apply one authoritative artist-tag snapshot from the master.
+
+        Returns ``inserted`` / ``updated`` / ``stale`` / ``skipped``.
+        Snapshots replace, rather than merge, the current tag set so tags
+        removed by a later MusicBrainz refresh disappear on satellites too.
+        """
+        artist_name = ((row or {}).get("artist_name") or "").strip()
+        if not artist_name:
+            return "skipped"
+
+        cleaned: List[tuple] = []
+        seen_tags = set()
+        for entry in row.get("tags") or []:
+            if not isinstance(entry, dict):
+                continue
+            tag = (entry.get("tag") or "").strip()
+            key = tag.casefold()
+            if not tag or key in seen_tags:
+                continue
+            seen_tags.add(key)
+            try:
+                weight = int(entry.get("weight") or 1)
+            except (TypeError, ValueError):
+                weight = 1
+            cleaned.append((tag, weight))
+
+        incoming_ts = row.get("fetched_at")
+        incoming_rows = cleaned or [("", 0)]
+        current_rows = self.conn.execute(
+            "SELECT mbid, tag, weight, fetched_at FROM artist_tags "
+            "WHERE artist_name = ? COLLATE NOCASE",
+            (artist_name,),
+        ).fetchall()
+        existed = bool(current_rows)
+        if incoming_ts and existed:
+            current_ts = max(
+                current["fetched_at"] or "" for current in current_rows
+            )
+            if current_ts > incoming_ts:
+                return "stale"
+            if current_ts == incoming_ts:
+                current_content = sorted(
+                    (current["tag"], int(current["weight"] or 0))
+                    for current in current_rows
+                )
+                incoming_content = sorted(incoming_rows)
+                current_mbid = current_rows[0]["mbid"]
+                if (
+                    current_content == incoming_content
+                    and current_mbid == row.get("mbid")
+                ):
+                    # Inclusive cursor overlap replays the exact boundary.
+                    # Identical content is a harmless idempotent no-op, while
+                    # a different snapshot with the same second must replace
+                    # it (it may have committed just after the prior query).
+                    return "stale"
+
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM artist_tags WHERE artist_name = ? COLLATE NOCASE",
+                (artist_name,),
+            )
+            for tag, weight in incoming_rows:
+                cur.execute(
+                    "INSERT INTO artist_tags "
+                    "(artist_name, mbid, tag, weight, fetched_at) "
+                    "VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
+                    (
+                        artist_name,
+                        row.get("mbid"),
+                        tag,
+                        weight,
+                        incoming_ts,
+                    ),
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cur.close()
+        return "updated" if existed else "inserted"
 
     def get_top_tags_for_artist(
         self, artist_name: str, limit: int = 5,

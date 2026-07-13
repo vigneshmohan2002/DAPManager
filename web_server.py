@@ -27,6 +27,16 @@ task_manager = None
 config = None
 sync_scheduler = None
 release_watcher_scheduler = None
+library_maintenance_scheduler = None
+
+
+def _stop_scheduler(instance) -> None:
+    if instance is None:
+        return
+    try:
+        instance.stop()
+    except Exception as e:
+        logger.warning("Could not stop scheduler cleanly: %s", e)
 
 
 class TaskManager:
@@ -112,20 +122,30 @@ def init_app_logic():
 
     _start_sync_scheduler()
     _start_release_watcher()
+    _start_library_maintenance_scheduler()
 
 
-def _start_sync_scheduler():
+def _start_sync_scheduler(*, run_on_startup: Optional[bool] = None):
     """Kick off the periodic Sync All loop if configured."""
     global sync_scheduler
     from src.sync_scheduler import SyncScheduler
 
+    _stop_scheduler(sync_scheduler)
+    sync_scheduler = None
     interval = int(config._config.get("sync_interval_seconds") or 0)
-    on_startup = bool(config._config.get("sync_on_startup") or False)
+    on_startup = (
+        bool(config._config.get("sync_on_startup") or False)
+        if run_on_startup is None
+        else bool(run_on_startup)
+    )
 
     def _trigger():
-        task_manager.start_task(
+        started, message = task_manager.start_task(
             run_sync_all, (config.db_path, config), "Sync All (scheduled)"
         )
+        if not started:
+            logger.info("Sync All tick deferred: %s", message)
+        return started
 
     sync_scheduler = SyncScheduler(interval, _trigger, run_on_startup=on_startup)
     sync_scheduler.start()
@@ -143,6 +163,11 @@ def _start_release_watcher():
     from src.downloader import _build_lidarr_client
     from src.release_watcher import run_watch_tick
 
+    _stop_scheduler(release_watcher_scheduler)
+    release_watcher_scheduler = None
+    if not config.is_master:
+        logger.info("release_watcher disabled on non-authority device.")
+        return
     if not bool(config._config.get("lidarr_watch_enabled") or False):
         logger.info("release_watcher disabled (lidarr_watch_enabled != true).")
         release_watcher_scheduler = None
@@ -160,6 +185,60 @@ def _start_release_watcher():
 
     release_watcher_scheduler = SyncScheduler(interval, _trigger, run_on_startup=False)
     release_watcher_scheduler.start()
+
+
+def _start_library_maintenance_scheduler(
+    *, run_on_startup: Optional[bool] = None
+):
+    """Refresh MusicBrainz tags, then Daily Mixes, on a weekly cadence.
+
+    Master-only. Setting ``library_maintenance_interval_seconds`` to zero
+    disables the loop. The shared TaskManager rejects a tick while another
+    background job is active, and the maintenance runner has its own lock as
+    a second guard against overlapping MusicBrainz passes.
+    """
+    global library_maintenance_scheduler
+    from src.library_maintenance import maintenance_interval_seconds
+    from src.sync_scheduler import SyncScheduler
+
+    _stop_scheduler(library_maintenance_scheduler)
+    library_maintenance_scheduler = None
+    if not config.is_master:
+        logger.info("Library maintenance disabled on non-master device.")
+        library_maintenance_scheduler = None
+        return
+
+    interval = maintenance_interval_seconds(config._config)
+    if interval <= 0:
+        logger.info(
+            "Library maintenance disabled "
+            "(library_maintenance_interval_seconds <= 0)."
+        )
+        library_maintenance_scheduler = None
+        return
+    on_startup = (
+        bool(config._config.get("library_maintenance_on_startup") or False)
+        if run_on_startup is None
+        else bool(run_on_startup)
+    )
+
+    def _trigger():
+        started, message = task_manager.start_task(
+            run_library_maintenance_task,
+            (config.db_path, config),
+            "Library maintenance (scheduled)",
+        )
+        if not started:
+            logger.info("Library maintenance tick deferred: %s", message)
+        return started
+
+    library_maintenance_scheduler = SyncScheduler(
+        interval,
+        _trigger,
+        run_on_startup=on_startup,
+        startup_delay_seconds=5.0,
+    )
+    library_maintenance_scheduler.start()
 
 
 # Helper wrappers (need to be defined or redefined after init)
@@ -261,6 +340,17 @@ def run_tag_backfill(db_path, incremental=True, progress_callback=None):
         )
 
 
+def run_library_maintenance_task(db_path, conf, progress_callback=None):
+    """TaskManager target for the scheduled tag + Daily Mix refresh."""
+    from src.library_maintenance import run_library_maintenance
+    with DatabaseManager(db_path) as db:
+        return run_library_maintenance(
+            db,
+            conf._config,
+            progress_callback=progress_callback,
+        )
+
+
 def build_suggestion_items(raw_items):
     """Normalize a suggestions payload into (search_query, mbid_guess) pairs.
 
@@ -337,16 +427,6 @@ def check_setup():
         init_app_logic()
 
 
-@app.context_processor
-def inject_api_token():
-    """Make api_token available in every rendered template so the JS fetch
-    patcher in _layout.html can attach the Bearer header automatically."""
-    if config is None:
-        return {"api_token": ""}
-    cfg_dict = getattr(config, "_config", {}) or {}
-    return {"api_token": cfg_dict.get("api_token", "") or ""}
-
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -378,12 +458,185 @@ def setup():
 
 from src.config_keys import (
     BOOL_KEYS as CONFIG_BOOL_KEYS,
+    DEFAULT_VALUES as CONFIG_DEFAULT_VALUES,
     EDITABLE_KEYS as CONFIG_EDITABLE_KEYS,
     GROUPS as CONFIG_GROUPS,
     SECRET_KEYS as CONFIG_SECRET_KEYS,
 )
+from src.config_manager import (
+    normalize_device_role,
+    synchronize_authority_fields,
+)
 
 API_AUTH_EXEMPT_PATHS = {"/api/status", "/api/healthz", "/api/openapi.json"}
+AUTH_COOKIE_NAME = "dapmanager_auth"
+TAURI_API_ORIGINS = frozenset({
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+})
+
+
+def _configured_api_token() -> str:
+    if config is None:
+        return ""
+    cfg_dict = getattr(config, "_config", None)
+    if not isinstance(cfg_dict, dict):
+        return ""
+    return (cfg_dict.get("api_token") or "").strip()
+
+
+def _valid_api_token(provided: str) -> bool:
+    import hmac
+
+    expected = _configured_api_token()
+    return bool(expected and provided and hmac.compare_digest(provided, expected))
+
+
+def _web_origin_key(value: str):
+    """Normalize an HTTP(S) origin to ``(scheme, host, effective_port)``."""
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(value or "")
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+    return (parsed.scheme.lower(), parsed.hostname.lower(), port)
+
+
+def _cookie_mutation_is_same_origin() -> bool:
+    """Validate browser provenance for a cookie-authenticated mutation.
+
+    ``Origin`` is authoritative when present. ``Referer`` is a fallback for
+    user agents that omit Origin, and an absent/opaque provenance is rejected.
+    Port participates in the comparison as required by the web origin model.
+    """
+    origin = request.headers.get("Origin")
+    if origin is None:
+        origin = request.headers.get("Referer")
+    if not origin:
+        return False
+    return _web_origin_key(origin) == _web_origin_key(request.host_url)
+
+
+def _safe_next_url(value: str) -> str:
+    value = (value or "").strip()
+    if value.startswith("/") and not value.startswith("//"):
+        return value
+    return "/"
+
+
+@app.before_request
+def _handle_tauri_cors_preflight():
+    """Answer only the known desktop-webview origins, never arbitrary sites."""
+    if request.method != "OPTIONS" or not request.path.startswith("/api/"):
+        return None
+    if request.headers.get("Origin") not in TAURI_API_ORIGINS:
+        return None
+    return Response(status=204)
+
+
+@app.after_request
+def _add_tauri_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if request.path.startswith("/api/") and origin in TAURI_API_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, Range"
+        )
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+        )
+        response.headers["Access-Control-Expose-Headers"] = (
+            "Accept-Ranges, Content-Length, Content-Range"
+        )
+    return response
+
+
+@app.before_request
+def _protect_web_ui():
+    """Require a signed-in cookie before rendering pages that control the API.
+
+    Older builds embedded the raw API token into every HTML response so their
+    JavaScript could add an Authorization header.  Because the pages
+    themselves were public, that exposed the secret and nullified API auth.
+    The browser UI now authenticates once and uses an HttpOnly, same-site
+    cookie; Tauri continues to use its bearer token command.
+    """
+    if request.path.startswith("/api/"):
+        return None
+    if request.endpoint in {"static", "setup", "download_mac", "auth_login"}:
+        return None
+    token = _configured_api_token()
+    if not token:
+        return None
+    if _valid_api_token(request.cookies.get(AUTH_COOKIE_NAME, "")):
+        return None
+
+    # A tokenised bookmark/download link may establish the cookie once. Strip
+    # it from the address bar immediately so navigation and referrers do not
+    # keep copying the credential around.
+    query_token = (request.args.get("token") or "").strip()
+    if _valid_api_token(query_token):
+        from urllib.parse import urlencode
+
+        args = request.args.copy()
+        args.pop("token", None)
+        target = request.path
+        if args:
+            target += "?" + urlencode(list(args.items(multi=True)))
+        response = redirect(target)
+        response.set_cookie(
+            AUTH_COOKIE_NAME,
+            token,
+            httponly=True,
+            secure=request.is_secure,
+            samesite="Strict",
+            max_age=30 * 24 * 60 * 60,
+        )
+        return response
+
+    next_url = _safe_next_url(request.full_path.rstrip("?"))
+    return redirect(url_for("auth_login", next=next_url))
+
+
+@app.route("/auth", methods=["GET", "POST"])
+def auth_login():
+    """Authenticate the browser UI without placing the secret in page JS."""
+    token = _configured_api_token()
+    next_url = _safe_next_url(request.values.get("next", "/"))
+    if not token:
+        return redirect(next_url)
+    error = None
+    if request.method == "POST":
+        if _valid_api_token((request.form.get("token") or "").strip()):
+            response = redirect(next_url)
+            response.set_cookie(
+                AUTH_COOKIE_NAME,
+                token,
+                httponly=True,
+                secure=request.is_secure,
+                samesite="Strict",
+                max_age=30 * 24 * 60 * 60,
+            )
+            return response
+        error = "Invalid API token."
+    return render_template("auth.html", next_url=next_url, error=error), (
+        401 if error else 200
+    )
 
 
 @app.before_request
@@ -392,10 +645,11 @@ def _check_api_token():
 
     Open mode (no token in config) keeps current behavior for LAN-only setups;
     a warning is logged at init time so the operator knows it's unauthenticated.
-    /api/status is exempt so health checks don't need the header.
+    /api/status is exempt so health checks don't need the header.  Authenticated
+    GET/HEAD URLs may also carry ``?token=`` because browser media elements
+    (album art and audio) cannot set an Authorization header.  Mutating routes
+    remain header-only so tokens do not get copied into action URLs.
     """
-    import hmac
-
     if not request.path.startswith("/api/"):
         return None
     if request.path in API_AUTH_EXEMPT_PATHS:
@@ -410,11 +664,35 @@ def _check_api_token():
         return None
 
     header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
+    provided = ""
+    auth_source = ""
+    if header.startswith("Bearer "):
+        provided = header[len("Bearer "):].strip()
+        auth_source = "bearer"
+    elif request.method in {"GET", "HEAD"}:
+        provided = (request.args.get("token") or "").strip()
+        if provided:
+            auth_source = "query"
+    if not provided:
+        provided = (request.cookies.get(AUTH_COOKIE_NAME) or "").strip()
+        if provided:
+            auth_source = "cookie"
+    if not provided:
         return jsonify({"success": False, "message": "missing bearer token"}), 401
-    provided = header[len("Bearer "):].strip()
-    if not hmac.compare_digest(provided, token):
+    if not _valid_api_token(provided):
         return jsonify({"success": False, "message": "invalid api token"}), 401
+    if (
+        auth_source == "cookie"
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and not _cookie_mutation_is_same_origin()
+    ):
+        return jsonify({
+            "success": False,
+            "message": (
+                "cookie-authenticated mutations require a same-origin "
+                "Origin or Referer"
+            ),
+        }), 403
     return None
 
 
@@ -435,7 +713,11 @@ def get_config_json():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-    redacted = dict(raw)
+    redacted = {**CONFIG_DEFAULT_VALUES, **raw}
+    # Older files may have only is_master, while partially-upgraded files can
+    # contain contradictory values.  The response always presents the
+    # canonical role and a compatibility bool derived from it.
+    synchronize_authority_fields(redacted)
     for key in CONFIG_SECRET_KEYS:
         if key in redacted and redacted[key]:
             redacted[key] = ""
@@ -457,9 +739,20 @@ def update_config():
     ignored so the UI can't wipe e.g. the db path. Empty strings for
     secret keys mean "don't change".
     """
+    browser_cookie_was_valid = _valid_api_token(
+        (request.cookies.get(AUTH_COOKIE_NAME) or "").strip()
+    )
     data = request.json or {}
     if not isinstance(data, dict):
         return jsonify({"success": False, "message": "body must be an object"}), 400
+    if "device_role" in data:
+        normalized_role = normalize_device_role(data["device_role"])
+        if normalized_role is None:
+            return jsonify({
+                "success": False,
+                "message": "device_role must be master, satellite, or standalone",
+            }), 400
+        data = {**data, "device_role": normalized_role}
 
     try:
         with open(CONFIG_FILE, "r") as f:
@@ -469,6 +762,9 @@ def update_config():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+    # Migrate a role-less legacy file before applying updates.  is_master is
+    # deliberately not editable; every write derives it from device_role.
+    synchronize_authority_fields(current)
     changed = []
     for key, value in data.items():
         if key not in CONFIG_EDITABLE_KEYS:
@@ -478,6 +774,7 @@ def update_config():
         if current.get(key) != value:
             current[key] = value
             changed.append(key)
+    synchronize_authority_fields(current)
 
     try:
         ensure_parent_dir(CONFIG_FILE)
@@ -489,14 +786,45 @@ def update_config():
     # Reload the in-process config so subsequent requests see the new values.
     try:
         from src.config_manager import ConfigManager
-        ConfigManager._instance = None
         global config
         if config is not None:
             config._load_config()
+            if isinstance(config, ConfigManager):
+                ConfigManager._instance = config
+
+        changed_set = set(changed)
+        if changed_set & {"sync_interval_seconds", "sync_on_startup"}:
+            _start_sync_scheduler(run_on_startup=False)
+        if changed_set & {
+            "lidarr_watch_enabled",
+            "lidarr_watch_interval_seconds",
+            "device_role",
+        }:
+            _start_release_watcher()
+        if changed_set & {
+            "library_maintenance_interval_seconds",
+            "library_maintenance_on_startup",
+            "device_role",
+        }:
+            # A Settings save is not a process start. Rebuild the loop without
+            # re-firing its startup job; interval=0 takes effect immediately.
+            _start_library_maintenance_scheduler(run_on_startup=False)
     except Exception as e:
         logger.warning(f"Config written but in-process reload failed: {e}")
 
-    return jsonify({"success": True, "changed": changed})
+    response = jsonify({"success": True, "changed": changed})
+    if "api_token" in changed and browser_cookie_was_valid:
+        refreshed = _configured_api_token()
+        if refreshed:
+            response.set_cookie(
+                AUTH_COOKIE_NAME,
+                refreshed,
+                httponly=True,
+                secure=request.is_secure,
+                samesite="Strict",
+                max_age=30 * 24 * 60 * 60,
+            )
+    return response
 
 
 _FIRST_RUN_FIELDS = {
@@ -525,10 +853,19 @@ def save_config():
     data = request.json or {}
     role = (data.get("role") or "master").strip().lower()
     payload = {k: v for k, v in data.items() if k in _FIRST_RUN_FIELDS}
+    database_file = os.path.join(
+        os.path.dirname(os.path.abspath(CONFIG_FILE)),
+        "dap_library.db",
+    )
     try:
-        new_config = build_initial_config(role, **payload)
+        new_config = build_initial_config(
+            role,
+            database_file=database_file,
+            **payload,
+        )
     except (TypeError, ValueError) as e:
         return jsonify({"success": False, "message": str(e)}), 400
+    synchronize_authority_fields(new_config)
 
     try:
         ensure_parent_dir(CONFIG_FILE)
@@ -588,14 +925,72 @@ def _read_master_config_for_download():
         return None
 
 
+BUNDLE_LINK_TTL_SECONDS = 60 * 60
+
+
+def _bundle_download_token(api_token: str, expires_at: int) -> str:
+    """Mint a bundle-only token without exposing the general API secret."""
+    import hashlib
+    import hmac
+
+    message = f"dapmanager-bundle:{int(expires_at)}".encode("utf-8")
+    signature = hmac.new(
+        api_token.encode("utf-8"), message, hashlib.sha256
+    ).hexdigest()
+    return f"{int(expires_at)}.{signature}"
+
+
+def _valid_bundle_download_token(value: str, api_token: str) -> bool:
+    import hmac
+    import time
+
+    try:
+        expires_raw, _ = value.split(".", 1)
+        expires_at = int(expires_raw)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if expires_at < int(time.time()):
+        return False
+    expected = _bundle_download_token(api_token, expires_at)
+    return hmac.compare_digest(value, expected)
+
+
+@app.route("/api/satellite-bundle-link", methods=["GET"])
+def satellite_bundle_link():
+    """Return a short-lived, bundle-scoped sharing URL for the dashboard."""
+    import time
+    from urllib.parse import quote
+
+    cfg = _read_master_config_for_download() or {}
+    public_url = (cfg.get("public_master_url") or "").strip().rstrip("/")
+    if not public_url:
+        return jsonify({
+            "success": False,
+            "message": "public_master_url is not configured",
+        }), 409
+    url = f"{public_url}/download/mac"
+    api_token = (cfg.get("api_token") or "").strip()
+    expires_at = None
+    if api_token:
+        expires_at = int(time.time()) + BUNDLE_LINK_TTL_SECONDS
+        scoped = _bundle_download_token(api_token, expires_at)
+        url += f"?bundle_token={quote(scoped, safe='')}"
+    return jsonify({
+        "success": True,
+        "url": url,
+        "expires_at": expires_at,
+    })
+
+
 @app.route("/download/mac", methods=["GET"])
 def download_mac():
     """Serve the satellite Mac bundle with this master's URL embedded.
 
     Refuses with 409 when ``public_master_url`` isn't configured —
     serving a bundle pinned to a URL satellites can't reach is a
-    worse outcome than failing loudly. When ``api_token`` is set,
-    requires it via ``Authorization: Bearer`` or ``?token=`` query.
+    worse outcome than failing loudly. When ``api_token`` is set, accepts the
+    bearer token, authenticated browser cookie, legacy ``?token=``, or a
+    short-lived bundle-only token minted by ``/api/satellite-bundle-link``.
     """
     import hmac
     from src.satellite_bundle import (
@@ -624,7 +1019,13 @@ def download_mac():
             provided = header[len("Bearer "):].strip()
         else:
             provided = (request.args.get("token") or "").strip()
-        if not hmac.compare_digest(provided, token):
+        if not provided:
+            provided = (request.cookies.get(AUTH_COOKIE_NAME) or "").strip()
+        scoped = (request.args.get("bundle_token") or "").strip()
+        if not (
+            hmac.compare_digest(provided, token)
+            or _valid_bundle_download_token(scoped, token)
+        ):
             return jsonify({
                 "success": False,
                 "message": "missing or invalid api token",
@@ -1127,7 +1528,13 @@ def api_library_artist_info(name: str):
 
 @app.route("/api/library/albums/<path:album_id>/cover")
 def api_library_album_cover(album_id: str):
-    """Return embedded cover art for an album, or 404 if none."""
+    """Return album art from this device, falling back to the master.
+
+    Satellite catalog rows deliberately do not copy a master's filesystem
+    paths, so they cannot extract embedded artwork locally.  Their desktop UI
+    still calls this local endpoint; proxying the miss keeps that contract the
+    same for local and remote albums.
+    """
     if not config:
         return ("", 503)
     try:
@@ -1136,30 +1543,111 @@ def api_library_album_cover(album_id: str):
 
         with DatabaseManager(config.db_path) as db:
             path = db.get_album_cover_path(album_id)
-        if not path:
-            return ("", 404)
+        if path:
+            result = extract_cover(path)
+            if result is not None:
+                data, mime = result
+                return Response(
+                    data,
+                    mimetype=mime,
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
 
-        result = extract_cover(path)
-        if result is None:
-            return ("", 404)
-
-        data, mime = result
-        return Response(
-            data,
-            mimetype=mime,
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
+        cfg = getattr(config, "_config", None)
+        if isinstance(cfg, dict):
+            master_url = (cfg.get("master_url") or "").strip().rstrip("/")
+            if master_url:
+                return _proxy_master_album_cover(master_url, album_id)
+        return ("", 404)
     except Exception:
         logger.exception("api_library_album_cover failed for %s", album_id)
         return ("", 500)
 
 
+def _proxy_master_album_cover(master_url: str, album_id: str):
+    """Stream a master's album-art response through the local satellite."""
+    import requests
+    from flask import Response, stream_with_context
+    from urllib.parse import quote
+
+    headers = {}
+    for name in ("Range", "If-Range", "If-None-Match", "If-Modified-Since"):
+        if name in request.headers:
+            headers[name] = request.headers[name]
+    token = (config._config.get("api_token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    encoded_album_id = quote(album_id, safe="")
+    upstream_url = (
+        f"{master_url}/api/library/albums/{encoded_album_id}/cover"
+    )
+    try:
+        upstream = requests.get(
+            upstream_url, headers=headers, stream=True, timeout=(5, 30)
+        )
+    except requests.RequestException:
+        logger.exception("master album-cover proxy failed for %s", album_id)
+        return ("", 502)
+
+    if upstream.status_code >= 400:
+        status = upstream.status_code
+        upstream.close()
+        return ("", status)
+
+    forward = {}
+    for name in (
+        "Content-Type",
+        "Content-Length",
+        "Content-Range",
+        "Accept-Ranges",
+        "Cache-Control",
+        "ETag",
+        "Last-Modified",
+    ):
+        if name in upstream.headers:
+            forward[name] = upstream.headers[name]
+    forward.setdefault("Cache-Control", "public, max-age=86400")
+
+    if upstream.status_code == 304:
+        upstream.close()
+        return Response(status=304, headers=forward)
+
+    def _iter():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return Response(
+        stream_with_context(_iter()),
+        status=upstream.status_code,
+        headers=forward,
+    )
+
+
 @app.route("/api/library/albums/<path:album_id>/tracks")
 def api_library_album_tracks(album_id: str):
-    """Ordered track list for an album — feeds the detail/playback view."""
+    """Ordered playable tracks for an album.
+
+    A satellite's replica intentionally contains catalog-only rows as well as
+    tracks the master can actually stream.  Ask the authoritative master first
+    so album playback does not queue stale/unavailable recording rows; retain
+    the local query as an offline fallback.
+    """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     try:
+        cfg = getattr(config, "_config", None)
+        if isinstance(cfg, dict):
+            master_url = (cfg.get("master_url") or "").strip().rstrip("/")
+            if master_url:
+                proxied = _proxy_master_album_tracks(master_url, album_id)
+                if proxied is not None:
+                    return proxied
+
         with DatabaseManager(config.db_path) as db:
             rows = db.list_album_tracks(album_id)
         has_master = _master_url_configured()
@@ -1174,6 +1662,48 @@ def api_library_album_tracks(album_id: str):
     except Exception as e:
         logger.exception("api_library_album_tracks failed for %s", album_id)
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+def _proxy_master_album_tracks(master_url: str, album_id: str):
+    """Return the master's playable album rows, or None for offline fallback."""
+    import requests
+    from flask import Response
+    from urllib.parse import quote
+
+    headers = {"Accept": "application/json"}
+    token = (config._config.get("api_token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    upstream_url = (
+        f"{master_url}/api/library/albums/{quote(album_id, safe='')}/tracks"
+    )
+    try:
+        upstream = requests.get(upstream_url, headers=headers, timeout=(5, 30))
+    except requests.RequestException:
+        logger.warning(
+            "master album-track lookup unavailable for %s; using replica",
+            album_id,
+            exc_info=True,
+        )
+        return None
+
+    # A transient master failure should not make locally-held tracks unusable.
+    if upstream.status_code >= 500:
+        logger.warning(
+            "master album-track lookup returned %s for %s; using replica",
+            upstream.status_code,
+            album_id,
+        )
+        return None
+
+    content_type = upstream.headers.get("Content-Type", "application/json")
+    body = upstream.content
+    upstream.close()
+    return Response(
+        body,
+        status=upstream.status_code,
+        content_type=content_type,
+    )
 
 
 @app.route("/api/library/plays", methods=["POST"])
@@ -1537,9 +2067,9 @@ def api_library_tags_backfill():
     with the same "already running" message every other long-running
     task uses.
 
-    Master-only — satellites get tag rows from catalog sync once a
-    future stage ships that delta. For now the satellite returns 400
-    so users don't accidentally hammer MB from every device.
+    Authority-only — master and standalone installs fetch MusicBrainz once;
+    satellites receive the resulting snapshots through artist-tag delta sync
+    so they do not independently hammer the upstream rate limit.
     """
     if not task_manager:
         return jsonify({"success": False, "message": "Not initialized"}), 503
@@ -2074,13 +2604,15 @@ def sync_all():
 
 @app.route("/api/sync/state", methods=["GET"])
 def sync_state():
-    """Return the four sync-cursor timestamps for the status widget."""
+    """Return sync-cursor timestamps for the status widget."""
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     keys = {
         "last_catalog_sync": "catalog_pull",
+        "last_artist_tags_sync": "artist_tags_pull",
         "last_playlist_sync": "playlist_pull",
         "last_playlist_push": "playlist_push",
+        "last_lyrics_sync": "lyrics_pull",
         "last_inventory_report": "inventory_report",
         "last_contribute": "contribute",
     }
@@ -2170,6 +2702,34 @@ def get_lyrics_delta():
         "as_of": as_of,
         "count": len(rows),
         "lyrics": rows,
+    })
+
+
+@app.route("/api/artist-tags", methods=["GET"])
+def get_artist_tags_delta():
+    """Return authoritative per-artist tag snapshots for satellite sync.
+
+    ``since`` filters on the latest MusicBrainz ``fetched_at`` for each
+    artist.  Rows are grouped as complete snapshots so a satellite can
+    replace an artist's tag set and remove tags that disappeared upstream.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    since = request.args.get("since") or None
+    try:
+        with DatabaseManager(config.db_path) as db:
+            as_of = db.conn.execute(
+                "SELECT CURRENT_TIMESTAMP AS t"
+            ).fetchone()["t"]
+            rows = db.get_artist_tags_since(since)
+    except Exception as e:
+        logger.error(f"Artist-tag delta query failed: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify({
+        "success": True,
+        "as_of": as_of,
+        "count": len(rows),
+        "artist_tags": rows,
     })
 
 
@@ -2603,8 +3163,8 @@ def contributions_page():
 
 @app.route("/docs")
 def api_docs():
-    """Swagger UI for the API. Reachable before setup so an agent can learn
-    the setup flow from a fresh install."""
+    """Offline interactive API explorer. Reachable before setup so an agent
+    can learn the setup flow from a fresh install."""
     return render_template("docs.html")
 
 
@@ -2707,6 +3267,62 @@ def post_suggestions():
     })
 
 
+@app.route("/api/suggestions/forward", methods=["POST"])
+def forward_suggestions():
+    """Forward suggestions from this local UI to its configured master.
+
+    The Tauri webview must not call ``master_url`` directly: it is a different
+    origin, and adding the bearer header would require CORS preflight support
+    on every master deployment.  Keeping the hop in Python also avoids
+    exposing the configured host token to arbitrary browser origins.
+    """
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    master_url = (config.get("master_url") or "").strip().rstrip("/")
+    if not master_url:
+        return jsonify({
+            "success": False,
+            "message": "master_url not configured",
+        }), 409
+
+    data = request.json or {}
+    raw_items = data.get("items")
+    if not isinstance(raw_items, list):
+        return jsonify({
+            "success": False,
+            "message": "body must be {'items': [...]}",
+        }), 400
+
+    import requests
+
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    token = (config.get("api_token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        upstream = requests.post(
+            f"{master_url}/api/suggestions",
+            json={"items": raw_items},
+            headers=headers,
+            timeout=(5, 30),
+        )
+    except requests.RequestException as e:
+        logger.warning("Suggestion forward to master failed: %s", e)
+        return jsonify({
+            "success": False,
+            "message": f"master unreachable: {e}",
+        }), 502
+
+    try:
+        payload = upstream.json()
+    except ValueError:
+        payload = {
+            "success": False,
+            "message": f"master returned non-JSON ({upstream.status_code})",
+        }
+    return jsonify(payload), upstream.status_code
+
+
 @app.route("/api/catalog/queue-download", methods=["POST"])
 def catalog_queue_download():
     """Queue download jobs for catalog-only rows (the "wishlist" flow).
@@ -2788,6 +3404,12 @@ def _attempt_timeout_seconds() -> int:
     stay 'pending' forever and the upload fallback would never fire)."""
     try:
         cfg = getattr(config, "_config", {}) or {}
+        # Tests and integrations sometimes provide a light-weight config
+        # object without ConfigManager's dictionary-backed ``_config``.  Do
+        # not let a mock/object's integer coercion turn the one-hour default
+        # into a one-second timeout.
+        if not isinstance(cfg, dict):
+            return 3600
         return int(cfg.get("contribution_attempt_timeout_seconds", 3600))
     except (TypeError, ValueError):
         return 3600
@@ -2810,6 +3432,58 @@ def _contribution_age_seconds(contrib: dict) -> Optional[float]:
     return (datetime.now(timezone.utc) - created).total_seconds()
 
 
+def _find_acceptable_local_copy(db, identity: dict, target: Optional[dict]):
+    """Find a same-or-better local copy using stable recording identity.
+
+    Different taggers can legitimately choose different recording MBIDs for
+    the same audio.  Fall back to ISRC and exact metadata matches rather than
+    making the satellite upload bytes the master already acquired.  The DB
+    method intentionally refuses ambiguous metadata matches.  Metadata-only
+    candidates must also have a duration within five seconds when both sides
+    report one; this prevents a high-quality live/remix recording with the
+    same tags from permanently satisfying the wrong offer.
+
+    Returns ``(candidate_row, quality)`` or ``(None, None)``.
+    """
+    from src.audio_quality import read_quality, meets_target
+
+    candidates = db.find_local_tracks_by_identity(
+        mbid=(identity.get("mbid") or "").strip() or None,
+        isrc=(identity.get("isrc") or "").strip() or None,
+        artist=(identity.get("artist") or "").strip() or None,
+        title=(identity.get("title") or "").strip() or None,
+        album=(identity.get("album") or "").strip() or None,
+    )
+    for candidate in candidates:
+        path = candidate.get("local_path")
+        if not path or not os.path.exists(path):
+            continue
+        quality = read_quality(path)
+        match_kind = candidate.get("identity_match")
+        if match_kind not in {"mbid", "isrc"} and quality and target:
+            try:
+                candidate_length = int(quality.get("length_ms") or 0)
+                target_length = int(target.get("length_ms") or 0)
+            except (TypeError, ValueError):
+                candidate_length = target_length = 0
+            if (
+                candidate_length
+                and target_length
+                and abs(candidate_length - target_length) > 5000
+            ):
+                continue
+        if meets_target(quality, target):
+            if match_kind != "mbid":
+                logger.info(
+                    "Contribution identity fallback matched %s via %s (%s)",
+                    identity.get("mbid") or "<no mbid>",
+                    match_kind,
+                    candidate.get("mbid") or "<no mbid>",
+                )
+            return candidate, quality
+    return None, None
+
+
 def _evaluate_contribution(db, contrib: dict) -> dict:
     """Recompute a contribution's live status by comparing what the master
     now holds on disk against the satellite's target quality.
@@ -2817,8 +3491,6 @@ def _evaluate_contribution(db, contrib: dict) -> dict:
     Returns the (possibly updated) row as a dict. Lazy: this is where the
     download worker's outcome gets reflected, so no worker hooks are needed.
     """
-    from src.audio_quality import read_quality, meets_target
-
     status = contrib["status"]
     # Terminal states don't change.
     if status in ("have_better", "satisfied", "ingested"):
@@ -2832,16 +3504,14 @@ def _evaluate_contribution(db, contrib: dict) -> dict:
             target = None
 
     # Did the master acquire (or already have) a good-enough local copy?
-    local_path = db.get_track_local_path(contrib["mbid"]) if contrib.get("mbid") else None
-    if local_path and os.path.exists(local_path):
-        local_q = read_quality(local_path)
-        if meets_target(local_q, target):
-            db.update_contribution(
-                contrib["id"], status="satisfied",
-                acquired_quality=json.dumps(local_q),
-            )
-            contrib = db.get_contribution(contrib["id"])
-            return contrib
+    local_match, local_q = _find_acceptable_local_copy(db, contrib, target)
+    if local_match:
+        db.update_contribution(
+            contrib["id"], status="satisfied",
+            acquired_quality=json.dumps(local_q) if local_q else None,
+        )
+        contrib = db.get_contribution(contrib["id"])
+        return contrib
 
     # No good-enough local copy. Look at the download we queued: still
     # pending → keep attempting; failed or gone-without-a-match → we need
@@ -2881,6 +3551,7 @@ def list_contributions():
     try:
         with DatabaseManager(config.db_path) as db:
             rows = db.list_contributions(limit=limit)
+            rows = [_evaluate_contribution(db, row) for row in rows]
     except Exception as e:
         logger.error(f"list_contributions failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
@@ -2892,6 +3563,24 @@ def list_contributions():
                     row[key] = json.loads(row[key])
                 except (TypeError, ValueError):
                     pass
+    return jsonify({"success": True, "contributions": rows})
+
+
+@app.route("/api/contributed", methods=["GET"])
+def list_contributed():
+    """List this device's outgoing contribution state for satellite UIs."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 200))))
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        with DatabaseManager(config.db_path) as db:
+            rows = db.list_contributed(limit=limit)
+    except Exception as e:
+        logger.error("list_contributed failed: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
     return jsonify({"success": True, "contributions": rows})
 
 
@@ -2907,8 +3596,6 @@ def post_contribution():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    from src.audio_quality import read_quality, meets_target
-
     data = request.json or {}
     mbid = (data.get("mbid") or "").strip()
     artist = (data.get("artist") or "").strip()
@@ -2925,21 +3612,19 @@ def post_contribution():
     try:
         with DatabaseManager(config.db_path) as db:
             # Already hold a same-or-better local copy? Nothing to do.
-            local_path = db.get_track_local_path(mbid) if mbid else None
-            if local_path and os.path.exists(local_path):
-                local_q = read_quality(local_path)
-                if meets_target(local_q, target_q):
-                    cid = db.create_contribution(
-                        device_id=data.get("device_id"), mbid=mbid,
-                        isrc=data.get("isrc"), artist=artist, title=title,
-                        album=data.get("album"), target_quality=target_json,
-                        acquired_quality=json.dumps(local_q),
-                        status="have_better",
-                    )
-                    return jsonify({
-                        "success": True, "contribution_id": cid,
-                        "status": "have_better",
-                    })
+            local_match, local_q = _find_acceptable_local_copy(db, data, target_q)
+            if local_match:
+                cid = db.create_contribution(
+                    device_id=data.get("device_id"), mbid=mbid,
+                    isrc=data.get("isrc"), artist=artist, title=title,
+                    album=data.get("album"), target_quality=target_json,
+                    acquired_quality=json.dumps(local_q) if local_q else None,
+                    status="have_better",
+                )
+                return jsonify({
+                    "success": True, "contribution_id": cid,
+                    "status": "have_better",
+                })
 
             # Try to acquire it ourselves via the existing download pipeline.
             # Reuse an in-flight download for the same track if one exists so
@@ -2995,6 +3680,17 @@ def get_contribution_status(contribution_id: int):
     })
 
 
+def _discard_staged_upload(path: Optional[str]) -> None:
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("Could not remove staged contribution upload %s: %s", path, e)
+
+
 @app.route("/api/contributions/<int:contribution_id>/upload", methods=["POST"])
 def upload_contribution(contribution_id: int):
     """Receive the actual file from a satellite and ingest it into the
@@ -3011,11 +3707,13 @@ def upload_contribution(contribution_id: int):
             "success": False, "message": "multipart 'file' field is required",
         }), 400
 
+    import tempfile
     from werkzeug.utils import secure_filename
     from src.file_ingest import ingest_audio_file
     from src.library_scanner import LibraryScanner
-    from src.audio_quality import read_quality, meets_target
+    from src.audio_quality import read_quality
 
+    tmp_path = None
     try:
         with DatabaseManager(config.db_path) as db:
             contrib = db.get_contribution(contribution_id)
@@ -3023,19 +3721,33 @@ def upload_contribution(contribution_id: int):
                 return jsonify({
                     "success": False, "message": "unknown contribution",
                 }), 404
+            if contrib.get("status") != "needs_upload":
+                return jsonify({
+                    "success": False,
+                    "status": contrib.get("status"),
+                    "message": "this contribution is not requesting an upload",
+                }), 409
 
             target = None
             if contrib.get("target_quality"):
                 try:
-                    target = json.loads(contrib["target_quality"])
+                    parsed_target = json.loads(contrib["target_quality"])
+                    if isinstance(parsed_target, dict):
+                        target = parsed_target
                 except (TypeError, ValueError):
                     target = None
 
-            # Stage the upload under downloads/ before ingest moves it.
+            # Stage under a unique path. Duplicate/retried multipart requests
+            # for the same contribution must never write the same temporary
+            # file concurrently.
             staging_dir = os.path.join(config.downloads_dir, "_contrib")
             os.makedirs(staging_dir, exist_ok=True)
             safe_name = secure_filename(upload.filename) or "upload"
-            tmp_path = os.path.join(staging_dir, f"{contribution_id}_{safe_name}")
+            suffix = os.path.splitext(safe_name)[1]
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=f"{contribution_id}_", suffix=suffix, dir=staging_dir,
+            )
+            os.close(fd)
             upload.save(tmp_path)
 
             # Verify on the staged file *before* moving anything into the
@@ -3043,21 +3755,63 @@ def upload_contribution(contribution_id: int):
             # overwrite a good copy or pollute the catalog.
             reject = _verify_upload(tmp_path, target)
             if reject is not None:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+                _discard_staged_upload(tmp_path)
+                tmp_path = None
                 db.update_contribution(contribution_id, status="needs_upload")
                 return jsonify({
                     "success": False, "status": "rejected", "message": reject,
                 }), 422
 
+            # The master's own pending acquisition may have completed while
+            # the satellite spent minutes uploading. Re-check both the state
+            # and the actual local quality immediately before ingest so the
+            # staged copy cannot overwrite a newly acquired better one.
+            latest = db.get_contribution(contribution_id)
+            if latest is None or latest.get("status") != "needs_upload":
+                _discard_staged_upload(tmp_path)
+                tmp_path = None
+                return jsonify({
+                    "success": False,
+                    "status": latest.get("status") if latest else None,
+                    "message": "the contribution stopped requesting an upload",
+                }), 409
+
+            local_match, local_q = _find_acceptable_local_copy(db, latest, target)
+            if local_match:
+                _discard_staged_upload(tmp_path)
+                tmp_path = None
+                db.update_contribution(
+                    contribution_id,
+                    status="satisfied",
+                    acquired_quality=json.dumps(local_q) if local_q else None,
+                )
+                if latest.get("download_id"):
+                    db.remove_from_queue(latest["download_id"])
+                return jsonify({
+                    "success": True,
+                    "status": "satisfied",
+                    "local_path": local_match.get("local_path"),
+                })
+
+            # Close the small window in which another poll can terminally
+            # update the row after the quality check but before file ingest.
+            latest = db.get_contribution(contribution_id)
+            if latest is None or latest.get("status") != "needs_upload":
+                _discard_staged_upload(tmp_path)
+                tmp_path = None
+                return jsonify({
+                    "success": False,
+                    "status": latest.get("status") if latest else None,
+                    "message": "the contribution stopped requesting an upload",
+                }), 409
+
             dest = ingest_audio_file(
                 db, LibraryScanner(db, config.picard_path), config.music_library,
-                tmp_path, mbid_guess=contrib.get("mbid"),
-                artist=contrib.get("artist"), title=contrib.get("title"),
-                album=contrib.get("album"),
+                tmp_path, mbid_guess=latest.get("mbid"),
+                artist=latest.get("artist"), title=latest.get("title"),
+                album=latest.get("album"),
             )
+            tmp_path = None
 
             acquired_q = None
             try:
@@ -3068,9 +3822,10 @@ def upload_contribution(contribution_id: int):
                 contribution_id, status="ingested", acquired_quality=acquired_q,
             )
             # The CONTRIB download we queued is now moot.
-            if contrib.get("download_id"):
-                db.remove_from_queue(contrib["download_id"])
+            if latest.get("download_id"):
+                db.remove_from_queue(latest["download_id"])
     except Exception as e:
+        _discard_staged_upload(tmp_path)
         logger.error(f"upload_contribution failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
@@ -3649,7 +4404,8 @@ def install_slsk():
 if __name__ == "__main__":
     if config_exists():
         init_app_logic()
-    debug_mode = os.environ.get("DAPMANAGER_DEBUG", "1").lower() in ("1", "true", "yes", "on")
+    debug_mode = os.environ.get("DAPMANAGER_DEBUG", "0").lower() in ("1", "true", "yes", "on")
+    host = os.environ.get("DAPMANAGER_HOST", "0.0.0.0")
     port = int(os.environ.get("DAPMANAGER_PORT", "5001"))
-    print(f"Starting Web Server on port {port} (debug={debug_mode})...")
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    print(f"Starting Web Server on {host}:{port} (debug={debug_mode})...")
+    app.run(host=host, port=port, debug=debug_mode)

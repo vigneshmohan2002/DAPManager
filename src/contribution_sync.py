@@ -19,6 +19,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .config_manager import is_authority_config
 from .db_manager import DatabaseManager
 from .audio_quality import read_quality
 
@@ -27,6 +28,33 @@ logger = logging.getLogger(__name__)
 CONTRIBUTE_STATE_KEY = "last_contribute"
 DEFAULT_BATCH = 50
 TERMINAL = {"have_better", "satisfied", "ingested"}
+VALID_STATUSES = TERMINAL | {"attempting", "needs_upload"}
+
+
+def _validated_master_status(data, operation: str) -> str:
+    """Return a canonical contribution status or reject a malformed 2xx body.
+
+    A successful HTTP status alone is not enough to advance local state.  In
+    particular, persisting ``NULL`` here makes SQL's ``NOT IN`` semantics skip
+    the row forever.  Keep the previous/retryable state when an older or broken
+    master omits the contract instead.
+    """
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{operation}: master returned a non-object response")
+    if data.get("success") is False:
+        raise RuntimeError(
+            f"{operation}: master rejected the request: "
+            f"{data.get('message') or 'unknown error'}"
+        )
+    raw_status = data.get("status")
+    if not isinstance(raw_status, str):
+        raise RuntimeError(f"{operation}: master response omitted status")
+    status = raw_status.strip().lower()
+    if status not in VALID_STATUSES:
+        raise RuntimeError(
+            f"{operation}: master returned unknown status {raw_status!r}"
+        )
+    return status
 
 
 def _session(api_token: Optional[str] = None) -> requests.Session:
@@ -59,8 +87,7 @@ def main_run_contribute(
     Returns ``{offered, uploaded, satisfied, errors}``. Raises ValueError when
     a satellite has no ``master_url``.
     """
-    role = (config.get("device_role") or "satellite").strip()
-    if role == "master":
+    if is_authority_config(config):
         # The master is the destination — nothing to contribute upward.
         return {"offered": 0, "uploaded": 0, "satisfied": 0, "errors": 0,
                 "skipped": "device is master"}
@@ -130,8 +157,7 @@ def main_run_contribute_one(
 
     Returns ``{success, status?, message?, mbid}``.
     """
-    role = (config.get("device_role") or "satellite").strip()
-    if role == "master":
+    if is_authority_config(config):
         return {"success": False, "mbid": mbid, "message": "device is master"}
     master_url = (config.get("master_url") or "").rstrip("/")
     if not master_url:
@@ -183,8 +209,18 @@ def _offer_track(session, master_url, device_id, db, track) -> Optional[str]:
     )
     resp.raise_for_status()
     data = resp.json() or {}
-    status = data.get("status")
-    db.upsert_contributed(track.mbid, data.get("contribution_id"), status)
+    status = _validated_master_status(data, "contribution offer")
+    contribution_id = data.get("contribution_id")
+    if (
+        isinstance(contribution_id, bool)
+        or not isinstance(contribution_id, int)
+        or contribution_id <= 0
+    ):
+        raise RuntimeError(
+            "contribution offer: master response omitted a valid "
+            "contribution_id"
+        )
+    db.upsert_contributed(track.mbid, contribution_id, status)
     return status
 
 
@@ -194,8 +230,17 @@ def _poll_and_maybe_upload(session, master_url, db, cid, mbid) -> Optional[str]:
     resp = session.get(f"{master_url}/api/contributions/{cid}", timeout=30)
     resp.raise_for_status()
     data = resp.json() or {}
-    status = data.get("status")
-    if data.get("want_upload"):
+    status = _validated_master_status(data, "contribution poll")
+    wants_upload = data.get("want_upload") is True
+    if status == "needs_upload" and not wants_upload:
+        raise RuntimeError(
+            "contribution poll: needs_upload requires want_upload=true"
+        )
+    if status != "needs_upload" and wants_upload:
+        raise RuntimeError(
+            "contribution poll: want_upload requires needs_upload status"
+        )
+    if wants_upload:
         status = _upload_file(session, master_url, cid, db, mbid)
     db.upsert_contributed(mbid, cid, status)
     return status
@@ -216,7 +261,7 @@ def _upload_file(session, master_url, cid, db, mbid) -> Optional[str]:
         )
     resp.raise_for_status()
     data = resp.json() or {}
-    return data.get("status", "needs_upload")
+    return _validated_master_status(data, "contribution upload")
 
 
 def _stamp_cursor(db: DatabaseManager) -> None:

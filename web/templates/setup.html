@@ -481,7 +481,7 @@
         }
 
         // --------- Step 6: share rendering ---------
-        function renderShareStep() {
+        async function renderShareStep() {
             if (state.role === 'satellite') return;
 
             const url = (state.savedPublicUrl || '').replace(/\/$/, '');
@@ -499,13 +499,25 @@
                 return;
             }
 
-            const shareUrl = url + '/download/mac' +
-                (state.savedToken
-                    ? '?token=' + encodeURIComponent(state.savedToken)
-                    : '');
+            let shareUrl = url + '/download/mac';
+            try {
+                const headers = state.savedToken
+                    ? { 'Authorization': 'Bearer ' + state.savedToken }
+                    : {};
+                const response = await fetch('/api/satellite-bundle-link', { headers });
+                const payload = await response.json();
+                if (!response.ok || !payload.success) throw new Error(payload.message || 'link unavailable');
+                shareUrl = payload.url;
+            } catch (e) {
+                linkInput.value = '(could not create download link)';
+                warning.textContent = String(e);
+                qrHost.style.display = 'none';
+                $('#copy-link').disabled = true;
+                return;
+            }
             linkInput.value = shareUrl;
             warning.textContent = state.savedToken
-                ? 'The link includes the API token in the query string. Treat it like a credential.'
+                ? 'This bundle-only link expires in one hour; refresh this page to mint another.'
                 : 'Open mode (no token). Anyone on this Tailnet who can reach the link can download.';
 
             $('#copy-link').disabled = false;
@@ -557,7 +569,9 @@
                     return;
                 }
                 if (state.currentStep === 6) {
-                    window.location.href = '/';
+                    window.location.href = state.savedToken
+                        ? '/?token=' + encodeURIComponent(state.savedToken)
+                        : '/';
                     return;
                 }
                 if (await canAdvanceFrom(state.currentStep)) {

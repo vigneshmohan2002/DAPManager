@@ -1,12 +1,14 @@
 """
-Sync orchestrator: runs the four multi-device sync operations in the
+Sync orchestrator: runs the multi-device sync operations in the
 right order as a single user-visible task.
 
 Sequencing (see docs/roadmap.md #1):
   1. pull catalog   — tracks must exist before playlist membership lands
-  2. pull playlists — full-membership replace
-  3. push playlists — satellite edits back up to the master
-  4. report inventory — opt-in inventory snapshot
+  2. pull artist tags — master-owned MusicBrainz metadata
+  3. pull playlists — full-membership replace
+  4. push playlists — satellite edits back up to the master
+  5. pull lyrics — cached/manual lyric metadata
+  6. report inventory — opt-in inventory snapshot
 
 Each step is gated by existing config rules (master_url for the first
 three; report_inventory_to_host for the fourth). Steps that don't apply
@@ -19,12 +21,14 @@ import logging
 from typing import Callable, Dict, List, Optional
 
 from .catalog_sync import (
+    main_run_artist_tags_pull,
     main_run_catalog_pull,
     main_run_lyrics_pull,
     main_run_playlist_pull,
     main_run_playlist_push,
 )
 from .contribution_sync import main_run_contribute
+from .config_manager import device_role_from_config, is_authority_config
 from .db_manager import DatabaseManager
 from .inventory_sync import main_run_inventory_report
 
@@ -40,7 +44,7 @@ def main_run_sync_all(
     config: dict,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> Dict:
-    """Run all four sync operations applicable to this device.
+    """Run all sync operations applicable to this device.
 
     Returns ``{steps: [{name, status, message, summary?}]}`` where
     ``status`` is one of 'ok', 'skipped', 'error'.
@@ -48,11 +52,12 @@ def main_run_sync_all(
     results: List[Dict] = []
 
     master_url = (config.get("master_url") or "").strip()
-    is_master = _bool(config.get("is_master"))
-    # report_inventory_to_host defaults to True on the master, False otherwise.
+    device_role = device_role_from_config(config)
+    is_authority = is_authority_config(config)
+    # Inventory defaults on for authority roles and off for satellites.
     report_inv = config.get("report_inventory_to_host")
     if report_inv is None:
-        report_inv = is_master
+        report_inv = is_authority
     report_inv = _bool(report_inv)
 
     # contribute_to_host defaults on when this device points at a master.
@@ -79,8 +84,12 @@ def main_run_sync_all(
         results.append({"name": name, "status": "skipped", "message": reason})
 
     # Pulls only make sense for satellites (devices that point at a master).
-    if master_url:
+    if master_url and not is_authority:
         _run("pull_catalog", lambda: main_run_catalog_pull(db, config))
+        _run(
+            "pull_artist_tags",
+            lambda: main_run_artist_tags_pull(db, config),
+        )
         _run("pull_playlists", lambda: main_run_playlist_pull(db, config))
         _run("push_playlists", lambda: main_run_playlist_push(db, config))
         # Lyrics ride along last — cheap when there's nothing new
@@ -88,8 +97,13 @@ def main_run_sync_all(
         # other deltas.
         _run("pull_lyrics", lambda: main_run_lyrics_pull(db, config))
     else:
-        reason = "master_url not configured"
+        reason = (
+            f"{device_role} role owns its catalog"
+            if is_authority
+            else "master_url not configured"
+        )
         _skip("pull_catalog", reason)
+        _skip("pull_artist_tags", reason)
         _skip("pull_playlists", reason)
         _skip("push_playlists", reason)
         _skip("pull_lyrics", reason)
@@ -101,7 +115,9 @@ def main_run_sync_all(
 
     # Contribute local tracks up to the master (identifier-first, upload
     # fallback). Only meaningful for satellites that point at a master.
-    if not master_url:
+    if is_authority:
+        _skip("contribute", f"{device_role} role owns its catalog")
+    elif not master_url:
         _skip("contribute", "master_url not configured")
     elif contribute:
         _run("contribute", lambda: main_run_contribute(db, config))

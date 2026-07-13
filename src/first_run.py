@@ -1,16 +1,15 @@
 """
 First-run setup: pure config-build logic.
 
-UI-free so the payload/validation can be unit tested in isolation.
-Today's only consumer is the web ``/setup`` page (which rolls its own
-form-to-dict mapping in ``web_server.save_config``); ``build_initial_config``
-is kept here as the reusable, role-aware payload builder for a future
-Tauri first-run wizard or a refactor of the web setup.
+UI-free so the payload/validation can be unit tested in isolation. Both the
+browser and Tauri first-run wizards submit to ``web_server.save_config``, which
+routes their payloads through ``build_initial_config`` so every setup surface
+writes the same role-aware config shape.
 """
 
 import os
 import socket
-from typing import Literal
+from typing import Literal, Optional
 
 
 Role = Literal["master", "satellite", "standalone"]
@@ -35,6 +34,7 @@ def build_initial_config(
     *,
     music_library_path: str,
     downloads_path: str,
+    database_file: Optional[str] = None,
     dap_mount_point: str = "",
     master_url: str = "",
     public_master_url: str = "",
@@ -59,12 +59,13 @@ def build_initial_config(
 ) -> dict:
     """Shape a config.json dict for a first-run install.
 
-    Role drives the defaults: master flips ``is_master`` and accepts
+    ``device_role`` drives the defaults.  The legacy ``is_master`` field is
+    emitted only as a derived compatibility mirror.  Master accepts
     Jellyfin + Soulseek + Lidarr creds plus a ``public_master_url``
     that satellites use to reach back; satellite writes ``master_url``
     and an optional bearer token and leaves sldl config blank
-    (downloads forward to the master); standalone is satellite-
-    without-master and keeps its own downloader.
+    (downloads forward to the master); standalone is a local-only authority
+    and keeps its own downloader, tag maintenance, and Daily Mix generation.
     """
     if role not in ("master", "satellite", "standalone"):
         raise ValueError(f"unknown role: {role}")
@@ -72,7 +73,10 @@ def build_initial_config(
         raise ValueError("music_library_path and downloads_path are required")
 
     cfg: dict = {
-        "database_file": "dap_library.db",
+        # Direct callers retain the historical relative default.  The setup
+        # server supplies an absolute path beside its resolved config file so
+        # packaged desktop builds never create the DB under app Resources.
+        "database_file": database_file or "dap_library.db",
         "music_library_path": music_library_path,
         "downloads_path": downloads_path,
         "ffmpeg_path": "ffmpeg",
@@ -86,10 +90,13 @@ def build_initial_config(
         "remove_ft": bool(remove_ft),
         "desperate_mode": bool(desperate_mode),
         "strict_quality": bool(strict_quality),
-        "is_master": role == "master",
-        "device_role": "master" if role == "master" else "satellite",
+        "is_master": role in ("master", "standalone"),
+        "device_role": role,
         "acoustid_api_key": acoustid_api_key,
         "contact_email": contact_email,
+        "artist_tag_max_age_days": 30,
+        "library_maintenance_interval_seconds": 604800,
+        "library_maintenance_on_startup": False,
         "api_token": api_token,
     }
 

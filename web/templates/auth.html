@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in · DAP Manager</title>
+    <link rel="stylesheet" href="/static/tailwind.css">
+</head>
+<body class="bg-[var(--color-bg)] text-[var(--color-text)] min-h-screen flex items-center justify-center p-6">
+    <main class="w-full max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-6 shadow-xl">
+        <h1 class="text-xl font-semibold mb-2">DAP Manager</h1>
+        <p class="text-sm text-[var(--color-text-muted)] mb-5">
+            Enter the API token configured on this device.
+        </p>
+        {% if error %}
+        <div class="mb-4 rounded border border-red-700/60 bg-red-950/30 px-3 py-2 text-sm text-red-300">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/auth" class="space-y-4">
+            <input type="hidden" name="next" value="{{ next_url }}">
+            <label class="block text-sm">
+                <span class="block mb-1.5 text-[var(--color-text-muted)]">API token</span>
+                <input name="token" type="password" required autofocus autocomplete="current-password"
+                       class="w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 font-mono outline-none focus:ring-1 focus:ring-[var(--color-accent)]">
+            </label>
+            <button type="submit" class="w-full rounded bg-[var(--color-accent)] px-4 py-2 font-semibold text-[var(--color-bg)] hover:brightness-110">
+                Sign in
+            </button>
+        </form>
+    </main>
+</body>
+</html>

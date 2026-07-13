@@ -7,12 +7,71 @@ import os
 import sys
 import logging
 import uuid
-from typing import Dict, Any, Optional
+from typing import Any, Mapping, MutableMapping, Optional
 from shutil import which
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
 
 logger = logging.getLogger(__name__)
+
+
+DEVICE_ROLES = frozenset({"master", "satellite", "standalone"})
+AUTHORITY_DEVICE_ROLES = frozenset({"master", "standalone"})
+
+
+def normalize_device_role(value: Any) -> Optional[str]:
+    """Return a supported, normalized role or ``None`` for invalid input."""
+    if not isinstance(value, str):
+        return None
+    role = value.strip().lower()
+    return role if role in DEVICE_ROLES else None
+
+
+def _legacy_is_master(value: Any) -> bool:
+    """Parse the pre-``device_role`` compatibility flag conservatively."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def device_role_from_config(values: Mapping[str, Any]) -> str:
+    """Resolve the canonical role for a raw config mapping.
+
+    ``device_role`` is authoritative whenever it is present.  The legacy
+    ``is_master`` flag is consulted only to migrate a config that predates the
+    role field.  A malformed explicit role fails closed to ``satellite`` and
+    must never be able to regain authority through a stale legacy boolean.
+    """
+    raw_role = values.get("device_role")
+    role = normalize_device_role(raw_role)
+    if role is not None:
+        return role
+    if raw_role is None or (isinstance(raw_role, str) and not raw_role.strip()):
+        return "master" if _legacy_is_master(values.get("is_master")) else "satellite"
+    return "satellite"
+
+
+def is_authority_config(values: Mapping[str, Any]) -> bool:
+    """Whether a raw config represents a catalog-owning device."""
+    return device_role_from_config(values) in AUTHORITY_DEVICE_ROLES
+
+
+def synchronize_authority_fields(values: MutableMapping[str, Any]) -> bool:
+    """Synchronize the canonical role and its legacy serialized mirror.
+
+    The raw ``is_master`` field remains on disk for compatibility with older
+    builds, but callers must not treat it as editable or authoritative.
+    Returns whether either serialized field changed.
+    """
+    role = device_role_from_config(values)
+    legacy_value = role in AUTHORITY_DEVICE_ROLES
+    changed = values.get("device_role") != role
+    if changed:
+        values["device_role"] = role
+    if values.get("is_master") is not legacy_value:
+        values["is_master"] = legacy_value
+        changed = True
+    return changed
 
 
 class ConfigManager:
@@ -115,19 +174,24 @@ class ConfigManager:
                 logger.warning(f"Could not persist migrated config: {e}")
 
     def _ensure_device_identity(self):
-        """Generate a stable device_id on first run and default device_role.
+        """Generate identity and migrate/synchronize device authority fields.
 
         `device_id` is a UUID4 used by the host to distinguish satellites.
-        `device_role` defaults to 'satellite'; the Jellyfin host's install
-        should flip this to 'master' manually in config.json.
+        ``device_role`` is canonical.  A role-less legacy config inherits
+        ``master`` from ``is_master: true``; otherwise it defaults to
+        ``satellite``.  ``is_master`` is then retained only as a synchronized
+        compatibility mirror for older builds.
         """
         changed = False
         if not self._config.get("device_id"):
             self._config["device_id"] = str(uuid.uuid4())
             changed = True
-        if not self._config.get("device_role"):
-            self._config["device_role"] = "satellite"
-            changed = True
+        raw_role = self._config.get("device_role")
+        if raw_role and normalize_device_role(raw_role) is None:
+            logger.warning(
+                "Invalid device_role %r; falling back to satellite", raw_role
+            )
+        changed = synchronize_authority_fields(self._config) or changed
         if changed:
             try:
                 ensure_parent_dir(self.CONFIG_FILE)
@@ -199,11 +263,14 @@ class ConfigManager:
 
     @property
     def device_role(self) -> str:
-        return self._config.get("device_role", "satellite")
+        return device_role_from_config(self._config)
 
     @property
     def is_master(self) -> bool:
-        return self.device_role == "master"
+        # Standalone owns its local catalog and therefore runs the same
+        # authority-only jobs (MusicBrainz tags, Daily Mixes, Lidarr) without
+        # advertising a master_url to other devices.
+        return self.device_role in AUTHORITY_DEVICE_ROLES
 
     @property
     def report_inventory_to_host(self) -> bool:

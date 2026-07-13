@@ -15,6 +15,7 @@ from .audio_quality import library_path_for_track
 from . import tag_service
 from .lidarr_client import LidarrClient, LidarrError
 from .jellyfin_client import JellyfinClient
+from .config_manager import is_authority_config
 
 logger = logging.getLogger(__name__)
 
@@ -504,12 +505,12 @@ def _build_jellyfin_client(config: dict) -> Optional[JellyfinClient]:
 
 
 def _build_lidarr_client(config: dict) -> Optional[LidarrClient]:
-    """Return a Lidarr client only on the master when sidecar is enabled.
+    """Return a Lidarr client only for an authority role when enabled.
 
     Satellites never get one: they queue locally and rely on the next
     catalog sync to pull down whatever the master has imported.
     """
-    if not config.get("is_master"):
+    if not is_authority_config(config):
         return None
     if not config.get("lidarr_enabled"):
         return None

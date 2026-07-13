@@ -28,6 +28,7 @@ SYNC_STATE_KEY = "last_catalog_sync"
 PLAYLIST_SYNC_STATE_KEY = "last_playlist_sync"
 PLAYLIST_PUSH_STATE_KEY = "last_playlist_push"
 LYRICS_SYNC_STATE_KEY = "last_lyrics_sync"
+ARTIST_TAGS_SYNC_STATE_KEY = "last_artist_tags_sync"
 
 
 class CatalogClient:
@@ -283,6 +284,77 @@ class CatalogClient:
         return summary
 
 
+    def pull_artist_tags(self) -> dict:
+        """Pull authoritative artist-tag snapshots from the master.
+
+        Each payload item replaces one artist's full tag set, including an
+        empty set for MusicBrainz misses.  This lets genre smart playlists,
+        Artist Radio, and Daily Mix metadata behave consistently without
+        every satellite independently consuming MusicBrainz's rate limit.
+        """
+        since = self.db.get_sync_state(ARTIST_TAGS_SYNC_STATE_KEY)
+        self._report(
+            "Fetching artist-tag delta"
+            + (f" since {since}" if since else " (initial)")
+        )
+
+        params = {"since": since} if since else {}
+        resp = self.session.get(
+            f"{self.master_url}/api/artist-tags",
+            params=params,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+        if not data.get("success"):
+            raise RuntimeError(
+                f"Master responded with failure: "
+                f"{data.get('message', 'unknown error')}"
+            )
+
+        snapshots = data.get("artist_tags") or []
+        as_of = data.get("as_of")
+        inserted = 0
+        updated = 0
+        stale = 0
+        skipped = 0
+        total = len(snapshots)
+        for i, row in enumerate(snapshots, 1):
+            action = self.db.apply_artist_tags_row(row)
+            if action == "inserted":
+                inserted += 1
+            elif action == "updated":
+                updated += 1
+            elif action == "stale":
+                stale += 1
+            else:
+                skipped += 1
+            if total and (i == total or i % 100 == 0):
+                self._report(
+                    f"Applying artist tags ({i}/{total})",
+                    current=i,
+                    total=total,
+                )
+
+        if as_of:
+            self.db.set_sync_state(ARTIST_TAGS_SYNC_STATE_KEY, as_of)
+
+        summary = {
+            "received": total,
+            "inserted": inserted,
+            "updated": updated,
+            "stale": stale,
+            "skipped": skipped,
+            "since": since,
+            "as_of": as_of,
+        }
+        self._report(
+            f"Artist-tag pull done: {inserted} new, {updated} updated, "
+            f"{stale} stale, {skipped} skipped"
+        )
+        return summary
+
+
     def push_playlists(self) -> dict:
         """Push locally-edited playlists to the master.
 
@@ -413,3 +485,19 @@ def main_run_lyrics_pull(
         api_token=(config.get("api_token") or "").strip() or None,
     )
     return client.pull_lyrics()
+
+
+def main_run_artist_tags_pull(
+    db: DatabaseManager,
+    config: dict,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Pull the artist-tag delta from the master."""
+    master_url = (config.get("master_url") or "").rstrip("/")
+    client = CatalogClient(
+        db=db,
+        master_url=master_url,
+        progress_callback=progress_callback,
+        api_token=(config.get("api_token") or "").strip() or None,
+    )
+    return client.pull_artist_tags()
