@@ -5,6 +5,7 @@ import {
   fetchConfig,
   fetchStatus,
   regenerateDailyMixes,
+  restartBackend,
   saveConfig,
   startTagBackfill,
   type BackendStatus,
@@ -45,6 +46,7 @@ export default function SettingsScreen({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, ConfigValue>>({});
   const [saving, setSaving] = useState(false);
+  const [restartOnly, setRestartOnly] = useState(false);
   const toast = useToast();
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [flashKey, setFlashKey] = useState<string | null>(null);
@@ -109,18 +111,45 @@ export default function SettingsScreen({
       }
     }
     try {
+      if (restartOnly) {
+        const recovered = await restartBackend();
+        if (!recovered.success) {
+          setRestartOnly(!recovered.backend_running);
+          toast.show(recovered.message, "err");
+          return;
+        }
+        setRestartOnly(false);
+      }
+
       const result = await saveConfig(patch);
       if (!result.success) {
         toast.show(result.message || "Save failed", "err");
         return;
       }
       const n = result.changed.length;
+      const needsRestart = result.changed.some(
+        (key) => key === "device_role" || key === "api_token",
+      );
+      let restartMessage = "";
+      if (needsRestart) {
+        const restarted = await restartBackend();
+        if (!restarted.success) {
+          setRestartOnly(!restarted.backend_running);
+          toast.show(`Settings saved, but ${restarted.message}`, "err");
+          if (restarted.backend_running) await load();
+          return;
+        }
+        setRestartOnly(false);
+        restartMessage = ` ${restarted.message}`;
+      }
       toast.show(
         n === 0
           ? "No changes."
-          : `Saved ${n} change${n === 1 ? "" : "s"}: ${result.changed.join(", ")}.`,
+          : `Saved ${n} change${n === 1 ? "" : "s"}: ${result.changed.join(", ")}.${restartMessage}`,
       );
       await load();
+    } catch (error) {
+      toast.show(`Settings could not be saved: ${String(error)}`, "err");
     } finally {
       setSaving(false);
     }
@@ -152,6 +181,13 @@ export default function SettingsScreen({
         ) : (
           <div className="max-w-3xl space-y-6">
             <LibraryTools ready={ready} />
+            <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-4 py-3 text-xs text-[var(--color-text-muted)]">
+              Desktop networking is fail-closed: only a <code>master</code>
+              {" "}with a non-empty <code>api_token</code> listens on
+              LAN/Tailscale. Satellite, standalone, and tokenless Master roles
+              stay on 127.0.0.1. Saving either field restarts the owned backend
+              automatically.
+            </div>
             {payload.groups.map((group) => (
               <fieldset
                 key={group.label}

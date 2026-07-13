@@ -11,6 +11,7 @@ import AlbumDetailScreen from "./screens/AlbumDetailScreen";
 import ArtistsScreen from "./screens/ArtistsScreen";
 import ArtistDetailScreen from "./screens/ArtistDetailScreen";
 import AuditScreen from "./screens/AuditScreen";
+import ContributionsScreen from "./screens/ContributionsScreen";
 import DownloadsScreen from "./screens/DownloadsScreen";
 import DuplicatesScreen from "./screens/DuplicatesScreen";
 import FleetScreen from "./screens/FleetScreen";
@@ -31,6 +32,7 @@ type BackendStatus = "booting" | "ready" | "failed";
 
 function App() {
   const [status, setStatus] = useState<BackendStatus>("booting");
+  const [backendError, setBackendError] = useState<string | null>(null);
   // After 10 s of booting show a hint so the user doesn't force-quit
   // during the first-launch venv + pip-install phase (can take minutes).
   const [bootingSlowly, setBootingSlowly] = useState(false);
@@ -123,9 +125,10 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const ok = await waitForBackend();
+      const result = await waitForBackend();
       if (cancelled) return;
-      if (!ok) {
+      if (!result.ok) {
+        setBackendError(result.error);
         setStatus("failed");
         return;
       }
@@ -138,10 +141,12 @@ function App() {
           setNeedsSetup(needs_setup);
           if (!needs_setup) setStatus("ready");
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setNeedsSetup(false);
-          setStatus("ready");
+          setBackendError(
+            `The backend started, but DAPManager could not read first-run status: ${String(error)}\n\nRelaunch the app. If this persists, check the Python installation and config file.`,
+          );
+          setStatus("failed");
         }
       }
     })();
@@ -181,8 +186,16 @@ function App() {
   const renderScreen = () => {
     if (status === "failed") {
       return (
-        <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
-          Backend failed to start — check the terminal.
+        <div className="flex-1 flex items-center justify-center px-8">
+          <div className="max-w-2xl rounded-lg border border-red-900/70 bg-red-950/20 px-5 py-4">
+            <h1 className="text-base font-semibold text-red-300">
+              Backend failed to start
+            </h1>
+            <p className="mt-2 whitespace-pre-line text-sm text-[var(--color-text-muted)]">
+              {backendError ??
+                "DAPManager could not start its local Python backend. Relaunch the app after checking your Python installation."}
+            </p>
+          </div>
         </div>
       );
     }
@@ -257,6 +270,14 @@ function App() {
     if (screen === "sync") {
       return <SyncScreen ready={status === "ready"} />;
     }
+    if (screen === "contributions") {
+      return (
+        <ContributionsScreen
+          ready={status === "ready"}
+          onOpenSettings={handleOpenSettings}
+        />
+      );
+    }
     if (screen === "suggest") {
       return (
         <SuggestScreen
@@ -309,7 +330,7 @@ function App() {
         />
       );
     }
-    return <Placeholder name={screen} />;
+    return <UnknownScreen name={screen} />;
   };
 
   // Show setup wizard on fresh installs (no config.json). Checked
@@ -386,14 +407,14 @@ function App() {
   );
 }
 
-function Placeholder({ name }: { name: string }) {
+function UnknownScreen({ name }: { name: string }) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <header className="titlebar-drag h-14 shrink-0 border-b border-[var(--color-border)] flex items-center px-6">
         <h1 className="text-lg font-semibold capitalize">{name}</h1>
       </header>
       <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)] text-sm">
-        Coming soon
+        Unknown screen
       </div>
     </div>
   );

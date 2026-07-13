@@ -42,33 +42,139 @@ export type LibraryTrack = Track & {
 };
 
 let cachedBackend: string | null = null;
+let cachedApiToken: string | null = null;
+let apiTokenPromise: Promise<string> | null = null;
+
+async function configuredApiToken(): Promise<string> {
+  if (cachedApiToken !== null) return cachedApiToken;
+  if (!apiTokenPromise) {
+    apiTokenPromise = invoke<string>("api_token")
+      .then((token) => token.trim())
+      .catch(() => "");
+  }
+  cachedApiToken = await apiTokenPromise;
+  apiTokenPromise = null;
+  return cachedApiToken;
+}
+
+function invalidateApiToken(): void {
+  cachedApiToken = null;
+  apiTokenPromise = null;
+}
+
+/** Fetch through the local or remote DAPManager API with the configured
+ * bearer token.  Seeded satellite installs receive that token before React
+ * ever sees the setup wizard, so this is deliberately centralised. */
+export async function apiFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const token = await configuredApiToken();
+  if (!token) return window.fetch(input, init);
+  const headers = new Headers(init.headers);
+  if (!headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return window.fetch(input, { ...init, headers });
+}
+
+function authenticatedMediaUrl(url: string): string {
+  if (!cachedApiToken) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(cachedApiToken)}`;
+}
 
 export async function backendUrl(): Promise<string> {
-  if (cachedBackend) return cachedBackend;
-  cachedBackend = await invoke<string>("backend_url");
+  if (!cachedBackend) cachedBackend = await invoke<string>("backend_url");
+  // Populate the synchronous media-URL helper before components render
+  // <audio>/<img> elements, which cannot attach Authorization headers.
+  await configuredApiToken();
   return cachedBackend;
 }
 
+export type BackendStartupResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+async function backendStartupError(): Promise<string | null> {
+  try {
+    return await invoke<string | null>("backend_startup_error");
+  } catch {
+    // Older development shells may not expose the command yet. The health
+    // poll remains a valid fallback and will eventually return a timeout.
+    return null;
+  }
+}
+
 // 5 minutes: on first launch the app creates a venv and runs `pip install`
-// before the Python server is ready. Give it enough time.
-export async function waitForBackend(deadlineMs = 300_000): Promise<boolean> {
+// before the Python server is ready. Poll the Rust-owned error slot before
+// every HTTP attempt so failures that happened before React mounted are still
+// surfaced immediately.
+export async function waitForBackend(
+  deadlineMs = 300_000,
+): Promise<BackendStartupResult> {
   const url = await backendUrl();
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
+    const startupError = await backendStartupError();
+    if (startupError) return { ok: false, error: startupError };
     try {
-      const r = await fetch(`${url}/api/healthz`);
-      if (r.ok) return true;
+      const r = await apiFetch(`${url}/api/healthz`);
+      if (r.ok) return { ok: true };
     } catch {
       // not up yet
     }
     await new Promise((res) => setTimeout(res, 500));
   }
-  return false;
+  const startupError = await backendStartupError();
+  return {
+    ok: false,
+    error:
+      startupError ??
+      "The Python backend did not become ready within five minutes. Check that Python 3 is installed and that pip can install requirements.txt, then relaunch DAPManager.",
+  };
+}
+
+export type BackendRestartResult = {
+  success: boolean;
+  message: string;
+  bind_host: string;
+  backend_running: boolean;
+};
+
+/** Restart the Tauri-owned Python backend after config changes that affect
+ * network exposure. Rust serializes the lifecycle operation and can restore a
+ * failed network rebind to loopback; this helper additionally waits until the
+ * replacement process is actually serving HTTP. */
+export async function restartBackend(): Promise<BackendRestartResult> {
+  let result: BackendRestartResult;
+  try {
+    result = await invoke<BackendRestartResult>("restart_backend");
+  } catch (error) {
+    return {
+      success: false,
+      message: `Could not request a backend restart: ${String(error)}`,
+      bind_host: "127.0.0.1",
+      backend_running: false,
+    };
+  }
+
+  if (!result.backend_running) return result;
+  const ready = await waitForBackend(30_000);
+  if (!ready.ok) {
+    return {
+      ...result,
+      success: false,
+      backend_running: false,
+      message: `${result.message}\n\n${ready.error}`,
+    };
+  }
+  return result;
 }
 
 export async function fetchAlbums(): Promise<Album[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/albums`);
+  const r = await apiFetch(`${url}/api/library/albums`);
   if (!r.ok) throw new Error(`albums: ${r.status}`);
   const data = await r.json();
   return (data.albums ?? []) as Album[];
@@ -86,7 +192,7 @@ export async function searchTracks(query: string): Promise<SearchTrackResult[]> 
   const q = query.trim();
   if (!q) return [];
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/search?q=${encodeURIComponent(q)}`,
   );
   if (!r.ok) throw new Error(`search: ${r.status}`);
@@ -109,7 +215,7 @@ export async function fetchAllTracks(
   if (opts.localOnly) params.set("local_only", "1");
   if (opts.includeOrphans) params.set("include_orphans", "1");
   const qs = params.toString();
-  const r = await fetch(`${url}/api/library/tracks${qs ? `?${qs}` : ""}`);
+  const r = await apiFetch(`${url}/api/library/tracks${qs ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`tracks: ${r.status}`);
   const data = await r.json();
   return (data.tracks ?? []) as LibraryTrack[];
@@ -156,7 +262,7 @@ export type Playlist = {
 
 export async function fetchPlaylists(): Promise<Playlist[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/playlists`);
+  const r = await apiFetch(`${url}/api/library/playlists`);
   if (!r.ok) throw new Error(`playlists: ${r.status}`);
   const data = await r.json();
   return (data.playlists ?? []) as Playlist[];
@@ -164,14 +270,16 @@ export async function fetchPlaylists(): Promise<Playlist[]> {
 
 export async function fetchArtists(): Promise<Artist[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/artists`);
+  const r = await apiFetch(`${url}/api/library/artists`);
   if (!r.ok) throw new Error(`artists: ${r.status}`);
   const data = await r.json();
   return (data.artists ?? []) as Artist[];
 }
 
 export function albumCoverUrl(base: string, albumId: string): string {
-  return `${base}/api/library/albums/${encodeURIComponent(albumId)}/cover`;
+  return authenticatedMediaUrl(
+    `${base}/api/library/albums/${encodeURIComponent(albumId)}/cover`,
+  );
 }
 
 export type ArtistInfo = {
@@ -183,7 +291,7 @@ export type ArtistInfo = {
 
 export async function fetchArtistInfo(name: string): Promise<ArtistInfo | null> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/artists/${encodeURIComponent(name)}/info`,
   );
   if (!r.ok) return null;
@@ -195,7 +303,7 @@ export async function fetchArtistInfo(name: string): Promise<ArtistInfo | null> 
 // screen can render a heart column without a second per-row fetch.
 export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/albums/${encodeURIComponent(albumId)}/tracks`,
   );
   if (!r.ok) throw new Error(`tracks: ${r.status}`);
@@ -204,7 +312,7 @@ export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
 }
 
 export function streamUrl(base: string, mbid: string): string {
-  return `${base}/api/stream/${encodeURIComponent(mbid)}`;
+  return authenticatedMediaUrl(`${base}/api/stream/${encodeURIComponent(mbid)}`);
 }
 
 export type ConfigGroup = { label: string; keys: string[] };
@@ -219,7 +327,7 @@ export type ConfigPayload = {
 
 export async function fetchConfig(): Promise<ConfigPayload> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/config`);
+  const r = await apiFetch(`${url}/api/config`);
   if (!r.ok) throw new Error(`config: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "config failed");
@@ -264,7 +372,7 @@ export type IdentifyResult =
 
 export async function identifyTrack(mbid: string): Promise<IdentifyResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/tag/identify/${encodeURIComponent(mbid)}`,
     { method: "POST" },
   );
@@ -291,7 +399,7 @@ export async function applyTrackTags(
   meta: TagMeta,
 ): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/tag/apply/${encodeURIComponent(mbid)}`,
     {
       method: "POST",
@@ -316,12 +424,15 @@ export async function saveConfig(
   patch: Record<string, ConfigValue>,
 ): Promise<SaveConfigResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/config`, {
+  const r = await apiFetch(`${url}/api/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
   const data = await r.json();
+  if (data.success && Object.prototype.hasOwnProperty.call(patch, "api_token")) {
+    invalidateApiToken();
+  }
   return {
     success: Boolean(data.success),
     message: String(data.message ?? ""),
@@ -364,7 +475,7 @@ export async function recordPlay(
     if (typeof listenedMs === "number" && listenedMs >= 0) {
       body.listened_ms = Math.round(listenedMs);
     }
-    await fetch(`${url}/api/library/plays`, {
+    await apiFetch(`${url}/api/library/plays`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -460,7 +571,7 @@ export async function fetchWrapped(year?: number): Promise<WrappedPayload> {
   const params = new URLSearchParams();
   if (typeof year === "number") params.set("year", String(year));
   const qs = params.toString();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/wrapped${qs ? `?${qs}` : ""}`,
   );
   if (!r.ok) throw new Error(`wrapped: ${r.status}`);
@@ -500,7 +611,7 @@ export type HomePayload = {
 
 export async function fetchHome(): Promise<HomePayload> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/home`);
+  const r = await apiFetch(`${url}/api/library/home`);
   if (!r.ok) throw new Error(`home: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "home failed");
@@ -523,7 +634,7 @@ export async function regenerateDailyMixes(): Promise<{
   message?: string;
 }> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/daily-mixes/regenerate`, {
+  const r = await apiFetch(`${url}/api/library/daily-mixes/regenerate`, {
     method: "POST",
   });
   const data = await r.json();
@@ -543,7 +654,7 @@ export async function fetchPlayStats(
   if (opts.since) params.set("since", opts.since);
   if (opts.limit) params.set("limit", String(opts.limit));
   const qs = params.toString();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/play-stats${qs ? `?${qs}` : ""}`,
   );
   if (!r.ok) throw new Error(`play-stats: ${r.status}`);
@@ -568,7 +679,7 @@ export async function fetchPlayStats(
 
 export async function fetchOrphanTracks(): Promise<OrphanTrack[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/orphans/tracks`);
+  const r = await apiFetch(`${url}/api/orphans/tracks`);
   if (!r.ok) throw new Error(`orphans/tracks: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "orphans/tracks failed");
@@ -577,7 +688,7 @@ export async function fetchOrphanTracks(): Promise<OrphanTrack[]> {
 
 export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/orphans/playlists`);
+  const r = await apiFetch(`${url}/api/orphans/playlists`);
   if (!r.ok) throw new Error(`orphans/playlists: ${r.status}`);
   const data = await r.json();
   if (!data.success)
@@ -598,7 +709,7 @@ export async function fetchArtistRadio(
 ): Promise<ArtistRadio> {
   const url = await backendUrl();
   const params = new URLSearchParams({ limit: String(limit) });
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/artists/${encodeURIComponent(name)}/radio?${params.toString()}`,
   );
   if (!r.ok) throw new Error(`radio: ${r.status}`);
@@ -616,7 +727,7 @@ export async function startTagBackfill(
   incremental = true,
 ): Promise<{ success: boolean; message?: string }> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/library/tags/backfill`, {
+  const r = await apiFetch(`${url}/api/library/tags/backfill`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ incremental }),
@@ -641,7 +752,7 @@ export type LyricsResponse = {
 
 export async function fetchLyrics(mbid: string): Promise<LyricsResponse> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/tracks/${encodeURIComponent(mbid)}/lyrics`,
   );
   if (r.status === 404) return { lrc: null, synced: false, source: null, fetched_at: null };
@@ -662,7 +773,7 @@ export async function saveLyrics(
   synced: boolean,
 ): Promise<LyricsResponse> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/tracks/${encodeURIComponent(mbid)}/lyrics`,
     {
       method: "POST",
@@ -685,7 +796,7 @@ export async function setTrackLiked(
   liked: boolean,
 ): Promise<{ success: boolean; liked?: boolean; message?: string }> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/tracks/${encodeURIComponent(mbid)}/like`,
     { method: liked ? "POST" : "DELETE" },
   );
@@ -705,7 +816,7 @@ export async function setTrackLiked(
 
 export async function restoreTrack(mbid: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/tracks/${encodeURIComponent(mbid)}/restore`,
     { method: "POST" },
   );
@@ -718,7 +829,7 @@ export async function restoreTrack(mbid: string): Promise<ActionResult> {
 
 export async function purgeTrack(mbid: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/tracks/${encodeURIComponent(mbid)}?purge=true`,
     { method: "DELETE" },
   );
@@ -731,7 +842,7 @@ export async function purgeTrack(mbid: string): Promise<ActionResult> {
 
 export async function deleteTrackFile(mbid: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/tracks/${encodeURIComponent(mbid)}/file`,
     { method: "DELETE" },
   );
@@ -744,7 +855,7 @@ export async function deleteTrackFile(mbid: string): Promise<ActionResult> {
 
 export async function restorePlaylist(pid: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/playlists/${encodeURIComponent(pid)}/restore`,
     { method: "POST" },
   );
@@ -757,7 +868,7 @@ export async function restorePlaylist(pid: string): Promise<ActionResult> {
 
 export async function purgePlaylist(pid: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/playlists/${encodeURIComponent(pid)}?purge=true`,
     { method: "DELETE" },
   );
@@ -769,8 +880,8 @@ export async function purgePlaylist(pid: string): Promise<ActionResult> {
 }
 
 export type SuggestionItem =
-  | { artist: string; title: string }
-  | { search_query: string };
+  | { artist: string; title: string; mbid?: string }
+  | { search_query: string; mbid?: string };
 
 export type SuggestionResult = {
   success: boolean;
@@ -779,6 +890,26 @@ export type SuggestionResult = {
   queued: number;
   skipped: number;
 };
+
+// dap_manager_host_url was the old desktop-only name for this setting.
+// ConfigManager migrates it to master_url, which is the editable key shown in
+// Settings. Keep the fallback for the one legacy case where both keys existed
+// with different values and migration intentionally preserved user data.
+export const SUGGESTION_HOST_KEY = "master_url";
+
+export function suggestionHostFromConfig(
+  config: Record<string, ConfigValue>,
+): string | null {
+  const canonical = config[SUGGESTION_HOST_KEY];
+  const legacy = config.dap_manager_host_url;
+  const raw =
+    typeof canonical === "string" && canonical.trim()
+      ? canonical
+      : typeof legacy === "string"
+        ? legacy
+        : "";
+  return raw.trim() || null;
+}
 
 // Mirrors desktop_app.py's parse_manual_suggestions: blank / "#"
 // lines drop, "artist - title" splits, otherwise free-form query.
@@ -805,7 +936,7 @@ export function parseManualSuggestions(text: string): SuggestionItem[] {
 
 export async function fetchSetupStatus(): Promise<{ needs_setup: boolean }> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/setup/status`);
+  const r = await apiFetch(`${url}/api/setup/status`);
   if (!r.ok) throw new Error(`setup/status: ${r.status}`);
   return r.json();
 }
@@ -817,7 +948,7 @@ export type PublicUrlDetection = {
 
 export async function detectPublicUrl(): Promise<PublicUrlDetection> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/setup/detect-public-url`);
+  const r = await apiFetch(`${url}/api/setup/detect-public-url`);
   if (!r.ok) return { source: "none" };
   return r.json();
 }
@@ -827,7 +958,7 @@ export async function validatePath(
   kind: "directory" | "file" = "directory",
 ): Promise<{ ok: boolean; message?: string }> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/setup/validate-path`, {
+  const r = await apiFetch(`${url}/api/setup/validate-path`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, kind }),
@@ -861,21 +992,37 @@ export async function saveSetupConfig(
   payload: SetupPayload,
 ): Promise<{ success: boolean; message?: string }> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/save_config`, {
+  const r = await apiFetch(`${url}/api/save_config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   const data = await r.json();
+  if (data.success) invalidateApiToken();
   return { success: Boolean(data.success), message: data.message };
 }
 
+export async function fetchSatelliteBundleLink(): Promise<{
+  url: string;
+  expires_at: number | null;
+}> {
+  const url = await backendUrl();
+  const r = await apiFetch(`${url}/api/satellite-bundle-link`);
+  const data = await r.json();
+  if (!r.ok || !data.success) {
+    throw new Error(data.message ?? `bundle link: ${r.status}`);
+  }
+  return {
+    url: String(data.url),
+    expires_at: data.expires_at == null ? null : Number(data.expires_at),
+  };
+}
+
 export async function postSuggestions(
-  host: string,
   items: SuggestionItem[],
 ): Promise<SuggestionResult> {
-  const cleaned = host.replace(/\/+$/, "");
-  const r = await fetch(`${cleaned}/api/suggestions`, {
+  const url = await backendUrl();
+  const r = await apiFetch(`${url}/api/suggestions/forward`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
@@ -914,7 +1061,7 @@ export type DuplicateGroup = {
 
 export async function fetchDuplicates(): Promise<DuplicateGroup[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/duplicates`);
+  const r = await apiFetch(`${url}/api/duplicates`);
   if (!r.ok) throw new Error(`duplicates: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "duplicates failed");
@@ -934,7 +1081,7 @@ export async function resolveDuplicate(
   deletePaths: string[],
 ): Promise<ResolveDuplicateResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/duplicates/resolve`, {
+  const r = await apiFetch(`${url}/api/duplicates/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -965,7 +1112,7 @@ export type IncompleteAlbum = {
 
 export async function fetchAuditResults(): Promise<IncompleteAlbum[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/audit/results`);
+  const r = await apiFetch(`${url}/api/audit/results`);
   if (!r.ok) throw new Error(`audit/results: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "audit failed");
@@ -976,7 +1123,7 @@ export async function runCompleteAlbums(
   runDownloads: boolean,
 ): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/albums/complete`, {
+  const r = await apiFetch(`${url}/api/albums/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ run_downloads: runDownloads }),
@@ -1002,7 +1149,7 @@ export type SyncState = {
 
 export async function fetchSyncState(): Promise<SyncState> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/sync/state`);
+  const r = await apiFetch(`${url}/api/sync/state`);
   if (!r.ok) throw new Error(`sync/state: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "sync/state failed");
@@ -1018,9 +1165,81 @@ export type BackendStatus = {
 
 export async function fetchStatus(): Promise<BackendStatus> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/status`);
+  const r = await apiFetch(`${url}/api/status`);
   if (!r.ok) throw new Error(`status: ${r.status}`);
   return (await r.json()) as BackendStatus;
+}
+
+export type AudioQuality = {
+  ext?: string;
+  lossless?: boolean;
+  bits_per_sample?: number;
+  sample_rate?: number;
+  bitrate?: number;
+  channels?: number;
+  length_ms?: number;
+  size_bytes?: number;
+};
+
+export type ContributionStatus =
+  | "attempting"
+  | "have_better"
+  | "satisfied"
+  | "needs_upload"
+  | "ingested";
+
+export type Contribution = {
+  id: number;
+  contribution_id?: number | null;
+  device_id: string | null;
+  mbid: string | null;
+  isrc?: string | null;
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+  target_quality: AudioQuality | null;
+  acquired_quality: AudioQuality | null;
+  status: ContributionStatus | string;
+  download_id?: number | null;
+  created_at?: string | null;
+  updated_at: string | null;
+};
+
+export async function fetchContributions(limit = 200): Promise<Contribution[]> {
+  const url = await backendUrl();
+  const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
+  const r = await apiFetch(`${url}/api/contributions?limit=${safeLimit}`);
+  if (!r.ok) throw new Error(`contributions: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "contributions failed");
+  return (data.contributions ?? []) as Contribution[];
+}
+
+export async function fetchOutgoingContributions(
+  limit = 200,
+): Promise<Contribution[]> {
+  const url = await backendUrl();
+  const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
+  const r = await apiFetch(`${url}/api/contributed?limit=${safeLimit}`);
+  if (!r.ok) throw new Error(`contributed: ${r.status}`);
+  const data = await r.json();
+  if (!data.success) throw new Error(data.message ?? "contributed failed");
+  return (data.contributions ?? []).map(
+    (row: Record<string, unknown>): Contribution => ({
+      id: Number(row.local_id ?? 0),
+      contribution_id:
+        row.contribution_id == null ? null : Number(row.contribution_id),
+      device_id: null,
+      mbid: row.mbid == null ? null : String(row.mbid),
+      artist: row.artist == null ? null : String(row.artist),
+      title: row.title == null ? null : String(row.title),
+      album: row.album == null ? null : String(row.album),
+      target_quality: null,
+      acquired_quality: null,
+      status: String(row.status ?? "unknown"),
+      updated_at: row.updated_at == null ? null : String(row.updated_at),
+    }),
+  );
 }
 
 export type FleetDevice = {
@@ -1046,7 +1265,7 @@ export type FleetSearchResult = {
 
 export async function fetchFleetSummary(): Promise<FleetDevice[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/fleet/summary`);
+  const r = await apiFetch(`${url}/api/fleet/summary`);
   if (!r.ok) throw new Error(`fleet/summary: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "fleet/summary failed");
@@ -1057,7 +1276,7 @@ export async function searchFleet(q: string): Promise<FleetSearchResult[]> {
   const query = q.trim();
   if (!query) return [];
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/fleet/track?q=${encodeURIComponent(query)}`,
   );
   if (!r.ok) throw new Error(`fleet/track: ${r.status}`);
@@ -1068,13 +1287,51 @@ export async function searchFleet(q: string): Promise<FleetSearchResult[]> {
 
 export type ActionResult = { success: boolean; message: string };
 
+export type ContributeTrackResult = ActionResult & {
+  mbid?: string;
+  status?: ContributionStatus | string | null;
+};
+
+export async function contributeAllLocalTracks(): Promise<ActionResult> {
+  return postAction("/api/contribute");
+}
+
+export async function contributeTrack(
+  mbid: string,
+): Promise<ContributeTrackResult> {
+  const url = await backendUrl();
+  const r = await apiFetch(`${url}/api/contribute/track`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mbid }),
+  });
+  let data: Record<string, unknown> = {};
+  try {
+    data = (await r.json()) as Record<string, unknown>;
+  } catch {
+    // Keep the transport status useful even if an upstream proxy returns
+    // HTML instead of the endpoint's normal JSON error object.
+  }
+  return {
+    success: r.ok && Boolean(data.success),
+    message:
+      typeof data.message === "string"
+        ? data.message
+        : r.ok
+          ? ""
+          : `contribute/track: ${r.status}`,
+    mbid: typeof data.mbid === "string" ? data.mbid : undefined,
+    status: typeof data.status === "string" ? data.status : undefined,
+  };
+}
+
 // POST an empty-body action endpoint (sync triggers, link-local, etc).
 // The backend's TaskManager returns {success, message} uniformly;
 // callers surface `message` so config-gated failures (e.g.
 // report_inventory_to_host disabled) land in the UI verbatim.
 export async function postAction(path: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}${path}`, {
+  const r = await apiFetch(`${url}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
@@ -1100,7 +1357,7 @@ export async function queueCatalogDownload(
   mbids: string[],
 ): Promise<QueueDownloadResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/catalog/queue-download`, {
+  const r = await apiFetch(`${url}/api/catalog/queue-download`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mbids }),
@@ -1111,7 +1368,7 @@ export async function queueCatalogDownload(
 
 export async function softDeleteTrack(mbid: string): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/tracks/${encodeURIComponent(mbid)}`,
     { method: "DELETE" },
   );
@@ -1140,7 +1397,7 @@ export async function createPlaylist(
   // create has no use for null (a fresh playlist with null rules is
   // just a static playlist).
   if (smartRules !== undefined) body.smart_rules = smartRules;
-  const r = await fetch(`${url}/api/library/playlists`, {
+  const r = await apiFetch(`${url}/api/library/playlists`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -1156,7 +1413,7 @@ export async function updatePlaylistSmartRules(
   smartRules: SmartRuleset | null,
 ): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
     {
       method: "PUT",
@@ -1176,7 +1433,7 @@ export async function renamePlaylist(
   name: string,
 ): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
     {
       method: "PUT",
@@ -1195,7 +1452,7 @@ export async function deletePlaylist(
   playlistId: string,
 ): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(
+  const r = await apiFetch(
     `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
     { method: "DELETE" },
   );
@@ -1221,7 +1478,7 @@ export async function addTrackToPlaylist(
   mbid: string,
 ): Promise<AddToPlaylistResult> {
   const url = await backendUrl();
-  const listResp = await fetch(
+  const listResp = await apiFetch(
     `${url}/api/library/tracks?playlist_id=${encodeURIComponent(playlistId)}`,
   );
   const listData = await listResp.json();
@@ -1240,7 +1497,7 @@ export async function addTrackToPlaylist(
     return { success: true, message: "already in playlist", added: 0, missed: 0 };
   }
   const merged = [...existing, mbid];
-  const putResp = await fetch(
+  const putResp = await apiFetch(
     `${url}/api/library/playlists/${encodeURIComponent(playlistId)}`,
     {
       method: "PUT",
@@ -1284,7 +1541,7 @@ export type WantedReleasesResult =
 
 export async function fetchWantedReleases(): Promise<WantedReleasesResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/releases/wanted`);
+  const r = await apiFetch(`${url}/api/releases/wanted`);
   if (r.status === 502) {
     const data = await r.json().catch(() => ({}));
     return { kind: "error", message: String(data.message ?? "Lidarr error") };
@@ -1314,7 +1571,7 @@ export async function queueWantedRelease(
 ): Promise<ActionResult> {
   const url = await backendUrl();
   const search_query = `${release.artist} - ${release.title}`.trim();
-  const r = await fetch(`${url}/api/download/request`, {
+  const r = await apiFetch(`${url}/api/download/request`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ search_query, mbid_guess: release.mbid }),
@@ -1343,7 +1600,7 @@ export type DownloadQueueItem = {
 
 export async function fetchDownloads(): Promise<DownloadQueueItem[]> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/downloads/list`);
+  const r = await apiFetch(`${url}/api/downloads/list`);
   if (!r.ok) throw new Error(`downloads/list: ${r.status}`);
   const data = await r.json();
   if (!data.success) throw new Error(data.message ?? "downloads/list failed");
@@ -1352,7 +1609,7 @@ export async function fetchDownloads(): Promise<DownloadQueueItem[]> {
 
 export async function retryDownload(id: number): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/downloads/${id}/retry`, { method: "POST" });
+  const r = await apiFetch(`${url}/api/downloads/${id}/retry`, { method: "POST" });
   // The backend emits 404 when the row isn't in 'failed' state; surface
   // that as a typed message rather than a thrown error so the screen can
   // toast it and keep the table mounted.
@@ -1369,7 +1626,7 @@ export async function retryDownload(id: number): Promise<ActionResult> {
 
 export async function deleteDownload(id: number): Promise<ActionResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/downloads/${id}`, { method: "DELETE" });
+  const r = await apiFetch(`${url}/api/downloads/${id}`, { method: "DELETE" });
   if (!r.ok) return { success: false, message: `delete: ${r.status}` };
   const data = await r.json();
   return {
@@ -1382,7 +1639,7 @@ export type ClearCompletedResult = ActionResult & { removed: number };
 
 export async function clearCompletedDownloads(): Promise<ClearCompletedResult> {
   const url = await backendUrl();
-  const r = await fetch(`${url}/api/downloads/clear-completed`, {
+  const r = await apiFetch(`${url}/api/downloads/clear-completed`, {
     method: "POST",
   });
   if (!r.ok) return { success: false, message: `clear: ${r.status}`, removed: 0 };

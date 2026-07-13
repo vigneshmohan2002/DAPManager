@@ -11,6 +11,7 @@ import {
 import {
   albumCoverUrl,
   backendUrl,
+  fetchAlbumTracks,
   recordPlay,
   streamUrl,
   type Track,
@@ -30,6 +31,9 @@ type PlayerState = {
   shuffle: boolean;
   repeat: RepeatMode;
   play: (queue: PlayerTrack[], startIndex?: number) => void;
+  // Fetch an album's ordered tracks, replace the queue, and start at track 1.
+  // Returns the number of queued tracks so callers can surface an empty state.
+  playAlbum: (albumId: string) => Promise<number>;
   toggle: () => void;
   next: () => void;
   prev: () => void;
@@ -371,10 +375,41 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, [queue.length, index, repeat, pickNextIndex]);
 
-  const play = useCallback((q: PlayerTrack[], startIndex = 0) => {
-    setQueue(q);
-    setIndex(Math.max(0, Math.min(startIndex, q.length - 1)));
-  }, []);
+  const play = useCallback(
+    (q: PlayerTrack[], startIndex = 0) => {
+      const targetIndex = Math.max(0, Math.min(startIndex, q.length - 1));
+      const target = q[targetIndex] ?? null;
+      const sameTrack = Boolean(target && target.mbid === current?.mbid);
+      const audio = audioRef.current;
+      if (audio) {
+        audio.currentTime = 0;
+        // Replacing the queue with an album whose first track is already
+        // loaded does not retrigger the src effect, so resume it explicitly.
+        if (sameTrack) {
+          setIsPlaying(true);
+          audio.play().catch(() => setIsPlaying(false));
+        }
+      }
+      setPosition(0);
+      if (!sameTrack) setDuration(0);
+      setQueue(q);
+      setIndex(targetIndex);
+    },
+    [current?.mbid],
+  );
+
+  const playAlbum = useCallback(
+    async (albumId: string): Promise<number> => {
+      const tracks = await fetchAlbumTracks(albumId);
+      if (tracks.length === 0) return 0;
+      play(
+        tracks.map((track) => ({ ...track, albumId })),
+        0,
+      );
+      return tracks.length;
+    },
+    [play],
+  );
 
   const toggle = useCallback(() => {
     const audio = audioRef.current;
@@ -549,6 +584,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       shuffle,
       repeat,
       play,
+      playAlbum,
       toggle,
       next,
       prev,
@@ -574,6 +610,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       shuffle,
       repeat,
       play,
+      playAlbum,
       toggle,
       next,
       prev,

@@ -8,12 +8,17 @@ import { useToast } from "../components/Toast";
 import {
   addTrackToPlaylist,
   applyTrackTags,
+  contributeTrack,
   fetchAllTracks,
+  fetchConfig,
   fetchPlaylists,
   identifyTrack,
+  postSuggestions,
   queueCatalogDownload,
   setTrackLiked,
   softDeleteTrack,
+  SUGGESTION_HOST_KEY,
+  suggestionHostFromConfig,
   type Availability,
   type IdentifyCandidate,
   type LibraryTrack,
@@ -83,6 +88,9 @@ export default function SongsScreen({
   } | null>(null);
   const [identifying, setIdentifying] = useState(false);
   const [applyingTag, setApplyingTag] = useState(false);
+  const [contributingMbid, setContributingMbid] = useState<string | null>(null);
+  const [suggestingMbid, setSuggestingMbid] = useState<string | null>(null);
+  const [canContributeToMaster, setCanContributeToMaster] = useState(false);
 
   // Filters: match the web /library page's defaults + semantic.
   //   catalog-only OFF  -> local_only=1 (only rows with a file here)
@@ -102,6 +110,26 @@ export default function SongsScreen({
     setTrackLikedInQueue,
   } = usePlayer();
   const toast = useToast();
+
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    fetchConfig()
+      .then((payload) => {
+        if (cancelled) return;
+        const role = String(payload.config.device_role ?? "satellite");
+        const masterUrl = String(payload.config.master_url ?? "").trim();
+        setCanContributeToMaster(
+          role !== "master" && role !== "standalone" && Boolean(masterUrl),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setCanContributeToMaster(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -271,6 +299,81 @@ export default function SongsScreen({
     reloadTable();
   };
 
+  const handleContribute = async (track: LibraryTrack) => {
+    if (contributingMbid) return;
+    setContributingMbid(track.mbid);
+    try {
+      const payload = await fetchConfig();
+      const role = String(payload.config.device_role ?? "satellite");
+      const masterUrl = String(payload.config.master_url ?? "").trim();
+      if (role === "master" || role === "standalone" || !masterUrl) {
+        toast.show("This device has no upstream master to contribute to.", "err");
+        return;
+      }
+      const result = await contributeTrack(track.mbid);
+      if (!result.success) {
+        toast.show(result.message || "Contribution failed", "err");
+        return;
+      }
+      const labels: Record<string, string> = {
+        attempting: "The master is trying to acquire a matching copy.",
+        have_better: "The master already has an equal-or-better copy.",
+        satisfied: "The master downloaded a matching copy.",
+        needs_upload: "The master requested an upload; run Contributions again to send it.",
+        ingested: "The track was uploaded and ingested by the master.",
+      };
+      toast.show(
+        result.status
+          ? labels[result.status] ?? `Contribution status: ${result.status}.`
+          : "Track offered to the master.",
+      );
+    } catch (e) {
+      toast.show(`Contribution failed: ${String(e)}`, "err");
+    } finally {
+      setContributingMbid(null);
+    }
+  };
+
+  const handleSuggest = async (track: LibraryTrack) => {
+    if (suggestingMbid) return;
+    setSuggestingMbid(track.mbid);
+    try {
+      // Read on demand rather than caching at screen mount: Settings can be
+      // edited while Songs remains mounted, and this action should use the
+      // newly saved host immediately.
+      const config = await fetchConfig();
+      const host = suggestionHostFromConfig(config.config);
+      if (!host) {
+        toast.show(
+          `${SUGGESTION_HOST_KEY} is not configured. Opening Settings.`,
+          "err",
+        );
+        onOpenSettings(SUGGESTION_HOST_KEY);
+        return;
+      }
+
+      const result = await postSuggestions([
+        { artist: track.artist, title: track.title, mbid: track.mbid },
+      ]);
+      if (!result.success) {
+        toast.show(result.message || "Suggestion failed", "err");
+        return;
+      }
+      const label = `${track.artist} — ${track.title}`;
+      if (result.queued > 0) {
+        toast.show(`Suggested ${label} to Jellyfin.`);
+      } else if (result.skipped > 0) {
+        toast.show(`${label} is already queued on the host.`);
+      } else {
+        toast.show(`Sent ${label} to the host.`);
+      }
+    } catch (e) {
+      toast.show(`Suggestion failed: ${String(e)}`, "err");
+    } finally {
+      setSuggestingMbid(null);
+    }
+  };
+
   const handleIdentify = async (track: LibraryTrack) => {
     if (identifying) return;
     setIdentifying(true);
@@ -393,6 +496,30 @@ export default function SongsScreen({
           kind: "item",
           label: "Queue Download",
           onSelect: () => handleQueueDownload(menu.track.mbid),
+        },
+        {
+          kind: "item",
+          label:
+            suggestingMbid === menu.track.mbid
+              ? "Suggesting…"
+              : "Suggest to Jellyfin",
+          disabled: suggestingMbid !== null,
+          onSelect: () => handleSuggest(menu.track),
+        },
+        {
+          kind: "item",
+          label:
+            contributingMbid === menu.track.mbid
+              ? "Contributing…"
+              : "Contribute to master",
+          // Only a true local row has bytes this device can promise or upload.
+          // Drive/catalog rows are playable through another source but do not
+          // have a local_path accepted by /api/contribute/track.
+          disabled:
+            !canContributeToMaster ||
+            menu.track.availability !== "local" ||
+            contributingMbid !== null,
+          onSelect: () => handleContribute(menu.track),
         },
         {
           kind: "item",

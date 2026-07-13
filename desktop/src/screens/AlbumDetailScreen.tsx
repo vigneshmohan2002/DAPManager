@@ -37,6 +37,13 @@ export default function AlbumDetailScreen({
 
   useEffect(() => {
     let cancelled = false;
+    // Search can replace one open album with another without unmounting this
+    // screen. Clear the previous album's rows/count before loading the next.
+    setLoading(true);
+    setError(null);
+    setTracks([]);
+    setBase("");
+    setSearch("");
     (async () => {
       try {
         const [url, data] = await Promise.all([
@@ -62,6 +69,12 @@ export default function AlbumDetailScreen({
         t.title.toLowerCase().includes(search.trim().toLowerCase()),
       )
     : tracks;
+
+  const trackSummary = loading
+    ? "Loading tracks…"
+    : error
+      ? "Track count unavailable"
+      : `${tracks.length} ${tracks.length === 1 ? "track" : "tracks"}`;
 
   const playFrom = (startIndex: number) => {
     const withAlbum = tracks.map((t) => ({ ...t, albumId: album.id }));
@@ -112,7 +125,7 @@ export default function AlbumDetailScreen({
             </div>
             <h2 className="text-3xl font-bold truncate">{album.title}</h2>
             <div className="text-sm text-[var(--color-text-muted)] mt-1">
-              {album.artist} · {album.track_count} tracks
+              {album.artist} · {trackSummary}
             </div>
             <div className="mt-4 flex gap-2">
               <button

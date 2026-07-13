@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import AlbumCard from "../components/AlbumCard";
 import TopBar from "../components/TopBar";
+import { useToast } from "../components/Toast";
 import { albumCoverUrl, backendUrl, fetchAlbums, type Album } from "../lib/api";
+import { usePlayer } from "../player/PlayerContext";
 
 type Props = {
   ready: boolean;
@@ -14,6 +16,17 @@ export default function AlbumsScreen({ ready, onOpen }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const { playAlbum } = usePlayer();
+  const toast = useToast();
+
+  const handlePlayAlbum = async (album: Album) => {
+    try {
+      const count = await playAlbum(album.id);
+      if (count === 0) toast.show("No playable tracks in this album.", "err");
+    } catch (e) {
+      toast.show(`Could not play album: ${e}`, "err");
+    }
+  };
 
   useEffect(() => {
     if (!ready) return;
@@ -70,6 +83,7 @@ export default function AlbumsScreen({ ready, onOpen }: Props) {
                 album={a}
                 coverUrl={albumCoverUrl(base, a.id)}
                 onClick={() => onOpen(a)}
+                onDoubleClick={() => void handlePlayAlbum(a)}
               />
             ))}
           </div>

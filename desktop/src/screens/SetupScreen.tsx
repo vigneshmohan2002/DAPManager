@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   detectPublicUrl,
+  fetchSatelliteBundleLink,
+  restartBackend,
   saveSetupConfig,
   validatePath,
   type SetupPayload,
@@ -131,6 +133,12 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copyLabel, setCopyLabel] = useState("Copy link");
+  const [downloadLink, setDownloadLink] = useState<string | null>(null);
+  const [bundleLinkError, setBundleLinkError] = useState<string | null>(null);
+  // If a restart leaves no backend running, the config is already on disk and
+  // the next click must retry the Tauri restart directly (there is no HTTP
+  // server available to accept a duplicate save first).
+  const [restartOnly, setRestartOnly] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const set = (key: keyof Form, value: string | boolean) =>
@@ -178,6 +186,9 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
     if (step === 2 && form.role === "satellite") {
       return form.master_url.trim().length > 0;
     }
+    if (step === 4 && form.role === "master") {
+      return form.api_token.trim().length > 0;
+    }
     return true;
   };
 
@@ -186,54 +197,88 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
       // Save before showing Done
       setSaving(true);
       setSaveError(null);
-      const payload: SetupPayload = {
-        role: form.role,
-        music_library_path: form.music_library_path.trim(),
-        downloads_path: form.downloads_path.trim(),
-        ...(form.dap_mount_point.trim() && {
-          dap_mount_point: form.dap_mount_point.trim(),
-        }),
-        ...(form.master_url.trim() && { master_url: form.master_url.trim() }),
-        ...(form.public_master_url.trim() && {
-          public_master_url: form.public_master_url.trim(),
-        }),
-        ...(form.device_name.trim() && { device_name: form.device_name.trim() }),
-        ...(form.slsk_username.trim() && {
-          slsk_username: form.slsk_username.trim(),
-          slsk_password: form.slsk_password.trim(),
-        }),
-        ...(form.jellyfin_url.trim() && {
-          jellyfin_url: form.jellyfin_url.trim(),
-          jellyfin_api_key: form.jellyfin_api_key.trim(),
-          jellyfin_user_id: form.jellyfin_user_id.trim(),
-        }),
-        ...(form.lidarr_url.trim() && {
-          lidarr_url: form.lidarr_url.trim(),
-          lidarr_api_key: form.lidarr_api_key.trim(),
-          lidarr_enabled: true,
-        }),
-        ...(form.acoustid_api_key.trim() && {
-          acoustid_api_key: form.acoustid_api_key.trim(),
-        }),
-        ...(form.contact_email.trim() && {
-          contact_email: form.contact_email.trim(),
-        }),
-        ...(form.api_token.trim() && { api_token: form.api_token.trim() }),
-      };
-      const result = await saveSetupConfig(payload);
-      setSaving(false);
-      if (!result.success) {
-        setSaveError(result.message ?? "Save failed");
+      try {
+        if (restartOnly) {
+          const recovered = await restartBackend();
+          if (!recovered.success) {
+            setRestartOnly(!recovered.backend_running);
+            setSaveError(recovered.message);
+            return;
+          }
+          setRestartOnly(false);
+        }
+
+        const payload: SetupPayload = {
+          role: form.role,
+          music_library_path: form.music_library_path.trim(),
+          downloads_path: form.downloads_path.trim(),
+          ...(form.dap_mount_point.trim() && {
+            dap_mount_point: form.dap_mount_point.trim(),
+          }),
+          ...(form.master_url.trim() && { master_url: form.master_url.trim() }),
+          ...(form.public_master_url.trim() && {
+            public_master_url: form.public_master_url.trim(),
+          }),
+          ...(form.device_name.trim() && { device_name: form.device_name.trim() }),
+          ...(form.slsk_username.trim() && {
+            slsk_username: form.slsk_username.trim(),
+            slsk_password: form.slsk_password.trim(),
+          }),
+          ...(form.jellyfin_url.trim() && {
+            jellyfin_url: form.jellyfin_url.trim(),
+            jellyfin_api_key: form.jellyfin_api_key.trim(),
+            jellyfin_user_id: form.jellyfin_user_id.trim(),
+          }),
+          ...(form.lidarr_url.trim() && {
+            lidarr_url: form.lidarr_url.trim(),
+            lidarr_api_key: form.lidarr_api_key.trim(),
+            lidarr_enabled: true,
+          }),
+          ...(form.acoustid_api_key.trim() && {
+            acoustid_api_key: form.acoustid_api_key.trim(),
+          }),
+          ...(form.contact_email.trim() && {
+            contact_email: form.contact_email.trim(),
+          }),
+          ...(form.api_token.trim() && { api_token: form.api_token.trim() }),
+        };
+        const result = await saveSetupConfig(payload);
+        if (!result.success) {
+          setSaveError(result.message ?? "Save failed");
+          return;
+        }
+
+        const restarted = await restartBackend();
+        if (!restarted.success) {
+          setRestartOnly(!restarted.backend_running);
+          setSaveError(restarted.message);
+          return;
+        }
+        setRestartOnly(false);
+
+        if (form.role === "master" && form.public_master_url.trim()) {
+          try {
+            const bundle = await fetchSatelliteBundleLink();
+            setDownloadLink(bundle.url);
+            setBundleLinkError(null);
+          } catch (e) {
+            setDownloadLink(null);
+            setBundleLinkError(String(e));
+            // Config and secure binding are complete; the share link can be
+            // repaired later by updating public_master_url in Settings.
+          }
+        }
+      } catch (e) {
+        setSaveError(`Setup failed: ${String(e)}`);
         return;
+      } finally {
+        setSaving(false);
       }
+      setStep((s) => s + 1);
+      return;
     }
     setStep((s) => s + 1);
   };
-
-  const downloadLink =
-    form.public_master_url.trim()
-      ? `${form.public_master_url.trim().replace(/\/$/, "")}/download/mac${form.api_token.trim() ? `?token=${form.api_token.trim()}` : ""}`
-      : null;
 
   const handleCopy = () => {
     if (!downloadLink) return;
@@ -290,6 +335,7 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
           <StepDone
             form={form}
             downloadLink={downloadLink}
+            bundleLinkError={bundleLinkError}
             copyLabel={copyLabel}
             onCopy={handleCopy}
             onFinish={onDone}
@@ -505,6 +551,7 @@ function StepConnection({
   onAutoDetect: () => void;
 }) {
   const isSatellite = form.role === "satellite";
+  const isMaster = form.role === "master";
 
   return (
     <div className="flex flex-col gap-4">
@@ -529,11 +576,11 @@ function StepConnection({
             optional
           />
         </>
-      ) : (
+      ) : isMaster ? (
         <>
           <p className="text-sm text-[var(--color-text-muted)]">
-            The public URL satellites use to reach this master. Leave blank
-            if you don't plan to set up other devices now.
+            The public URL satellites use to reach this Master. The authenticated
+            desktop backend will listen on LAN/Tailscale after setup.
           </p>
           <div className="flex flex-col gap-1">
             <label className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
@@ -566,6 +613,14 @@ function StepConnection({
             </p>
           </div>
         </>
+      ) : (
+        <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)]/40 px-4 py-3">
+          <p className="text-sm text-[var(--color-text)]">Local-only mode</p>
+          <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+            Standalone keeps its API on 127.0.0.1 and does not accept satellite
+            connections. No public URL is needed.
+          </p>
+        </div>
       )}
     </div>
   );
@@ -695,16 +750,20 @@ function StepAuth({
   onGenerate: () => void;
   saveError: string | null;
 }) {
+  const masterRequiresToken = form.role === "master";
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-[var(--color-text-muted)]">
-        Add a bearer token to require authentication on all API routes. Leave
-        blank for open LAN mode.
+        {masterRequiresToken
+          ? "A bearer token is required for Desktop Master. Once saved, the authenticated API listens on LAN/Tailscale as well as this Mac."
+          : "Add a bearer token to require authentication on local API routes. Tokenless satellite and standalone installs remain loopback-only."}
       </p>
       <div className="flex flex-col gap-1">
         <label className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
           API token
-          <span className="text-[10px] opacity-60">(optional)</span>
+          <span className="text-[10px] opacity-60">
+            {masterRequiresToken ? "(required)" : "(optional)"}
+          </span>
         </label>
         <div className="flex gap-2">
           <input
@@ -712,7 +771,11 @@ function StepAuth({
             className="flex-1 px-3 py-2 rounded bg-[var(--color-surface)] border border-[var(--color-border)] text-sm text-[var(--color-text)] font-mono placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)]"
             value={form.api_token}
             onChange={(e) => set("api_token", e.target.value)}
-            placeholder="leave blank for open mode"
+            placeholder={
+              masterRequiresToken
+                ? "generate or enter a strong token"
+                : "optional in local-only mode"
+            }
             autoComplete="new-password"
             spellCheck={false}
           />
@@ -724,8 +787,9 @@ function StepAuth({
           </button>
         </div>
         <p className="text-[11px] text-[var(--color-text-muted)]">
-          When set, all satellites and API clients must include this token.
-          Treat it like a password.
+          {masterRequiresToken
+            ? "Every satellite and API client must use this token. Treat it like a password."
+            : "When set, local API clients must include this token. Treat it like a password."}
         </p>
       </div>
       {saveError && (
@@ -742,17 +806,20 @@ function StepAuth({
 function StepDone({
   form,
   downloadLink,
+  bundleLinkError,
   copyLabel,
   onCopy,
   onFinish,
 }: {
   form: Form;
   downloadLink: string | null;
+  bundleLinkError: string | null;
   copyLabel: string;
   onCopy: () => void;
   onFinish: () => void;
 }) {
   const isSatellite = form.role === "satellite";
+  const isMaster = form.role === "master";
 
   return (
     <div className="flex flex-col gap-4">
@@ -764,11 +831,13 @@ function StepDone({
         <p className="text-sm text-[var(--color-text-muted)] mt-1">
           {isSatellite
             ? `Syncing with ${form.master_url || "your master"}`
-            : "Your library is set up and ready to go."}
+            : isMaster
+              ? "Your authenticated Master is ready for LAN/Tailscale satellites."
+              : "Your local-only library is set up and ready to go."}
         </p>
       </div>
 
-      {!isSatellite && downloadLink && (
+      {isMaster && downloadLink && (
         <div className="flex flex-col gap-2 mt-2">
           <p className="text-xs text-[var(--color-text-muted)]">
             Share this link to let other Macs set up as satellites:
@@ -788,13 +857,19 @@ function StepDone({
           </div>
           {form.api_token && (
             <p className="text-[11px] text-amber-400/80">
-              This link contains your API token — treat it like a credential.
+              This download-only link expires in one hour.
             </p>
           )}
         </div>
       )}
 
-      {!isSatellite && !downloadLink && (
+      {isMaster && bundleLinkError && (
+        <p className="text-sm text-red-400 text-center">
+          Could not create a satellite link: {bundleLinkError}
+        </p>
+      )}
+
+      {isMaster && !downloadLink && !bundleLinkError && (
         <p className="text-sm text-[var(--color-text-muted)] text-center">
           You can configure a public URL later in Settings → Master to enable
           satellite distribution.

@@ -29,8 +29,17 @@ export default function ArtistDetailScreen({ artist, onBack, onOpenAlbum }: Prop
   const [info, setInfo] = useState<ArtistInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(true);
   const [radioLoading, setRadioLoading] = useState(false);
-  const { play } = usePlayer();
+  const { play, playAlbum } = usePlayer();
   const toast = useToast();
+
+  const handlePlayAlbum = async (album: Album) => {
+    try {
+      const count = await playAlbum(album.id);
+      if (count === 0) toast.show("No playable tracks in this album.", "err");
+    } catch (e) {
+      toast.show(`Could not play album: ${e}`, "err");
+    }
+  };
 
   const handleRadio = async () => {
     setRadioLoading(true);
@@ -180,6 +189,7 @@ export default function ArtistDetailScreen({ artist, onBack, onOpenAlbum }: Prop
                 album={a}
                 coverUrl={albumCoverUrl(base, a.id)}
                 onClick={() => onOpenAlbum(a)}
+                onDoubleClick={() => void handlePlayAlbum(a)}
               />
             ))}
           </div>

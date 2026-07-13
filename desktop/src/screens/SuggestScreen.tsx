@@ -5,14 +5,14 @@ import {
   fetchConfig,
   parseManualSuggestions,
   postSuggestions,
+  SUGGESTION_HOST_KEY,
+  suggestionHostFromConfig,
 } from "../lib/api";
 
 type Props = {
   ready: boolean;
   onOpenSettings: (focusKey?: string) => void;
 };
-
-const HOST_KEY = "master_url";
 
 export default function SuggestScreen({ ready, onOpenSettings }: Props) {
   const [host, setHost] = useState<string | null>(null);
@@ -28,9 +28,7 @@ export default function SuggestScreen({ ready, onOpenSettings }: Props) {
       try {
         const cfg = await fetchConfig();
         if (cancelled) return;
-        const raw = cfg.config[HOST_KEY];
-        const value = typeof raw === "string" ? raw.trim() : "";
-        setHost(value || null);
+        setHost(suggestionHostFromConfig(cfg.config));
         setHostError(null);
       } catch (e) {
         if (!cancelled) setHostError(String(e));
@@ -47,7 +45,7 @@ export default function SuggestScreen({ ready, onOpenSettings }: Props) {
   const handleSend = async () => {
     if (!host || items.length === 0) return;
     setSending(true);
-    const result = await postSuggestions(host, items);
+    const result = await postSuggestions(items);
     setSending(false);
     if (!result.success) {
       toast.show(result.message || "Suggestion failed", "err");
@@ -74,7 +72,9 @@ export default function SuggestScreen({ ready, onOpenSettings }: Props) {
           <div className="rounded-md border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 px-4 py-3 text-sm">
             <div className="text-[var(--color-text)] mb-2">
               Set{" "}
-              <code className="text-[var(--color-accent)]">{HOST_KEY}</code> in
+              <code className="text-[var(--color-accent)]">
+                {SUGGESTION_HOST_KEY}
+              </code> in
               Settings (e.g.{" "}
               <code className="text-[var(--color-accent)]">
                 http://jellyfin.local:5001
@@ -82,7 +82,7 @@ export default function SuggestScreen({ ready, onOpenSettings }: Props) {
               ) to point this device at the host's DAPManager.
             </div>
             <button
-              onClick={() => onOpenSettings(HOST_KEY)}
+              onClick={() => onOpenSettings(SUGGESTION_HOST_KEY)}
               className="px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-semibold hover:brightness-110"
             >
               Open Settings
