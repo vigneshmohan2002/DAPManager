@@ -1,13 +1,15 @@
 """
 OpenAPI 3.0 spec for the DAPManager HTTP API, served at ``/api/openapi.json``
-and rendered by Swagger UI at ``/docs``.
+and rendered by the offline interactive explorer at ``/docs``.
 
 This is hand-authored (no decorators) so it stays dependency-free and can be
 read *before* the app is configured — the whole point is to let a browser
 agent (e.g. Claude Cowork) discover the setup flow from a fresh install.
 
-Keep it in sync when adding/altering public endpoints; it's covered by a test
-that cross-checks documented paths against the Flask URL map.
+It intentionally covers the stable setup, sync, contribution, sharing, and
+metadata workflows rather than every desktop-UI implementation route.  A
+two-way URL-map test keeps both this core set and the explicit internal-route
+allowlist honest when endpoints are added or removed.
 """
 
 from typing import Optional
@@ -15,12 +17,78 @@ from typing import Optional
 # Endpoints intentionally omitted from the spec (internal, legacy, or
 # media/streaming routes that don't help an agent set the system up). The
 # coverage test allows these to be undocumented.
-UNDOCUMENTED_PATHS = frozenset()
+UNDOCUMENTED_PATHS = frozenset({
+    "/api/albums/complete",
+    "/api/audit",
+    "/api/audit/details",
+    "/api/audit/queue",
+    "/api/audit/results",
+    "/api/catalog",
+    "/api/catalog/link-local",
+    "/api/catalog/pull",
+    "/api/catalog/queue-download",
+    "/api/download",
+    "/api/download/request",
+    "/api/downloads/clear-completed",
+    "/api/downloads/list",
+    "/api/downloads/{}",
+    "/api/downloads/{}/retry",
+    "/api/duplicates",
+    "/api/duplicates/resolve",
+    "/api/fleet/summary",
+    "/api/fleet/track",
+    "/api/install_slsk",
+    "/api/inventory",
+    "/api/jellyfin/pull",
+    "/api/library/albums",
+    "/api/library/albums/{}/cover",
+    "/api/library/albums/{}/tracks",
+    "/api/library/artists",
+    "/api/library/artists/{}/info",
+    "/api/library/artists/{}/radio",
+    "/api/library/consolidate-editions",
+    "/api/library/home",
+    "/api/library/play-stats",
+    "/api/library/playlists",
+    "/api/library/playlists/{}",
+    "/api/library/plays",
+    "/api/library/retag-files",
+    "/api/library/scrub-dangling",
+    "/api/library/search",
+    "/api/library/split-albums",
+    "/api/library/split-albums/dismiss",
+    "/api/library/split-albums/merge",
+    "/api/library/tracks/{}/like",
+    "/api/library/tracks/{}/lyrics",
+    "/api/library/wrapped",
+    "/api/lyrics",
+    "/api/openapi.json",
+    "/api/orphans/playlists",
+    "/api/orphans/tracks",
+    "/api/playlists",
+    "/api/playlists/pull",
+    "/api/playlists/push",
+    "/api/playlists/queue",
+    "/api/playlists/{}",
+    "/api/playlists/{}/restore",
+    "/api/releases/wanted",
+    "/api/scan",
+    "/api/stats",
+    "/api/status",
+    "/api/stream/{}",
+    "/api/sync",
+    "/api/tag/apply/{}",
+    "/api/tag/identify/{}",
+    "/api/tracks/needs-review",
+    "/api/tracks/{}",
+    "/api/tracks/{}/file",
+    "/api/tracks/{}/restore",
+})
 
 
 def build_spec(server_url: Optional[str] = None) -> dict:
     """Return the OpenAPI document. ``server_url`` defaults to a relative
-    root so Swagger UI uses whatever origin served the page."""
+    root so the interactive explorer uses whatever origin served the page."""
     ok = {
         "description": "Success",
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessEnvelope"}}},
@@ -45,6 +113,8 @@ def build_spec(server_url: Optional[str] = None) -> dict:
             {"name": "Config", "description": "Read/update config after setup."},
             {"name": "Sync", "description": "Catalog/playlist sync between satellite and master."},
             {"name": "Contributions", "description": "Push local tracks from a satellite up to the master."},
+            {"name": "Suggestions", "description": "Queue track suggestions on a configured master."},
+            {"name": "Metadata", "description": "MusicBrainz artist tags and generated mixes."},
             {"name": "Library", "description": "Browse the catalog."},
             {"name": "Health", "description": "Liveness / status."},
         ],
@@ -106,6 +176,14 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                     "responses": {"200": ok},
                 }
             },
+            "/api/satellite-bundle-link": {
+                "get": {
+                    "tags": ["Setup"],
+                    "summary": "Mint a short-lived Mac satellite download URL",
+                    "description": "Returns a one-hour bundle-scoped URL without placing the general API token in the sharing link.",
+                    "responses": {"200": ok, "409": err("public_master_url not configured")},
+                }
+            },
             "/api/save_config": {
                 "post": {
                     "tags": ["Setup"],
@@ -165,6 +243,30 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                     "responses": {"200": ok},
                 }
             },
+            "/api/artist-tags": {
+                "get": {
+                    "tags": ["Sync"],
+                    "summary": "Artist-tag delta for satellite synchronization",
+                    "description": "Returns complete per-artist tag snapshots updated after the optional cursor. Empty tag arrays preserve cached MusicBrainz misses.",
+                    "parameters": [{
+                        "name": "since", "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Previous response's as_of timestamp",
+                    }],
+                    "responses": {"200": {
+                        "description": "Artist-tag delta",
+                        "content": {"application/json": {"schema": {
+                            "type": "object",
+                            "properties": {
+                                "success": {"type": "boolean"},
+                                "as_of": {"type": "string"},
+                                "count": {"type": "integer"},
+                                "artist_tags": {"type": "array", "items": {"$ref": "#/components/schemas/ArtistTagSnapshot"}},
+                            },
+                        }}},
+                    }},
+                }
+            },
             "/api/contribute": {
                 "post": {
                     "tags": ["Contributions"],
@@ -221,6 +323,14 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                     }, "400": err("artist and title required")},
                 },
             },
+            "/api/contributed": {
+                "get": {
+                    "tags": ["Contributions"],
+                    "summary": "List this satellite's outgoing offers",
+                    "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "default": 200, "maximum": 500}}],
+                    "responses": {"200": ok},
+                }
+            },
             "/api/contributions/{id}": {
                 "get": {
                     "tags": ["Contributions"],
@@ -270,6 +380,49 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                         {"name": "include_orphans", "in": "query", "schema": {"type": "string", "enum": ["1"]}},
                     ],
                     "responses": {"200": ok},
+                }
+            },
+            "/api/library/tags/backfill": {
+                "post": {
+                    "tags": ["Metadata"],
+                    "summary": "Refresh MusicBrainz artist tags (master only)",
+                    "description": "Starts a background task. Incremental mode skips artists with a fresh cache row.",
+                    "requestBody": {"content": {"application/json": {"schema": {
+                        "type": "object",
+                        "properties": {"incremental": {"type": "boolean", "default": True}},
+                    }}}},
+                    "responses": {"200": ok, "400": err("master only")},
+                }
+            },
+            "/api/library/daily-mixes/regenerate": {
+                "post": {
+                    "tags": ["Metadata"],
+                    "summary": "Regenerate Daily Mix playlists (master only)",
+                    "description": "Rebuilds reserved Daily Mix playlists from listening history and cached artist tags.",
+                    "responses": {"200": ok, "400": err("master only")},
+                }
+            },
+            "/api/suggestions": {
+                "post": {
+                    "tags": ["Suggestions"],
+                    "summary": "Accept suggestions and queue them on this device",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "required": ["items"],
+                        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Suggestion"}}},
+                    }}}},
+                    "responses": {"200": ok},
+                }
+            },
+            "/api/suggestions/forward": {
+                "post": {
+                    "tags": ["Suggestions"],
+                    "summary": "Forward suggestions to this device's configured master",
+                    "description": "Local desktop proxy that avoids a cross-origin browser request to master_url.",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "required": ["items"],
+                        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Suggestion"}}},
+                    }}}},
+                    "responses": {"200": ok, "400": err("items array required"), "409": err("master_url not configured"), "502": err("master unreachable")},
                 }
             },
         },
@@ -377,6 +530,34 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                         "updated_at": {"type": "string"},
                     },
                 },
+                "ArtistTagSnapshot": {
+                    "type": "object",
+                    "required": ["artist_name", "tags", "fetched_at"],
+                    "properties": {
+                        "artist_name": {"type": "string"},
+                        "mbid": {"type": "string", "nullable": True},
+                        "fetched_at": {"type": "string"},
+                        "tags": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tag": {"type": "string"},
+                                    "weight": {"type": "integer"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "Suggestion": {
+                    "type": "object",
+                    "properties": {
+                        "mbid": {"type": "string"},
+                        "artist": {"type": "string"},
+                        "title": {"type": "string"},
+                        "search_query": {"type": "string"},
+                    },
+                },
                 "ContributeOneResult": {
                     "type": "object",
                     "properties": {
@@ -406,7 +587,9 @@ local subset and can contribute music they acquired independently.
 
 ## Auth
 When `api_token` is set in config, every `/api/*` call (except `/api/healthz`,
-`/api/status`, and this spec) needs `Authorization: Bearer <token>`. In open
+`/api/status`, and this spec) needs `Authorization: Bearer <token>`. The web UI
+uses `/auth` to establish an HttpOnly same-site cookie instead of embedding the
+secret in HTML; GET/HEAD also accept `?token=` for browser media URLs. In open
 mode (no token) the API is unauthenticated — LAN/Tailscale only.
 
 ## Contribution flow (satellite → master)

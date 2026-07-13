@@ -4,35 +4,68 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DAP Manager — API Docs</title>
-    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
-    <style>
-        body { margin: 0; background: #fafafa; }
-        .topbar { display: none; }
-        .dap-banner {
-            font-family: -apple-system, system-ui, sans-serif;
-            background: #1f2933; color: #fff; padding: 10px 18px; font-size: 14px;
-        }
-        .dap-banner a { color: #7fd1ff; }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='api-docs.css') }}">
 </head>
 <body>
-    <div class="dap-banner">
-        DAP Manager API — interactive docs.
-        Spec: <a href="/api/openapi.json">/api/openapi.json</a>.
-        New install? Start with <code>GET /api/setup/status</code> then
-        <code>POST /api/save_config</code>.
-    </div>
-    <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-    <script>
-        window.ui = SwaggerUIBundle({
-            url: '/api/openapi.json',
-            dom_id: '#swagger-ui',
-            deepLinking: true,
-            tryItOutEnabled: true,
-            presets: [SwaggerUIBundle.presets.apis],
-            layout: 'BaseLayout',
-        });
-    </script>
+    <header class="dap-banner">
+        <div>
+            <h1>DAP Manager API</h1>
+            <p>Offline interactive documentation generated from the live OpenAPI specification.</p>
+        </div>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/api/openapi.json">OpenAPI JSON</a>
+        </nav>
+    </header>
+
+    <main>
+        <aside>
+            <label for="filter">Filter endpoints</label>
+            <input id="filter" type="search" placeholder="track, sync, playlist…" autocomplete="off">
+            <div id="endpoint-nav" aria-live="polite"></div>
+        </aside>
+        <section id="content">
+            <div id="loading">Loading API specification…</div>
+        </section>
+    </main>
+
+    <template id="operation-template">
+        <article class="operation">
+            <button class="operation-heading" type="button" aria-expanded="false">
+                <span class="method"></span>
+                <code class="path"></code>
+                <span class="summary"></span>
+                <span class="chevron">⌄</span>
+            </button>
+            <div class="operation-body" hidden>
+                <p class="description"></p>
+                <form class="try-form">
+                    <div class="parameters"></div>
+                    <label class="body-field" hidden>
+                        JSON request body
+                        <textarea rows="8" spellcheck="false"></textarea>
+                    </label>
+                    <label class="file-field" hidden>
+                        Audio file
+                        <input type="file" name="file">
+                    </label>
+                    <label class="token-field">
+                        Bearer token <span>(optional)</span>
+                        <input name="token" type="password" autocomplete="off" placeholder="api_token">
+                    </label>
+                    <div class="actions">
+                        <button class="execute" type="submit">Execute</button>
+                        <span class="request-url"></span>
+                    </div>
+                </form>
+                <div class="response" hidden>
+                    <div class="response-meta"></div>
+                    <pre></pre>
+                </div>
+            </div>
+        </article>
+    </template>
+
+    <script src="{{ url_for('static', filename='api-docs.js') }}" defer></script>
 </body>
 </html>
