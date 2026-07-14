@@ -2,7 +2,14 @@ import pytest
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
-from src.downloader import Downloader, main_run_downloader
+from src.downloader import (
+    Downloader,
+    build_download_command,
+    cleanup_empty_download_directories,
+    discover_downloaded_audio,
+    main_run_downloader,
+    parse_download_query,
+)
 from src.db_manager import DatabaseManager, DownloadItem, Track
 
 
@@ -52,6 +59,61 @@ def test_downloader_initialization(downloader, temp_dirs):
     assert downloader.music_library_dir == temp_dirs["music_library"]
     assert downloader.slsk_username == "test_user"
     assert downloader.slsk_password == "test_pass"
+
+
+def test_build_download_command_preserves_single_track_flags():
+    command, album_mode = build_download_command(
+        ["sldl"],
+        "user",
+        "pass",
+        "Artist - Song",
+        "/downloads",
+        "/music",
+        {
+            "fast_search": True,
+            "remove_ft": True,
+            "desperate_mode": True,
+            "strict_quality": True,
+        },
+    )
+
+    assert album_mode is False
+    assert command == [
+        "sldl", "--user", "user", "--pass", "pass", "--input",
+        "Artist - Song", "-p", "/downloads", "--format", "flac",
+        "--fast-search", "--remove-ft", "--desperate",
+        "--strict-conditions", "--pref-format", "flac,wav",
+    ]
+
+
+def test_build_download_command_preserves_album_mode():
+    assert parse_download_query("::ALBUM:: Artist - Album") == (
+        "Artist - Album", True
+    )
+    command, album_mode = build_download_command(
+        ["sldl"], "u", "p", "::ALBUM:: Artist - Album",
+        "/downloads", "/music", {},
+    )
+
+    assert album_mode is True
+    assert command[-3:] == ["--album", "--skip-music-dir", "/music"]
+    assert "--format" not in command
+
+
+def test_download_file_discovery_and_empty_cleanup(tmp_path):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "song.FLAC").write_bytes(b"audio")
+    (nested / "cover.jpg").write_bytes(b"image")
+
+    assert discover_downloaded_audio(str(tmp_path)) == [
+        str(nested / "song.FLAC")
+    ]
+
+    (nested / "song.FLAC").unlink()
+    (nested / "cover.jpg").unlink()
+    cleanup_empty_download_directories(str(tmp_path))
+    assert not nested.exists()
 
 
 @patch('subprocess.Popen')
@@ -193,6 +255,60 @@ def test_process_success_with_files(mock_walk, mock_move, mock_mutagen, download
     # Verify item was removed from queue
     items = db.get_all_downloads()
     assert len(items) == 0
+
+
+def test_process_success_uses_shared_ingest_and_stamps_tag_tier(
+    db, temp_dirs
+):
+    class Scanner:
+        def process_file(self, path):
+            if db.get_track_by_path(path):
+                return "skipped"
+            db.add_or_update_track(Track(
+                mbid="download-mbid",
+                title="Scanner Title",
+                artist="Scanner Artist",
+                album="Scanner Album",
+                local_path=path,
+            ))
+            return "processed"
+
+    dl = Downloader(
+        db=db,
+        scanner=Scanner(),
+        slsk_cmd_base=["sldl"],
+        downloads_dir=temp_dirs["downloads"],
+        music_library_dir=temp_dirs["music_library"],
+        slsk_username="u",
+        slsk_password="p",
+    )
+    src = os.path.join(temp_dirs["downloads"], "raw.flac")
+    with open(src, "wb") as handle:
+        handle.write(b"audio")
+    dl._auto_tag_file = MagicMock(return_value=(
+        {
+            "artist": "Sort Artist",
+            "album": "Sort Album",
+            "title": "Sort Title",
+            "track_number": 3,
+        },
+        "green",
+        0.99,
+    ))
+    item = DownloadItem(
+        id=123,
+        search_query="Artist - Song",
+        playlist_id="playlist",
+        mbid_guess="queue-mbid",
+    )
+
+    with patch("mutagen.File", return_value=MagicMock()):
+        dl._process_success(item)
+
+    track = db.get_track_by_mbid("download-mbid")
+    assert track.local_path.endswith("Sort Artist/Sort Album/03 Sort Title.flac")
+    assert track.tag_tier == "green"
+    assert track.tag_score == 0.99
 
 
 def _downloader_with_key(db, temp_dirs, scanner=None):

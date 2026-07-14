@@ -1,7 +1,7 @@
 import os
 
 from src.db_manager import DatabaseManager, Track
-from src.file_ingest import ingest_audio_file
+from src.file_ingest import ingest_audio_file, ingest_downloaded_audio_file
 
 
 class FakeScanner:
@@ -17,6 +17,19 @@ class FakeScanner:
             t = self.track
             t.local_path = path
             self.db.add_or_update_track(t)
+
+
+class PublicScanner(FakeScanner):
+    def __init__(self, db, track=None):
+        super().__init__(db, track)
+        self.processed = []
+
+    def process_file(self, path):
+        self.processed.append(path)
+        return super()._process_file(path)
+
+    def _process_file(self, path):
+        raise AssertionError("legacy scanner API should not be selected")
 
 
 def test_ingest_moves_file_and_links_track(tmp_path):
@@ -59,4 +72,44 @@ def test_ingest_falls_back_to_contribution_identity(tmp_path):
     assert dest.endswith("Aphex Twin/SAW 85-92/Xtal.flac")
     assert os.path.exists(dest)
     assert db.get_track_local_path("mb-y") == dest
+    db.close()
+
+
+def test_ingest_prefers_public_scanner_entry_point(tmp_path):
+    db = DatabaseManager(":memory:")
+    src = tmp_path / "raw.flac"
+    src.write_bytes(b"audio")
+    scanner = PublicScanner(db, Track(
+        mbid="mb-public", title="Public", artist="API", album="Scanner",
+    ))
+
+    dest = ingest_audio_file(db, scanner, str(tmp_path / "music"), str(src))
+
+    assert scanner.processed == [str(src)]
+    assert db.get_track_local_path("mb-public") == dest
+    db.close()
+
+
+def test_download_ingest_preserves_sort_identity_and_links_scanned_row(tmp_path):
+    db = DatabaseManager(":memory:")
+    src = tmp_path / "raw.flac"
+    src.write_bytes(b"audio")
+    scanner = FakeScanner(db, Track(
+        mbid="mb-download", title="Scanner Title", artist="Scanner Artist",
+        album="Scanner Album", track_number=9,
+    ))
+
+    dest = ingest_downloaded_audio_file(
+        db,
+        scanner,
+        str(tmp_path / "music"),
+        str(src),
+        artist="Sort Artist",
+        album="Sort Album",
+        title="Sort Title",
+        track_number=2,
+    )
+
+    assert dest.endswith("Sort Artist/Sort Album/02 Sort Title.flac")
+    assert db.get_track_local_path("mb-download") == dest
     db.close()

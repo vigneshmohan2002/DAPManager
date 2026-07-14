@@ -2,7 +2,12 @@ import pytest
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
-from src.library_scanner import LibraryScanner, main_scan_library
+from src.library_scanner import (
+    LibraryScanner,
+    main_scan_library,
+    release_track_total,
+    select_release,
+)
 from src.db_manager import DatabaseManager, Track
 
 
@@ -36,6 +41,26 @@ def test_scanner_initialization(scanner):
     """Test scanner initialization."""
     assert scanner.db is not None
     assert isinstance(scanner.resolved_albums, set)
+
+
+def test_select_release_preserves_match_precedence():
+    releases = [
+        {"id": "first", "title": "Other", "status": "Bootleg"},
+        {"id": "official", "title": "Different", "status": "Official"},
+        {"id": "hint", "title": "  Target Album ", "status": "Promotion"},
+    ]
+
+    assert select_release(releases, "target album")["id"] == "hint"
+    assert select_release(releases[:2], "missing")["id"] == "official"
+    assert select_release(releases[:1], "missing")["id"] == "first"
+    assert select_release([], "missing") is None
+
+
+def test_release_track_total_sums_media():
+    assert release_track_total({"release": {"medium-list": [
+        {"track-count": "8"}, {"track-count": 4}
+    ]}}) == 12
+    assert release_track_total({"release": {}}) == 0
 
 
 @patch('os.path.exists')
@@ -152,6 +177,12 @@ def test_process_file_skipped_no_mbid(mock_mediafile, scanner):
         # Process file
         result = scanner._process_file("/test/no_mbid.flac")
         assert result == "skipped"
+
+
+def test_private_process_file_wrapper_delegates_to_public(scanner):
+    with patch.object(scanner, "process_file", return_value="processed") as process:
+        assert scanner._process_file("/test/song.flac") == "processed"
+    process.assert_called_once_with("/test/song.flac")
 
 
 def test_run_picard_tagger(scanner):

@@ -3,21 +3,134 @@
 Download queue processing for DAP Manager.
 """
 
+import logging
 import os
 import subprocess
-import shutil
-import logging
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Any, List, Mapping, Optional, Tuple
+
 from .db_manager import DatabaseManager, DownloadItem, Track
 from .library_scanner import LibraryScanner
 from .utils import write_mbid_to_file
 from .audio_quality import library_path_for_track
+from .file_ingest import file_has_embedded_mbid, ingest_downloaded_audio_file
 from . import tag_service
 from .lidarr_client import LidarrClient, LidarrError
 from .jellyfin_client import JellyfinClient
 from .config_manager import is_authority_config
 
 logger = logging.getLogger(__name__)
+
+DOWNLOADED_AUDIO_EXTENSIONS = (".flac", ".mp3", ".m4a", ".wav", ".ogg")
+
+
+@dataclass(frozen=True)
+class DownloadedMetadata:
+    artist: str
+    album: str
+    title: str
+    track_number: int
+
+
+def parse_download_query(search_query: str) -> Tuple[str, bool]:
+    """Return the sldl query and whether its album-mode marker was present."""
+    if not search_query.startswith("::ALBUM::"):
+        return search_query, False
+    return search_query.replace("::ALBUM::", "").strip(), True
+
+
+def build_download_command(
+    command_base: List[str],
+    username: str,
+    password: str,
+    search_query: str,
+    downloads_dir: str,
+    music_library_dir: str,
+    config: Mapping[str, Any],
+) -> Tuple[List[str], bool]:
+    """Build the exact sldl command previously assembled in the controller."""
+    query, is_album_mode = parse_download_query(search_query)
+    command = list(command_base) + [
+        "--user",
+        username,
+        "--pass",
+        password,
+        "--input",
+        query,
+        "-p",
+        downloads_dir,
+    ]
+
+    if is_album_mode:
+        command.append("--album")
+        command.extend(["--skip-music-dir", music_library_dir])
+    else:
+        command.extend(["--format", "flac"])
+
+    if config.get("fast_search"):
+        command.append("--fast-search")
+    if config.get("remove_ft"):
+        command.append("--remove-ft")
+    if config.get("desperate_mode"):
+        command.append("--desperate")
+    if config.get("strict_quality"):
+        command.append("--strict-conditions")
+        if "--pref-format" not in command:
+            command.extend(["--pref-format", "flac,wav"])
+
+    return command, is_album_mode
+
+
+def discover_downloaded_audio(downloads_dir: str) -> List[str]:
+    """Return supported audio files in the same ``os.walk`` order as before."""
+    return [
+        os.path.join(root, filename)
+        for root, _, files in os.walk(downloads_dir)
+        for filename in files
+        if filename.lower().endswith(DOWNLOADED_AUDIO_EXTENSIONS)
+    ]
+
+
+def cleanup_empty_download_directories(downloads_dir: str) -> None:
+    """Best-effort removal of empty subdirectories after an item finishes."""
+    try:
+        for root, dirs, _ in os.walk(downloads_dir, topdown=False):
+            for name in dirs:
+                try:
+                    os.rmdir(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError as e:
+        logger.debug(f"Empty-dir cleanup failed: {e}")
+
+
+def read_downloaded_metadata(
+    file_path: str, tagged_meta: Optional[Mapping[str, Any]]
+) -> Optional[DownloadedMetadata]:
+    """Read the sort-path identity while retaining legacy tag precedence."""
+    import mutagen
+
+    audio = mutagen.File(file_path)
+    if not audio:
+        return None
+
+    if tagged_meta:
+        artist = str(tagged_meta["artist"])
+        album = str(tagged_meta["album"])
+        title = str(tagged_meta["title"])
+        track_number = tagged_meta.get("track_number", 0)
+    else:
+        artist = str(audio.get("artist", ["Unknown Artist"])[0])
+        album = str(audio.get("album", ["Unknown Album"])[0])
+        title = str(audio.get("title", ["Unknown Title"])[0])
+        track_number = audio["tracknumber"][0] if "tracknumber" in audio else 0
+
+    return DownloadedMetadata(
+        artist=artist,
+        album=album,
+        title=title,
+        track_number=int(track_number) if track_number else 0,
+    )
 
 
 class Downloader:
@@ -153,37 +266,18 @@ class Downloader:
         Calls slsk-batchdl to download a single track or album.
         Streams output to item_callback if provided.
         """
-        query = item.search_query
-        is_album_mode = False
-
-        if query.startswith("::ALBUM::"):
-            is_album_mode = True
-            query = query.replace("::ALBUM::", "").strip()
-            logger.info(f"Detected Album Mode for: {query}")
-
-        command = self.slsk_cmd_base + [
-            "--user", self.slsk_username,
-            "--pass", self.slsk_password,
-            "--input", query,
-            "-p", self.downloads_dir,
-        ]
-
+        command, is_album_mode = build_download_command(
+            self.slsk_cmd_base,
+            self.slsk_username,
+            self.slsk_password,
+            item.search_query,
+            self.downloads_dir,
+            self.music_library_dir,
+            self.slsk_config,
+        )
         if is_album_mode:
-            command.append("--album")
-            command.extend(["--skip-music-dir", self.music_library_dir])
-        else:
-            command.extend(["--format", "flac"])
-
-        if self.slsk_config.get("fast_search"):
-            command.append("--fast-search")
-        if self.slsk_config.get("remove_ft"):
-            command.append("--remove-ft")
-        if self.slsk_config.get("desperate_mode"):
-            command.append("--desperate")
-        if self.slsk_config.get("strict_quality"):
-            command.append("--strict-conditions")
-            if "--pref-format" not in command: 
-                 command.extend(["--pref-format", "flac,wav"])
+            query, _ = parse_download_query(item.search_query)
+            logger.info(f"Detected Album Mode for: {query}")
 
         logger.debug(f"Executing: {' '.join(command)}")
 
@@ -195,10 +289,10 @@ class Downloader:
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
-                bufsize=1, # Line buffered
-                universal_newlines=True
+                bufsize=1,  # Line buffered
+                universal_newlines=True,
             )
-            
+
             # Read streaming output
             for line in process.stdout:
                 line = line.strip()
@@ -206,14 +300,16 @@ class Downloader:
                     logger.debug(f"SLSK: {line}")
                     if item_callback:
                         item_callback(line)
-            
+
             process.wait(timeout=300)
-            
+
             if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, command, output="See logs")
-                
+                raise subprocess.CalledProcessError(
+                    process.returncode, command, output="See logs"
+                )
+
             return True
-            
+
         except subprocess.TimeoutExpired:
             process.kill()
             raise
@@ -333,15 +429,7 @@ class Downloader:
 
     def _file_has_embedded_mbid(self, file_path: str) -> bool:
         """Return True iff the audio file already has a MusicBrainz track ID."""
-        try:
-            from mediafile import MediaFile, UnreadableFileError
-            try:
-                f = MediaFile(file_path)
-            except (UnreadableFileError, OSError):
-                return False
-            return bool(f.mb_trackid)
-        except Exception:
-            return False
+        return file_has_embedded_mbid(file_path)
 
     def _process_failure(self, item: DownloadItem, error_msg: str):
         """Updates the database for a failed download attempt."""
@@ -352,28 +440,77 @@ class Downloader:
         """Generate clean library path: D:/Music/Artist/Album/Song.flac"""
         return library_path_for_track(self.music_library_dir, track)
 
+    def _scan_downloaded_file(self, file_path: str) -> None:
+        """Use the scanner's public entry point with legacy-double fallback."""
+        process_file = getattr(self.scanner, "process_file", None)
+        if callable(process_file):
+            process_file(file_path)
+            return
+        self.scanner._process_file(file_path)
+
+    def _process_downloaded_file(
+        self, file_path: str, item: DownloadItem, is_album_mode: bool
+    ) -> None:
+        tagged_meta, tag_tier, tag_score = self._auto_tag_file(file_path)
+
+        # A single-track queue item can supply its recording MBID when the
+        # auto-tagger did not produce metadata.  A release MBID must never be
+        # stamped onto every file in album mode.
+        if not tagged_meta and not is_album_mode and item.mbid_guess:
+            logger.debug(
+                f"Writing MBID {item.mbid_guess} to {os.path.basename(file_path)}"
+            )
+            write_mbid_to_file(file_path, item.mbid_guess)
+
+        try:
+            self._scan_downloaded_file(file_path)
+        except Exception as e:
+            logger.error(f"Scanner failed for {file_path}: {e}")
+            return
+
+        metadata = read_downloaded_metadata(file_path, tagged_meta)
+        if metadata is None:
+            logger.warning(f"Could not read tags for moving: {file_path}")
+            return
+
+        dest_path = ingest_downloaded_audio_file(
+            self.db,
+            self.scanner,
+            self.music_library_dir,
+            file_path,
+            artist=metadata.artist,
+            title=metadata.title,
+            album=metadata.album,
+            track_number=metadata.track_number,
+        )
+        logger.debug(f"Moved to: {dest_path}")
+
+        if not tag_tier:
+            return
+        scanned = self.db.get_track_by_path(dest_path)
+        if not scanned or not scanned.mbid:
+            return
+        self.db.set_track_tag_tier(scanned.mbid, tag_tier, tag_score)
+        if tag_tier != "green":
+            logger.warning(
+                "Flagged for tag review (%s, score=%s): %s",
+                tag_tier,
+                tag_score,
+                dest_path,
+            )
+
     def _process_success(self, item: DownloadItem):
         """Handles a successful download (Single Track or Album)"""
         logger.debug("Processing successful download...")
-        
-        # Check if Album Mode (based on query, though better to pass state)
-        # We can check the query again or pass it. 
-        # Simpler: Scan the download directory for potential candidates.
-        # Since we use a fresh download dir or rely on timestamp, catching new files is tricky.
-        # BUT: slsk-batchdl usually creates a folder for albums.
-        
-        # Strategy: Find ALL supported audio files in downloads_dir
-        found_files = []
-        for root, _, files in os.walk(self.downloads_dir):
-            for file in files:
-                if file.lower().endswith((".flac", ".mp3", ".m4a", ".wav", ".ogg")):
-                    found_files.append(os.path.join(root, file))
-        
+
+        found_files = discover_downloaded_audio(self.downloads_dir)
         if not found_files:
-            logger.warning(f"Download reported success but no audio files found in {self.downloads_dir}")
+            logger.warning(
+                f"Download reported success but no audio files found in {self.downloads_dir}"
+            )
             # If skip-music-dir worked, maybe no files were downloaded?
             # In that case, we can assume success and clear queue.
-            # But we should verify if files exist in library? 
+            # But we should verify if files exist in library?
             # For now, if no files found, we assume they were skipped or failed silently.
             # We'll trust the 'check=True' on subprocess but log warning.
             logger.info("Assuming files were skipped (existing in library). Marking done.")
@@ -381,110 +518,15 @@ class Downloader:
             return
 
         is_album_mode = item.search_query.startswith("::ALBUM::")
-        mbid_to_write = item.mbid_guess
-
         logger.info(f"Found {len(found_files)} files. Processing...")
 
         for file_path in found_files:
             try:
-                tagged_meta, tag_tier, tag_score = self._auto_tag_file(file_path)
-
-                # Fallback: Write MBID if we have it and tagging failed/skipped
-                # In Album Mode, we can't apply one Track MBID to all files.
-                if not tagged_meta and not is_album_mode and mbid_to_write:
-                    logger.debug(f"Writing MBID {mbid_to_write} to {os.path.basename(file_path)}")
-                    write_mbid_to_file(file_path, mbid_to_write)
-
-                # Scanning (Read Tags)
-                # This updates the DB with whatever tags exist
-                try:
-                    self.scanner._process_file(file_path)
-                except Exception as e:
-                    logger.error(f"Scanner failed for {file_path}: {e}")
-                    continue
-
-                # Move to Library
-                # Get updated track info from DB (we need to find it by scanning result)
-                # This is tricky because `_process_file` doesn't return the Track object explicitly,
-                # but adds it to DB. We can query DB by path? No, path is temp.
-                # We can query by fingerprint/MBID.
-                # BETTER APPROACH: _process_file in scanner logic adds to DB.
-                # We need to retrieve that track to generate the Sort Path.
-                
-                # We'll rely on the file's metadata we just scanned.
-                import mutagen
-                audio = mutagen.File(file_path)
-                if not audio:
-                    logger.warning(f"Could not read tags for moving: {file_path}")
-                    continue
-                
-                # Create Track object for path generation
-                # Prefer tagged_meta if available
-                if tagged_meta:
-                    s_artist = tagged_meta['artist']
-                    s_album = tagged_meta['album']
-                    s_title = tagged_meta['title']
-                    s_track = tagged_meta.get('track_number', 0)
-                else:
-                    s_artist = str(audio.get('artist', ['Unknown Artist'])[0])
-                    s_album = str(audio.get('album', ['Unknown Album'])[0])
-                    s_title = str(audio.get('title', ['Unknown Title'])[0])
-                    if 'tracknumber' in audio:
-                        s_track = audio['tracknumber'][0]
-                    else:
-                        s_track = 0
-
-                temp_track = Track(
-                    mbid="",
-                    title=s_title,
-                    artist=s_artist,
-                    album=s_album,
-                    local_path=file_path,
-                    track_number=int(s_track) if s_track else 0,
-                )
-                
-                # Generate Sync Path
-                dest_path = self._get_library_path_for_track(temp_track)
-                dest_dir = os.path.dirname(dest_path)
-                os.makedirs(dest_dir, exist_ok=True)
-                
-                # Move
-                if os.path.exists(dest_path):
-                     logger.info(f"File exists, overwriting: {dest_path}")
-                     os.remove(dest_path)
-                     
-                shutil.move(file_path, dest_path)
-                logger.debug(f"Moved to: {dest_path}")
-
-                # Final Scan — this is what inserts the track row into the DB
-                # via read-from-file tags. We stamp the tier afterwards.
-                self.scanner._process_file(dest_path)
-
-                if tag_tier:
-                    scanned = self.db.get_track_by_path(dest_path)
-                    if scanned and scanned.mbid:
-                        self.db.set_track_tag_tier(
-                            scanned.mbid, tag_tier, tag_score
-                        )
-                        if tag_tier != "green":
-                            logger.warning(
-                                "Flagged for tag review (%s, score=%s): %s",
-                                tag_tier, tag_score, dest_path,
-                            )
-
+                self._process_downloaded_file(file_path, item, is_album_mode)
             except Exception as e:
                 logger.error(f"Error processing file {file_path}: {e}")
 
-        # Cleanup: Remove any empty folders in download dir
-        try:
-            for root, dirs, files in os.walk(self.downloads_dir, topdown=False):
-                for name in dirs:
-                    try:
-                        os.rmdir(os.path.join(root, name))
-                    except OSError:
-                        pass
-        except OSError as e:
-            logger.debug(f"Empty-dir cleanup failed: {e}")
+        cleanup_empty_download_directories(self.downloads_dir)
 
         # Done
         self.db.remove_from_queue(item.id)
