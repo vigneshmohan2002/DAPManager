@@ -49,6 +49,141 @@ def test_tier_red_below_half():
 
 
 # ---------------------------------------------------------------------------
+# Pure identification helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        (0.90, "green"),
+        (0.50, "yellow"),
+        (0.499, "red"),
+    ],
+)
+def test_classify_confidence_threshold_edges(score, expected):
+    assert tag_service._classify_confidence(score) == expected
+
+
+def test_select_best_acoustid_result_uses_score_and_keeps_first_tie():
+    low = {"id": "low", "score": 0.4}
+    first_high = {"id": "first-high", "score": 0.9}
+    second_high = {"id": "second-high", "score": 0.9}
+
+    selected = tag_service._select_best_acoustid_result(
+        [low, first_high, second_high]
+    )
+
+    assert selected is first_high
+    assert tag_service._select_best_acoustid_result([]) is None
+
+
+def test_select_recording_identity_uses_first_recording_and_release():
+    result = {
+        "recordings": [
+            {
+                "id": "recording-1",
+                "releases": [{"id": "release-1"}, {"id": "release-2"}],
+            },
+            {"id": "recording-2", "releases": [{"id": "release-3"}]},
+        ]
+    }
+
+    assert tag_service._select_recording_identity(result) == (
+        "recording-1",
+        "release-1",
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {},
+        {"recordings": []},
+        {"recordings": [{"id": "recording-1", "releases": []}]},
+        {"recordings": [{"id": "", "releases": [{"id": "release-1"}]}]},
+        {"recordings": [{"id": "recording-1", "releases": [{}]}]},
+    ],
+)
+def test_select_recording_identity_rejects_incomplete_context(result):
+    assert tag_service._select_recording_identity(result) is None
+
+
+def test_select_musicbrainz_track_finds_first_match_across_media():
+    matching_track = {
+        "number": "7",
+        "recording": {"id": "recording-1", "title": "Song"},
+    }
+    release = {
+        "medium-list": [
+            {
+                "position": 1,
+                "track-list": [
+                    {"recording": {"id": "another-recording"}}
+                ],
+            },
+            {"position": 2, "track-list": [matching_track]},
+        ]
+    }
+
+    selected = tag_service._select_musicbrainz_track(release, "recording-1")
+
+    assert selected == (matching_track, 2)
+
+
+def test_select_musicbrainz_track_returns_none_without_match():
+    release = {
+        "medium-list": [
+            {"position": 1, "track-list": [{"recording": {"id": "other"}}]}
+        ]
+    }
+
+    assert tag_service._select_musicbrainz_track(release, "recording-1") is None
+
+
+def test_build_tag_metadata_preserves_flat_payload_shape():
+    release = {
+        "title": "Album",
+        "date": "2024-01-01",
+        "artist-credit": [{"artist": {"name": "Artist"}}],
+    }
+    track = {
+        "number": "4",
+        "recording": {"id": "recording-1", "title": "Title"},
+    }
+
+    metadata = tag_service._build_tag_metadata(
+        release, track, "recording-1", "release-1", 2
+    )
+
+    assert metadata == {
+        "artist": "Artist",
+        "album_artist": "Artist",
+        "album": "Album",
+        "title": "Title",
+        "date": "2024-01-01",
+        "track_number": "4",
+        "disc_number": 2,
+        "mbid": "recording-1",
+        "release_mbid": "release-1",
+    }
+
+
+def test_build_tag_metadata_defaults_missing_artist_title_and_disc():
+    metadata = tag_service._build_tag_metadata(
+        {"title": "Album", "artist-credit": []},
+        {"recording": {}},
+        "recording-1",
+        "release-1",
+        None,
+    )
+
+    assert metadata["artist"] == ""
+    assert metadata["album_artist"] == ""
+    assert metadata["title"] == ""
+    assert metadata["disc_number"] == ""
+
+
+# ---------------------------------------------------------------------------
 # identify_file
 # ---------------------------------------------------------------------------
 

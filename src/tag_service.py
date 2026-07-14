@@ -17,7 +17,7 @@ Confidence tiers mirror Picard's colours:
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Mapping, Optional, Sequence, Tuple, cast
 
 import acoustid
 import musicbrainzngs
@@ -28,6 +28,7 @@ from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
 
 from . import musicbrainz_client as mb
+from .contracts import ConfidenceTier, TagCandidate, TagMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,83 @@ CONFIDENCE_GREEN = 0.90
 CONFIDENCE_YELLOW = 0.50
 
 
-def _tier(score: float) -> str:
+def _classify_confidence(score: float) -> ConfidenceTier:
+    """Return the Picard-style confidence tier for an AcoustID score."""
     if score >= CONFIDENCE_GREEN:
         return "green"
     if score >= CONFIDENCE_YELLOW:
         return "yellow"
     return "red"
+
+
+def _tier(score: float) -> ConfidenceTier:
+    """Compatibility wrapper for callers of the original tier helper."""
+    return _classify_confidence(score)
+
+
+def _select_best_acoustid_result(
+    results: Sequence[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    """Select the highest-scoring result, retaining first-on-tie behavior."""
+    if not results:
+        return None
+    return max(results, key=lambda result: result.get("score", 0))
+
+
+def _select_recording_identity(
+    result: Mapping[str, Any],
+) -> Optional[Tuple[str, str]]:
+    """Return the first recording/release identity in an AcoustID result."""
+    recordings = result.get("recordings") or []
+    if not recordings:
+        return None
+
+    recording = recordings[0]
+    recording_id = recording.get("id")
+    releases = recording.get("releases") or []
+    if not releases:
+        return None
+
+    release_id = releases[0].get("id")
+    if not recording_id or not release_id:
+        return None
+    return recording_id, release_id
+
+
+def _select_musicbrainz_track(
+    release_info: Mapping[str, Any], recording_id: str
+) -> Optional[Tuple[Mapping[str, Any], Any]]:
+    """Find the first medium track matching a MusicBrainz recording ID."""
+    for medium in release_info.get("medium-list") or []:
+        for track in medium.get("track-list") or []:
+            if (track.get("recording") or {}).get("id") == recording_id:
+                return track, medium.get("position")
+    return None
+
+
+def _build_tag_metadata(
+    release_info: Mapping[str, Any],
+    track_info: Mapping[str, Any],
+    recording_id: str,
+    release_id: str,
+    disc_number: Any,
+) -> TagMetadata:
+    """Build the existing flat tag payload from release and track metadata."""
+    artist_credit = release_info.get("artist-credit") or [{}]
+    artist = (artist_credit[0].get("artist") or {}).get("name", "")
+    title = (track_info.get("recording") or {}).get("title", "")
+
+    return {
+        "artist": artist,
+        "album_artist": artist,
+        "album": release_info.get("title", ""),
+        "title": title,
+        "date": release_info.get("date", ""),
+        "track_number": track_info.get("number", ""),
+        "disc_number": disc_number or "",
+        "mbid": recording_id,
+        "release_mbid": release_id,
+    }
 
 
 def read_current_tags(filepath: str) -> dict:
@@ -132,19 +204,15 @@ def identify_file(
     if not items:
         return None
 
-    best = max(items, key=lambda x: x.get("score", 0))
+    best = _select_best_acoustid_result(items)
+    if best is None:
+        return None
     score = float(best.get("score", 0.0))
 
-    recordings = best.get("recordings") or []
-    if not recordings:
+    recording_identity = _select_recording_identity(best)
+    if recording_identity is None:
         return None
-    recording_id = recordings[0].get("id")
-    releases = recordings[0].get("releases") or []
-    if not releases:
-        return None
-    release_id = releases[0].get("id")
-    if not recording_id or not release_id:
-        return None
+    recording_id, release_id = recording_identity
 
     try:
         mb_data = mb.get_release_by_id(
@@ -155,44 +223,22 @@ def identify_file(
         return None
 
     release_info = mb_data.get("release") or {}
-    track_info = None
-    disc_num = None
-    media_tracks = []
-    for media in release_info.get("medium-list") or []:
-        for t in media.get("track-list") or []:
-            if (t.get("recording") or {}).get("id") == recording_id:
-                track_info = t
-                disc_num = media.get("position")
-                media_tracks = media.get("track-list") or []
-                break
-        if track_info:
-            break
-    if not track_info:
+    track_selection = _select_musicbrainz_track(release_info, recording_id)
+    if track_selection is None:
         return None
+    track_info, disc_num = track_selection
 
-    artist_credit = release_info.get("artist-credit") or [{}]
-    artist = (artist_credit[0].get("artist") or {}).get("name", "")
-    album = release_info.get("title", "")
-    title = (track_info.get("recording") or {}).get("title", "")
+    meta = _build_tag_metadata(
+        release_info, track_info, recording_id, release_id, disc_num
+    )
 
-    meta = {
-        "artist": artist,
-        "album_artist": artist,
-        "album": album,
-        "title": title,
-        "date": release_info.get("date", ""),
-        "track_number": track_info.get("number", ""),
-        "disc_number": disc_num or "",
-        "mbid": recording_id,
-        "release_mbid": release_id,
-    }
-
-    return {
+    candidate: TagCandidate = {
         "score": score,
         "tier": _tier(score),
         "meta": meta,
-        "current": read_current_tags(filepath),
+        "current": cast(TagMetadata, read_current_tags(filepath)),
     }
+    return candidate
 
 
 def write_tags(filepath: str, meta: dict) -> str:
