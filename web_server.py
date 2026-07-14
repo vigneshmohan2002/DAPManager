@@ -3,9 +3,14 @@ import json
 import logging
 from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
-import threading
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
+from src.services.library_service import (
+    availability_for,
+    is_master_configured,
+    public_track_row,
+)
+from src.services.task_service import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -37,59 +42,6 @@ def _stop_scheduler(instance) -> None:
         instance.stop()
     except Exception as e:
         logger.warning("Could not stop scheduler cleanly: %s", e)
-
-
-class TaskManager:
-    def __init__(self):
-        self.current_task = None
-        self.is_running = False
-        self.message = "Idle"
-        self.progress_detail = ""  # New: detailed progress
-        self.lock = threading.Lock()
-
-    def start_task(self, task_func, args=(), task_name="Task"):
-        with self.lock:
-            if self.is_running:
-                return False, f"Task '{self.current_task}' is already running."
-
-            self.is_running = True
-            self.current_task = task_name
-            self.message = f"Starting {task_name}..."
-            self.progress_detail = ""
-
-            thread = threading.Thread(target=self._run_wrapper, args=(task_func, args))
-            thread.daemon = True
-            thread.start()
-            return True, "Task started."
-
-    def update_progress(self, data: dict):
-        with self.lock:
-            if "message" in data:
-                self.message = data["message"]
-            if "detail" in data:
-                self.progress_detail = data["detail"]
-
-    def _run_wrapper(self, func, args):
-        try:
-            # If the function accepts a 'progress_callback' kwarg, pass it
-            import inspect
-
-            sig = inspect.signature(func)
-            if "progress_callback" in sig.parameters:
-                func(*args, progress_callback=self.update_progress)
-            else:
-                func(*args)
-
-            with self.lock:
-                self.message = f"{self.current_task} completed successfully."
-        except Exception as e:
-            logger.error(f"Task failed: {e}", exc_info=True)
-            with self.lock:
-                self.message = f"Error in {self.current_task}: {str(e)}"
-        finally:
-            with self.lock:
-                self.is_running = False
-                self.current_task = None
 
 
 def init_app_logic():
@@ -1446,10 +1398,7 @@ def _master_url_configured() -> bool:
     so tests that stub ``config`` with a MagicMock don't trip a falsy
     ``MagicMock`` into a truthy "master is configured" signal.
     """
-    cfg = getattr(config, "_config", None)
-    if not isinstance(cfg, dict):
-        return False
-    return bool((cfg.get("master_url") or "").strip())
+    return is_master_configured(getattr(config, "_config", None))
 
 
 def _availability_for(row: dict, has_master: bool) -> str:
@@ -1460,28 +1409,12 @@ def _availability_for(row: dict, has_master: bool) -> str:
     trusted at listing time; actual file existence is checked at stream
     time so the UI doesn't pay a stat-per-row tax.
     """
-    if (row.get("local_path") or "").strip():
-        return "local"
-    if (row.get("dap_path") or "").strip():
-        return "drive"
-    if has_master:
-        return "remote"
-    return "unavailable"
+    return availability_for(row, has_master)
 
 
 def _public_track_row(row: dict, has_master: bool) -> dict:
     """Shape a DB track row for the webview: strip on-disk paths, add availability."""
-    return {
-        "mbid": row["mbid"],
-        "title": row["title"],
-        "artist": row["artist"],
-        "album": row.get("album"),
-        "track_number": row.get("track_number"),
-        "disc_number": row.get("disc_number"),
-        "album_id": row.get("album_id"),
-        "availability": _availability_for(row, has_master),
-        "is_liked": bool(row.get("is_liked")),
-    }
+    return public_track_row(row, has_master)
 
 
 @app.route("/api/library/artists")
