@@ -3,6 +3,11 @@ import {
   arrayField,
   authenticatedMediaUrl,
   backendUrl,
+  isJsonRecord,
+  isNullableNumber,
+  isNullableString,
+  isNumber,
+  isString,
   readJsonRecord,
   recordField,
 } from "./client";
@@ -23,6 +28,9 @@ import type {
   PlayStatsRecent,
   PlayStats,
   FetchPlayStatsOptions,
+  WrappedTopTrack,
+  WrappedTopArtist,
+  WrappedTopAlbum,
   WrappedPayload,
   HomeLikedPreview,
   HomeJumpBackIn,
@@ -33,12 +41,267 @@ import type {
   ActionResult,
 } from "./types";
 
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isTrack(value: unknown): value is Track {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isString(value.title) &&
+    isString(value.artist) &&
+    isNullableString(value.album) &&
+    isNullableNumber(value.track_number) &&
+    isNullableNumber(value.disc_number) &&
+    isOptionalBoolean(value.is_liked)
+  );
+}
+
+function isAvailability(value: unknown): value is LibraryTrack["availability"] {
+  return (
+    value === "local" ||
+    value === "drive" ||
+    value === "remote" ||
+    value === "unavailable"
+  );
+}
+
+function isLibraryTrack(value: unknown): value is LibraryTrack {
+  if (!isJsonRecord(value)) return false;
+  const extraFields: Record<string, unknown> = value;
+  if (!isTrack(value)) return false;
+  return (
+    isNullableString(extraFields.album_id) &&
+    isAvailability(extraFields.availability) &&
+    typeof extraFields.is_liked === "boolean" &&
+    isOptionalBoolean(extraFields.orphan)
+  );
+}
+
+function isAlbum(value: unknown): value is Album {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.id) &&
+    isString(value.title) &&
+    isString(value.artist) &&
+    isNumber(value.track_count)
+  );
+}
+
+function isArtist(value: unknown): value is Artist {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.name) &&
+    isNumber(value.album_count) &&
+    isNumber(value.track_count)
+  );
+}
+
+function isSearchTrackResult(value: unknown): value is SearchTrackResult {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isString(value.title) &&
+    isString(value.artist) &&
+    isNullableString(value.album) &&
+    isNullableString(value.path)
+  );
+}
+
+function isArtistInfo(value: unknown): value is ArtistInfo {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.summary) &&
+    isNullableString(value.source_url) &&
+    isNullableString(value.image_url) &&
+    isString(value.title)
+  );
+}
+
+function isTagMeta(value: unknown): value is TagMeta {
+  if (!isJsonRecord(value)) return false;
+  return (
+    (value.artist === undefined || isString(value.artist)) &&
+    (value.album_artist === undefined || isString(value.album_artist)) &&
+    (value.album === undefined || isString(value.album)) &&
+    (value.title === undefined || isString(value.title)) &&
+    (value.date === undefined || isString(value.date)) &&
+    (value.track_number === undefined || isString(value.track_number)) &&
+    (value.disc_number === undefined || isString(value.disc_number)) &&
+    (value.mbid === undefined || isString(value.mbid)) &&
+    (value.release_mbid === undefined || isString(value.release_mbid))
+  );
+}
+
+function decodeTagMeta(value: unknown): TagMeta {
+  if (!isJsonRecord(value)) return {};
+  const decoded: TagMeta = {};
+  if (isString(value.artist)) decoded.artist = value.artist;
+  if (isString(value.album_artist)) decoded.album_artist = value.album_artist;
+  if (isString(value.album)) decoded.album = value.album;
+  if (isString(value.title)) decoded.title = value.title;
+  if (isString(value.date)) decoded.date = value.date;
+  if (isString(value.track_number)) decoded.track_number = value.track_number;
+  if (isString(value.disc_number)) decoded.disc_number = value.disc_number;
+  if (isString(value.mbid)) decoded.mbid = value.mbid;
+  if (isString(value.release_mbid)) decoded.release_mbid = value.release_mbid;
+  return decoded;
+}
+
+function isTagTier(value: unknown): value is IdentifyCandidate["tier"] {
+  return value === "green" || value === "yellow" || value === "red";
+}
+
+function isIdentifyCandidate(value: unknown): value is IdentifyCandidate {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isNumber(value.score) &&
+    isTagTier(value.tier) &&
+    isTagMeta(value.meta) &&
+    isTagMeta(value.current)
+  );
+}
+
+function isPlayStatsTrack(value: unknown): value is PlayStatsTrack {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isNullableString(value.title) &&
+    isNullableString(value.artist) &&
+    isNullableString(value.album) &&
+    isNumber(value.plays)
+  );
+}
+
+function isPlayStatsArtist(value: unknown): value is PlayStatsArtist {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.artist) &&
+    isNumber(value.plays) &&
+    isNumber(value.distinct_tracks)
+  );
+}
+
+function isPlayStatsRecent(value: unknown): value is PlayStatsRecent {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isNumber(value.id) &&
+    isString(value.mbid) &&
+    isString(value.played_at) &&
+    isNullableString(value.source) &&
+    isNullableString(value.title) &&
+    isNullableString(value.artist) &&
+    isNullableString(value.album) &&
+    isNullableString(value.album_id)
+  );
+}
+
+function isWrappedTopTrack(value: unknown): value is WrappedTopTrack {
+  return isPlayStatsTrack(value);
+}
+
+function isWrappedTopArtist(value: unknown): value is WrappedTopArtist {
+  return isPlayStatsArtist(value);
+}
+
+function isWrappedTopAlbum(value: unknown): value is WrappedTopAlbum {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.album_id) &&
+    isNullableString(value.album) &&
+    isNullableString(value.artist) &&
+    isNumber(value.plays)
+  );
+}
+
+function isBusiestDay(
+  value: unknown,
+): value is NonNullable<WrappedPayload["busiest_day"]> {
+  return (
+    isJsonRecord(value) && isString(value.date) && isNumber(value.plays)
+  );
+}
+
+function isFirstPlay(
+  value: unknown,
+): value is NonNullable<WrappedPayload["first_play"]> {
+  return (
+    isJsonRecord(value) &&
+    isString(value.played_at) &&
+    isNullableString(value.title) &&
+    isNullableString(value.artist)
+  );
+}
+
+function decodeWrappedPayload(data: Record<string, unknown>): WrappedPayload {
+  return {
+    year: isNumber(data.year) ? data.year : 0,
+    total_plays: isNumber(data.total_plays) ? data.total_plays : 0,
+    total_listening_time_ms: isNumber(data.total_listening_time_ms)
+      ? data.total_listening_time_ms
+      : 0,
+    has_legacy_rows: Boolean(data.has_legacy_rows),
+    top_track: isWrappedTopTrack(data.top_track) ? data.top_track : null,
+    top_artist: isWrappedTopArtist(data.top_artist) ? data.top_artist : null,
+    top_album: isWrappedTopAlbum(data.top_album) ? data.top_album : null,
+    busiest_day: isBusiestDay(data.busiest_day) ? data.busiest_day : null,
+    top_hour: isNumber(data.top_hour) ? data.top_hour : null,
+    first_play: isFirstPlay(data.first_play) ? data.first_play : null,
+    longest_streak_days: isNumber(data.longest_streak_days)
+      ? data.longest_streak_days
+      : 0,
+  };
+}
+
+function isHomeLikedPreview(value: unknown): value is HomeLikedPreview {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isString(value.title) &&
+    isString(value.artist) &&
+    isNullableString(value.album) &&
+    isNullableString(value.album_id)
+  );
+}
+
+function isHomeJumpBackIn(value: unknown): value is HomeJumpBackIn {
+  return (
+    isJsonRecord(value) &&
+    isString(value.album_id) &&
+    isString(value.title) &&
+    isString(value.artist)
+  );
+}
+
+function isHomeDailyMix(value: unknown): value is HomeDailyMix {
+  return (
+    isJsonRecord(value) &&
+    isString(value.playlist_id) &&
+    isString(value.name) &&
+    isString(value.tag) &&
+    isNumber(value.track_count)
+  );
+}
+
+function isOrphanTrack(value: unknown): value is OrphanTrack {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isNullableString(value.artist) &&
+    isNullableString(value.title) &&
+    isNullableString(value.album) &&
+    isNullableString(value.deleted_at) &&
+    isNullableString(value.local_path)
+  );
+}
+
 export async function fetchAlbums(): Promise<Album[]> {
   const url = await backendUrl();
   const r = await apiFetch(`${url}/api/library/albums`);
   if (!r.ok) throw new Error(`albums: ${r.status}`);
   const data = await readJsonRecord(r);
-  return arrayField<Album>(data, "albums");
+  return arrayField(data, "albums", isAlbum);
 }
 
 export async function searchTracks(query: string): Promise<SearchTrackResult[]> {
@@ -50,7 +313,7 @@ export async function searchTracks(query: string): Promise<SearchTrackResult[]> 
   );
   if (!r.ok) throw new Error(`search: ${r.status}`);
   const data = await readJsonRecord(r);
-  return arrayField<SearchTrackResult>(data, "results");
+  return arrayField(data, "results", isSearchTrackResult);
 }
 
 export async function fetchAllTracks(
@@ -65,7 +328,7 @@ export async function fetchAllTracks(
   const r = await apiFetch(`${url}/api/library/tracks${qs ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`tracks: ${r.status}`);
   const data = await readJsonRecord(r);
-  return arrayField<LibraryTrack>(data, "tracks");
+  return arrayField(data, "tracks", isLibraryTrack);
 }
 
 export async function fetchArtists(): Promise<Artist[]> {
@@ -73,7 +336,7 @@ export async function fetchArtists(): Promise<Artist[]> {
   const r = await apiFetch(`${url}/api/library/artists`);
   if (!r.ok) throw new Error(`artists: ${r.status}`);
   const data = await readJsonRecord(r);
-  return arrayField<Artist>(data, "artists");
+  return arrayField(data, "artists", isArtist);
 }
 
 export function albumCoverUrl(base: string, albumId: string): string {
@@ -89,7 +352,8 @@ export async function fetchArtistInfo(name: string): Promise<ArtistInfo | null> 
   );
   if (!r.ok) return null;
   const data = await readJsonRecord(r);
-  return data.success ? (recordField(data, "info") as ArtistInfo) : null;
+  const info = recordField(data, "info");
+  return data.success && isArtistInfo(info) ? info : null;
 }
 
 export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
@@ -99,7 +363,7 @@ export async function fetchAlbumTracks(albumId: string): Promise<Track[]> {
   );
   if (!r.ok) throw new Error(`tracks: ${r.status}`);
   const data = await readJsonRecord(r);
-  return arrayField<Track>(data, "tracks");
+  return arrayField(data, "tracks", isTrack);
 }
 
 export function streamUrl(base: string, mbid: string): string {
@@ -121,11 +385,14 @@ export async function identifyTrack(mbid: string): Promise<IdentifyResult> {
     return { kind: "error", message: msg };
   }
   if (!data.candidate) {
-    return { kind: "no_match", current: recordField(data, "current") as TagMeta };
+    return { kind: "no_match", current: decodeTagMeta(data.current) };
+  }
+  if (!isIdentifyCandidate(data.candidate)) {
+    return { kind: "error", message: "identify returned an invalid candidate" };
   }
   return {
     kind: "match",
-    candidate: recordField(data, "candidate") as IdentifyCandidate,
+    candidate: data.candidate,
     localPath: String(data.local_path ?? ""),
   };
 }
@@ -182,7 +449,7 @@ export async function fetchWrapped(year?: number): Promise<WrappedPayload> {
   if (!r.ok) throw new Error(`wrapped: ${r.status}`);
   const data = await readJsonRecord(r);
   if (!data.success) throw new Error(String(data.message ?? "wrapped failed"));
-  return data as WrappedPayload;
+  return decodeWrappedPayload(data);
 }
 
 export async function fetchHome(): Promise<HomePayload> {
@@ -192,14 +459,18 @@ export async function fetchHome(): Promise<HomePayload> {
   const data = await readJsonRecord(r);
   if (!data.success) throw new Error(String(data.message ?? "home failed"));
   return {
-    recent: arrayField<PlayStatsRecent>(data, "recent"),
-    top_artists: arrayField<PlayStatsArtist>(data, "top_artists"),
+    recent: arrayField(data, "recent", isPlayStatsRecent),
+    top_artists: arrayField(data, "top_artists", isPlayStatsArtist),
     liked: {
       total: Number(recordField(data, "liked").total ?? 0),
-      preview: arrayField<HomeLikedPreview>(recordField(data, "liked"), "preview"),
+      preview: arrayField(
+        recordField(data, "liked"),
+        "preview",
+        isHomeLikedPreview,
+      ),
     },
-    jump_back_in: arrayField<HomeJumpBackIn>(data, "jump_back_in"),
-    daily_mixes: arrayField<HomeDailyMix>(data, "daily_mixes"),
+    jump_back_in: arrayField(data, "jump_back_in", isHomeJumpBackIn),
+    daily_mixes: arrayField(data, "daily_mixes", isHomeDailyMix),
   };
 }
 
@@ -247,9 +518,9 @@ export async function fetchPlayStats(
   return {
     total: Number(data.total ?? 0),
     listening_time_ms: Number(data.listening_time_ms ?? 0),
-    top_tracks: arrayField<PlayStatsTrack>(data, "top_tracks"),
-    top_artists: arrayField<PlayStatsArtist>(data, "top_artists"),
-    recent: arrayField<PlayStatsRecent>(data, "recent"),
+    top_tracks: arrayField(data, "top_tracks", isPlayStatsTrack),
+    top_artists: arrayField(data, "top_artists", isPlayStatsArtist),
+    recent: arrayField(data, "recent", isPlayStatsRecent),
     hour_of_day: hours,
   };
 }
@@ -261,7 +532,7 @@ export async function fetchOrphanTracks(): Promise<OrphanTrack[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "orphans/tracks failed"));
-  return arrayField<OrphanTrack>(data, "tracks");
+  return arrayField(data, "tracks", isOrphanTrack);
 }
 
 export async function fetchArtistRadio(
@@ -277,7 +548,7 @@ export async function fetchArtistRadio(
   const data = await readJsonRecord(r);
   if (!data.success) throw new Error(String(data.message ?? "radio failed"));
   return {
-    tracks: arrayField<LibraryTrack>(data, "tracks"),
+    tracks: arrayField(data, "tracks", isLibraryTrack),
     top_tag: typeof data.top_tag === "string" ? data.top_tag : null,
     seed_count: Number(data.seed_count ?? 0),
     related_count: Number(data.related_count ?? 0),

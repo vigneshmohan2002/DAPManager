@@ -2,15 +2,53 @@ import {
   apiFetch,
   arrayField,
   backendUrl,
+  isJsonRecord,
+  isNumber,
+  isString,
   readJsonRecord,
   recordField,
 } from "./client";
 import type {
+  DuplicateCandidate,
   DuplicateGroup,
   ResolveDuplicateResult,
   IncompleteAlbum,
   ActionResult,
 } from "./types";
+
+function isDuplicateCandidate(value: unknown): value is DuplicateCandidate {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.path) &&
+    isNumber(value.score) &&
+    (value.is_recommended === undefined ||
+      typeof value.is_recommended === "boolean")
+  );
+}
+
+function isDuplicateGroup(value: unknown): value is DuplicateGroup {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isString(value.artist) &&
+    isString(value.title) &&
+    Array.isArray(value.candidates) &&
+    value.candidates.every(isDuplicateCandidate)
+  );
+}
+
+function isIncompleteAlbum(value: unknown): value is IncompleteAlbum {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.artist) &&
+    isString(value.album) &&
+    isString(value.mbid) &&
+    isNumber(value.have) &&
+    isNumber(value.total) &&
+    isNumber(value.missing) &&
+    isString(value.cover_art)
+  );
+}
 
 export async function fetchDuplicates(): Promise<DuplicateGroup[]> {
   const url = await backendUrl();
@@ -19,7 +57,7 @@ export async function fetchDuplicates(): Promise<DuplicateGroup[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "duplicates failed"));
-  return arrayField<DuplicateGroup>(data, "duplicates");
+  return arrayField(data, "duplicates", isDuplicateGroup);
 }
 
 export async function resolveDuplicate(
@@ -42,8 +80,8 @@ export async function resolveDuplicate(
   return {
     success: Boolean(data.success),
     message: String(data.message ?? ""),
-    deleted: arrayField<string>(inner, "deleted"),
-    errors: arrayField<string>(inner, "errors"),
+    deleted: arrayField(inner, "deleted", isString),
+    errors: arrayField(inner, "errors", isString),
   };
 }
 
@@ -53,7 +91,7 @@ export async function fetchAuditResults(): Promise<IncompleteAlbum[]> {
   if (!r.ok) throw new Error(`audit/results: ${r.status}`);
   const data = await readJsonRecord(r);
   if (!data.success) throw new Error(String(data.message ?? "audit failed"));
-  return arrayField<IncompleteAlbum>(data, "results");
+  return arrayField(data, "results", isIncompleteAlbum);
 }
 
 export async function runCompleteAlbums(

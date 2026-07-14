@@ -3,16 +3,102 @@ import {
   arrayField,
   backendUrl,
   isJsonRecord,
+  isNullableString,
+  isNumber,
+  isString,
   readJsonRecord,
 } from "./client";
 import { postAction } from "./sync";
 import type {
+  AudioQuality,
   Contribution,
   FleetDevice,
+  FleetHolder,
   FleetSearchResult,
   ActionResult,
   ContributeTrackResult,
 } from "./types";
+
+function isOptionalNumber(value: unknown): value is number | undefined {
+  return value === undefined || isNumber(value);
+}
+
+function isAudioQuality(value: unknown): value is AudioQuality {
+  if (!isJsonRecord(value)) return false;
+  return (
+    (value.ext === undefined || isString(value.ext)) &&
+    (value.lossless === undefined || typeof value.lossless === "boolean") &&
+    isOptionalNumber(value.bits_per_sample) &&
+    isOptionalNumber(value.sample_rate) &&
+    isOptionalNumber(value.bitrate) &&
+    isOptionalNumber(value.channels) &&
+    isOptionalNumber(value.length_ms) &&
+    isOptionalNumber(value.size_bytes)
+  );
+}
+
+function isOptionalNullableNumber(
+  value: unknown,
+): value is number | null | undefined {
+  return value === undefined || value === null || isNumber(value);
+}
+
+function isOptionalNullableString(
+  value: unknown,
+): value is string | null | undefined {
+  return value === undefined || isNullableString(value);
+}
+
+function isContribution(value: unknown): value is Contribution {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isNumber(value.id) &&
+    isOptionalNullableNumber(value.contribution_id) &&
+    isNullableString(value.device_id) &&
+    isNullableString(value.mbid) &&
+    isOptionalNullableString(value.isrc) &&
+    isNullableString(value.artist) &&
+    isNullableString(value.title) &&
+    isNullableString(value.album) &&
+    (value.target_quality === null || isAudioQuality(value.target_quality)) &&
+    (value.acquired_quality === null || isAudioQuality(value.acquired_quality)) &&
+    isString(value.status) &&
+    isOptionalNullableNumber(value.download_id) &&
+    isOptionalNullableString(value.created_at) &&
+    isNullableString(value.updated_at)
+  );
+}
+
+function isFleetDevice(value: unknown): value is FleetDevice {
+  return (
+    isJsonRecord(value) &&
+    isString(value.device_id) &&
+    isNumber(value.track_count) &&
+    isNullableString(value.last_reported_at)
+  );
+}
+
+function isFleetHolder(value: unknown): value is FleetHolder {
+  return (
+    isJsonRecord(value) &&
+    isString(value.device_id) &&
+    isNullableString(value.local_path) &&
+    isString(value.reported_at)
+  );
+}
+
+function isFleetSearchResult(value: unknown): value is FleetSearchResult {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isString(value.artist) &&
+    isString(value.title) &&
+    isNullableString(value.album) &&
+    isNumber(value.device_count) &&
+    Array.isArray(value.holders) &&
+    value.holders.every(isFleetHolder)
+  );
+}
 
 export async function fetchContributions(limit = 200): Promise<Contribution[]> {
   const url = await backendUrl();
@@ -22,7 +108,7 @@ export async function fetchContributions(limit = 200): Promise<Contribution[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "contributions failed"));
-  return arrayField<Contribution>(data, "contributions");
+  return arrayField(data, "contributions", isContribution);
 }
 
 export async function fetchOutgoingContributions(
@@ -35,22 +121,21 @@ export async function fetchOutgoingContributions(
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "contributed failed"));
-  return arrayField<unknown>(data, "contributions").map(
-    (value): Contribution => {
-      const row = isJsonRecord(value) ? value : {};
+  return arrayField(data, "contributions", isJsonRecord).map(
+    (row): Contribution => {
       return {
-      id: Number(row.local_id ?? 0),
-      contribution_id:
-        row.contribution_id == null ? null : Number(row.contribution_id),
-      device_id: null,
-      mbid: row.mbid == null ? null : String(row.mbid),
-      artist: row.artist == null ? null : String(row.artist),
-      title: row.title == null ? null : String(row.title),
-      album: row.album == null ? null : String(row.album),
-      target_quality: null,
-      acquired_quality: null,
-      status: String(row.status ?? "unknown"),
-      updated_at: row.updated_at == null ? null : String(row.updated_at),
+        id: Number(row.local_id ?? 0),
+        contribution_id:
+          row.contribution_id == null ? null : Number(row.contribution_id),
+        device_id: null,
+        mbid: row.mbid == null ? null : String(row.mbid),
+        artist: row.artist == null ? null : String(row.artist),
+        title: row.title == null ? null : String(row.title),
+        album: row.album == null ? null : String(row.album),
+        target_quality: null,
+        acquired_quality: null,
+        status: String(row.status ?? "unknown"),
+        updated_at: row.updated_at == null ? null : String(row.updated_at),
       };
     },
   );
@@ -63,7 +148,7 @@ export async function fetchFleetSummary(): Promise<FleetDevice[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "fleet/summary failed"));
-  return arrayField<FleetDevice>(data, "devices");
+  return arrayField(data, "devices", isFleetDevice);
 }
 
 export async function searchFleet(q: string): Promise<FleetSearchResult[]> {
@@ -77,7 +162,7 @@ export async function searchFleet(q: string): Promise<FleetSearchResult[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "fleet/track failed"));
-  return arrayField<FleetSearchResult>(data, "results");
+  return arrayField(data, "results", isFleetSearchResult);
 }
 
 export async function contributeAllLocalTracks(): Promise<ActionResult> {

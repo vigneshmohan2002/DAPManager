@@ -3,13 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import type { BackendRestartResult, BackendStartupResult } from "./types";
 
 export type JsonRecord = Record<string, unknown>;
+export type TypeGuard<T> = (value: unknown) => value is T;
 
 export function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function readJsonUnknown(response: Response): Promise<unknown> {
-  return (await response.json()) as unknown;
+  const value: unknown = await response.json();
+  return value;
 }
 
 export async function readJsonRecord(response: Response): Promise<JsonRecord> {
@@ -20,9 +22,29 @@ export async function readJsonRecord(response: Response): Promise<JsonRecord> {
   return value;
 }
 
-export function arrayField<T>(record: JsonRecord, key: string): T[] {
+export function arrayField<T>(
+  record: JsonRecord,
+  key: string,
+  isItem: TypeGuard<T>,
+): T[] {
   const value = record[key];
-  return Array.isArray(value) ? (value as T[]) : [];
+  return Array.isArray(value) ? value.filter(isItem) : [];
+}
+
+export function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+export function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+export function isNullableString(value: unknown): value is string | null {
+  return value === null || isString(value);
+}
+
+export function isNullableNumber(value: unknown): value is number | null {
+  return value === null || isNumber(value);
 }
 
 export function recordField(record: JsonRecord, key: string): JsonRecord {

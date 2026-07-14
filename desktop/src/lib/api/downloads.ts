@@ -2,6 +2,10 @@ import {
   apiFetch,
   arrayField,
   backendUrl,
+  isJsonRecord,
+  isNullableString,
+  isNumber,
+  isString,
   readJsonRecord,
   type JsonRecord,
 } from "./client";
@@ -14,6 +18,47 @@ import type {
   ClearCompletedResult,
 } from "./types";
 
+function numericValue(value: unknown): number {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function decodeQueueDownloadResult(
+  data: Record<string, unknown>,
+): QueueDownloadResult {
+  return {
+    success: Boolean(data.success),
+    message: isString(data.message) ? data.message : undefined,
+    queued: numericValue(data.queued),
+    skipped_linked: numericValue(data.skipped_linked),
+    skipped_queued: numericValue(data.skipped_queued),
+    not_found: numericValue(data.not_found),
+  };
+}
+
+function isWantedRelease(value: unknown): value is WantedRelease {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.mbid) &&
+    isString(value.artist) &&
+    isString(value.title) &&
+    isNullableString(value.release_date) &&
+    isString(value.cover_url) &&
+    typeof value.queued === "boolean" &&
+    typeof value.downloaded === "boolean"
+  );
+}
+
+function isDownloadQueueItem(value: unknown): value is DownloadQueueItem {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isNumber(value.id) &&
+    isString(value.query) &&
+    isString(value.status) &&
+    isNullableString(value.last_attempt)
+  );
+}
+
 export async function queueCatalogDownload(
   mbids: string[],
 ): Promise<QueueDownloadResult> {
@@ -23,7 +68,7 @@ export async function queueCatalogDownload(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mbids }),
   });
-  return (await readJsonRecord(r)) as QueueDownloadResult;
+  return decodeQueueDownloadResult(await readJsonRecord(r));
 }
 
 export async function fetchWantedReleases(): Promise<WantedReleasesResult> {
@@ -45,7 +90,7 @@ export async function fetchWantedReleases(): Promise<WantedReleasesResult> {
   return {
     kind: "ok",
     last_tick: typeof data.last_tick === "string" ? data.last_tick : null,
-    items: arrayField<WantedRelease>(data, "items"),
+    items: arrayField(data, "items", isWantedRelease),
   };
 }
 
@@ -76,7 +121,7 @@ export async function fetchDownloads(): Promise<DownloadQueueItem[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "downloads/list failed"));
-  return arrayField<DownloadQueueItem>(data, "items");
+  return arrayField(data, "items", isDownloadQueueItem);
 }
 
 export async function retryDownload(id: number): Promise<ActionResult> {

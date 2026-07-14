@@ -3,6 +3,8 @@ import {
   arrayField,
   backendUrl,
   invalidateApiToken,
+  isJsonRecord,
+  isString,
   readJsonRecord,
   recordField,
 } from "./client";
@@ -17,6 +19,43 @@ import type {
   SetupPayload,
 } from "./types";
 
+function isConfigValue(value: unknown): value is ConfigValue {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+function decodeConfigValues(value: unknown): Record<string, ConfigValue> {
+  if (!isJsonRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, ConfigValue] =>
+      isConfigValue(entry[1]),
+    ),
+  );
+}
+
+function isConfigGroup(value: unknown): value is ConfigGroup {
+  return (
+    isJsonRecord(value) &&
+    isString(value.label) &&
+    Array.isArray(value.keys) &&
+    value.keys.every(isString)
+  );
+}
+
+function decodePublicUrlDetection(
+  data: Record<string, unknown>,
+): PublicUrlDetection {
+  const source = data.source;
+  if (source !== "env" && source !== "tailscale" && source !== "none") {
+    return { source: "none" };
+  }
+  return isString(data.url) ? { source, url: data.url } : { source };
+}
+
 export async function fetchConfig(): Promise<ConfigPayload> {
   const url = await backendUrl();
   const r = await apiFetch(`${url}/api/config`);
@@ -24,11 +63,11 @@ export async function fetchConfig(): Promise<ConfigPayload> {
   const data = await readJsonRecord(r);
   if (!data.success) throw new Error(String(data.message ?? "config failed"));
   return {
-    config: recordField(data, "config") as Record<string, ConfigValue>,
-    editable_keys: arrayField<string>(data, "editable_keys"),
-    secret_keys: arrayField<string>(data, "secret_keys"),
-    bool_keys: arrayField<string>(data, "bool_keys"),
-    groups: arrayField<ConfigGroup>(data, "groups"),
+    config: decodeConfigValues(recordField(data, "config")),
+    editable_keys: arrayField(data, "editable_keys", isString),
+    secret_keys: arrayField(data, "secret_keys", isString),
+    bool_keys: arrayField(data, "bool_keys", isString),
+    groups: arrayField(data, "groups", isConfigGroup),
   };
 }
 
@@ -48,7 +87,7 @@ export async function saveConfig(
   return {
     success: Boolean(data.success),
     message: String(data.message ?? ""),
-    changed: arrayField<string>(data, "changed"),
+    changed: arrayField(data, "changed", isString),
   };
 }
 
@@ -91,14 +130,15 @@ export async function fetchSetupStatus(): Promise<{ needs_setup: boolean }> {
   const url = await backendUrl();
   const r = await apiFetch(`${url}/api/setup/status`);
   if (!r.ok) throw new Error(`setup/status: ${r.status}`);
-  return (await readJsonRecord(r)) as { needs_setup: boolean };
+  const data = await readJsonRecord(r);
+  return { needs_setup: Boolean(data.needs_setup) };
 }
 
 export async function detectPublicUrl(): Promise<PublicUrlDetection> {
   const url = await backendUrl();
   const r = await apiFetch(`${url}/api/setup/detect-public-url`);
   if (!r.ok) return { source: "none" };
-  return (await readJsonRecord(r)) as PublicUrlDetection;
+  return decodePublicUrlDetection(await readJsonRecord(r));
 }
 
 export async function validatePath(
@@ -112,7 +152,11 @@ export async function validatePath(
     body: JSON.stringify({ path, kind }),
   });
   if (!r.ok) return { ok: false, message: `${r.status}` };
-  return (await readJsonRecord(r)) as { ok: boolean; message?: string };
+  const data = await readJsonRecord(r);
+  return {
+    ok: Boolean(data.ok),
+    message: isString(data.message) ? data.message : undefined,
+  };
 }
 
 export async function saveSetupConfig(

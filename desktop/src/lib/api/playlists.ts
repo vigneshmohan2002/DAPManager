@@ -3,9 +3,15 @@ import {
   arrayField,
   backendUrl,
   isJsonRecord,
+  isNullableString,
+  isNumber,
+  isString,
   readJsonRecord,
 } from "./client";
 import type {
+  SmartField,
+  SmartOp,
+  SmartRule,
   SmartRuleset,
   Playlist,
   OrphanPlaylist,
@@ -14,12 +20,87 @@ import type {
   AddToPlaylistResult,
 } from "./types";
 
+function isSmartField(value: unknown): value is SmartField {
+  return (
+    value === "artist" ||
+    value === "album" ||
+    value === "title" ||
+    value === "tag_tier" ||
+    value === "tag_score"
+  );
+}
+
+function isSmartOperator(value: unknown): value is SmartOp {
+  return (
+    value === "contains" ||
+    value === "equals" ||
+    value === "starts_with" ||
+    value === "ends_with" ||
+    value === "gt" ||
+    value === "lt"
+  );
+}
+
+function isSmartRule(value: unknown): value is SmartRule {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isSmartField(value.field) &&
+    isSmartOperator(value.op) &&
+    (isString(value.value) || isNumber(value.value))
+  );
+}
+
+function isSmartRuleset(value: unknown): value is SmartRuleset {
+  if (!isJsonRecord(value)) return false;
+  return (
+    (value.match === "all" || value.match === "any") &&
+    Array.isArray(value.rules) &&
+    value.rules.every(isSmartRule)
+  );
+}
+
+function isPlaylist(value: unknown): value is Playlist {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.playlist_id) &&
+    isString(value.name) &&
+    isNumber(value.track_count) &&
+    isString(value.updated_at) &&
+    (value.smart_rules === null || isSmartRuleset(value.smart_rules))
+  );
+}
+
+function isOrphanPlaylist(value: unknown): value is OrphanPlaylist {
+  if (!isJsonRecord(value)) return false;
+  return (
+    isString(value.playlist_id) &&
+    isString(value.name) &&
+    isNullableString(value.deleted_at) &&
+    isNumber(value.track_count)
+  );
+}
+
+function isTrackReference(value: unknown): value is { mbid: string } {
+  return isJsonRecord(value) && isString(value.mbid);
+}
+
+function decodeCreatePlaylistResult(
+  data: Record<string, unknown>,
+): CreatePlaylistResult {
+  return {
+    success: Boolean(data.success),
+    message: isString(data.message) ? data.message : undefined,
+    playlist_id: isString(data.playlist_id) ? data.playlist_id : undefined,
+    name: isString(data.name) ? data.name : undefined,
+  };
+}
+
 export async function fetchPlaylists(): Promise<Playlist[]> {
   const url = await backendUrl();
   const r = await apiFetch(`${url}/api/library/playlists`);
   if (!r.ok) throw new Error(`playlists: ${r.status}`);
   const data = await readJsonRecord(r);
-  return arrayField<Playlist>(data, "playlists");
+  return arrayField(data, "playlists", isPlaylist);
 }
 
 export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
@@ -29,7 +110,7 @@ export async function fetchOrphanPlaylists(): Promise<OrphanPlaylist[]> {
   const data = await readJsonRecord(r);
   if (!data.success)
     throw new Error(String(data.message ?? "orphans/playlists failed"));
-  return arrayField<OrphanPlaylist>(data, "playlists");
+  return arrayField(data, "playlists", isOrphanPlaylist);
 }
 
 export async function restorePlaylist(pid: string): Promise<ActionResult> {
@@ -74,7 +155,7 @@ export async function createPlaylist(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return (await readJsonRecord(r)) as CreatePlaylistResult;
+  return decodeCreatePlaylistResult(await readJsonRecord(r));
 }
 
 export async function updatePlaylistSmartRules(
@@ -149,8 +230,8 @@ export async function addTrackToPlaylist(
       missed: 0,
     };
   }
-  const existing = arrayField<unknown>(listData, "tracks").flatMap((track) =>
-    isJsonRecord(track) && typeof track.mbid === "string" ? [track.mbid] : [],
+  const existing = arrayField(listData, "tracks", isTrackReference).map(
+    (track) => track.mbid,
   );
   if (existing.includes(mbid)) {
     return { success: true, message: "already in playlist", added: 0, missed: 0 };
