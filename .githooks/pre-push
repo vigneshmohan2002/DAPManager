@@ -24,7 +24,15 @@ if [ ! -d "data/music" ]; then
 fi
 
 echo "[pre-push] running full E2E suite (SKIP_E2E=1 git push to bypass)..."
-python scripts/run_e2e.py --files 10
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    PYTHON_BIN="$(command -v python3 || command -v python || true)"
+fi
+if [ -z "$PYTHON_BIN" ]; then
+    echo "[pre-push] FAILED: python3/python is required."
+    exit 1
+fi
+"$PYTHON_BIN" scripts/run_e2e.py --files 10
 rc=$?
 if [ "$rc" != "0" ]; then
     echo "[pre-push] FAILED: E2E suite did not pass - push aborted."

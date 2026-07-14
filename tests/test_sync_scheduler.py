@@ -97,3 +97,29 @@ def test_start_is_idempotent():
     sched.start()
     assert sched._thread is first_thread
     sched.stop()
+
+
+def test_startup_task_retries_when_overlap_gate_returns_false():
+    from src import sync_scheduler as ss
+
+    original_retry = ss.STARTUP_RETRY_SECONDS
+    ss.STARTUP_RETRY_SECONDS = 0.02
+    calls = []
+
+    def trigger():
+        calls.append(1)
+        return len(calls) >= 2
+
+    try:
+        sched = SyncScheduler(
+            3600,
+            trigger,
+            run_on_startup=True,
+            startup_delay_seconds=0.01,
+        )
+        sched.start()
+        time.sleep(0.08)
+        sched.stop()
+    finally:
+        ss.STARTUP_RETRY_SECONDS = original_retry
+    assert len(calls) == 2

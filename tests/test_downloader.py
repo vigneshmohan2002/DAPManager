@@ -410,7 +410,8 @@ def test_run_queue_skips_sldl_when_lidarr_accepts(db, mock_scanner, temp_dirs):
 def test_build_lidarr_client_skipped_on_satellite():
     from src.downloader import _build_lidarr_client
     config = {
-        "is_master": False,
+        "device_role": "satellite",
+        "is_master": True,
         "lidarr_enabled": True,
         "lidarr_url": "http://x",
         "lidarr_api_key": "k",
@@ -421,7 +422,8 @@ def test_build_lidarr_client_skipped_on_satellite():
 def test_build_lidarr_client_skipped_when_disabled():
     from src.downloader import _build_lidarr_client
     config = {
-        "is_master": True,
+        "device_role": "master",
+        "is_master": False,
         "lidarr_enabled": False,
         "lidarr_url": "http://x",
         "lidarr_api_key": "k",
@@ -431,14 +433,21 @@ def test_build_lidarr_client_skipped_when_disabled():
 
 def test_build_lidarr_client_skipped_when_creds_missing():
     from src.downloader import _build_lidarr_client
-    config = {"is_master": True, "lidarr_enabled": True, "lidarr_url": "", "lidarr_api_key": "k"}
+    config = {
+        "device_role": "master",
+        "is_master": False,
+        "lidarr_enabled": True,
+        "lidarr_url": "",
+        "lidarr_api_key": "k",
+    }
     assert _build_lidarr_client(config) is None
 
 
 def test_build_lidarr_client_skipped_when_ping_fails():
     from src.downloader import _build_lidarr_client
     config = {
-        "is_master": True,
+        "device_role": "master",
+        "is_master": False,
         "lidarr_enabled": True,
         "lidarr_url": "http://x",
         "lidarr_api_key": "k",
@@ -453,7 +462,8 @@ def test_build_lidarr_client_skipped_when_ping_fails():
 def test_build_lidarr_client_happy_path():
     from src.downloader import _build_lidarr_client
     config = {
-        "is_master": True,
+        "device_role": "standalone",
+        "is_master": False,
         "lidarr_enabled": True,
         "lidarr_url": "http://x",
         "lidarr_api_key": "k",

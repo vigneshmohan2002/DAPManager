@@ -38,6 +38,31 @@ def test_master_payload_flags_master_and_keeps_creds():
     assert cfg["jellyfin_url"] == "http://j"
     assert cfg["master_url"] == ""
     assert cfg["report_inventory_to_host"] is True
+    assert cfg["artist_tag_max_age_days"] == 30
+    assert cfg["library_maintenance_interval_seconds"] == 604800
+    assert cfg["library_maintenance_on_startup"] is False
+
+
+def test_database_file_default_remains_compatible_for_direct_callers():
+    cfg = build_initial_config(
+        "master",
+        music_library_path="/m",
+        downloads_path="/d",
+    )
+    assert cfg["database_file"] == "dap_library.db"
+
+
+def test_internal_database_file_override_is_preserved():
+    cfg = build_initial_config(
+        "master",
+        music_library_path="/m",
+        downloads_path="/d",
+        database_file="/Application Support/DAPManager/dap_library.db",
+    )
+    assert (
+        cfg["database_file"]
+        == "/Application Support/DAPManager/dap_library.db"
+    )
 
 
 def test_satellite_payload_strips_trailing_slash_and_omits_slsk():
@@ -70,7 +95,7 @@ def test_satellite_payload_omits_device_name_when_blank():
     assert "device_name" not in cfg
 
 
-def test_standalone_payload_looks_like_local_only_satellite():
+def test_standalone_payload_is_local_catalog_authority():
     cfg = build_initial_config(
         "standalone",
         music_library_path="/m",
@@ -78,8 +103,8 @@ def test_standalone_payload_looks_like_local_only_satellite():
         slsk_username="u",
         slsk_password="p",
     )
-    assert cfg["is_master"] is False
-    assert cfg["device_role"] == "satellite"
+    assert cfg["is_master"] is True
+    assert cfg["device_role"] == "standalone"
     assert cfg["master_url"] == ""
     assert cfg["slsk_username"] == "u"
     assert cfg["report_inventory_to_host"] is False

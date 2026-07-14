@@ -11,8 +11,8 @@ on:
     branches: [master]
 
 jobs:
-  unit:
-    name: Byte-compile + unit tests
+  backend:
+    name: Byte-compile + non-E2E tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,31 +32,50 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
-      - name: Run host unit tests (no external deps)
-        run: PYTHONPATH=. python -m unittest discover -s tests/unit -v
-
-  contribution-suites:
-    name: Self-contained pytest suites
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Install server deps + pytest
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-server.txt pytest
 
-      - name: Run self-contained suites
-        # These suites are vouched as self-contained in the README; the
-        # env/ordering-sensitive web_routes block is intentionally excluded.
+      - name: Run full non-E2E suite
+        run: pytest tests --ignore=tests/e2e -q
+
+  desktop:
+    name: Desktop frontend + Tauri tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Run desktop component tests
+        working-directory: desktop
+        run: npm test
+
+      - name: Build desktop frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Install Linux Tauri build dependencies
         run: |
-          PYTHONPATH=. pytest -q \
-            tests/test_audio_quality.py \
-            tests/test_file_ingest.py \
-            tests/test_contributions.py \
-            tests/test_contribution_sync.py \
-            tests/test_openapi.py
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile and test the Tauri shell
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import web_server
 from web_server import app, TaskManager
-from src.openapi_spec import build_spec
+from src.openapi_spec import UNDOCUMENTED_PATHS, build_spec
 
 
 def _client():
@@ -30,11 +30,30 @@ def test_every_documented_path_exists_in_url_map():
     assert not missing, f"documented but not routed: {missing}"
 
 
+def test_every_api_route_is_documented_or_explicitly_internal():
+    documented = {_norm(path) for path in build_spec()["paths"]}
+    routed = {
+        _norm(rule.rule)
+        for rule in app.url_map.iter_rules()
+        if rule.rule.startswith("/api/")
+    }
+    unexpected = sorted(routed - documented - set(UNDOCUMENTED_PATHS))
+    stale = sorted(set(UNDOCUMENTED_PATHS) - routed)
+    assert not unexpected, f"new API routes need docs or allowlisting: {unexpected}"
+    assert not stale, f"stale undocumented-route allowlist entries: {stale}"
+
+
 def test_docs_and_spec_reachable_before_setup(monkeypatch):
     # No config on disk → setup gate must NOT redirect the docs.
     monkeypatch.setattr(web_server, "config_exists", lambda: False)
     c = _client()
-    assert c.get("/docs", follow_redirects=False).status_code == 200
+    docs = c.get("/docs", follow_redirects=False)
+    assert docs.status_code == 200
+    html = docs.get_data(as_text=True)
+    assert "unpkg" not in html
+    assert "https://" not in html
+    assert c.get("/static/api-docs.css").status_code == 200
+    assert c.get("/static/api-docs.js").status_code == 200
     r = c.get("/api/openapi.json")
     assert r.status_code == 200
     assert r.get_json()["openapi"].startswith("3.")

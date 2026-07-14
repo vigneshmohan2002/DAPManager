@@ -28,6 +28,7 @@ def test_master_records_inventory_locally(db):
     config = {
         "device_id": "master-1",
         "device_role": "master",
+        "is_master": False,  # stale compatibility value must not demote role
     }
     summary = main_run_inventory_report(db, config)
 
@@ -41,11 +42,23 @@ def test_master_records_inventory_locally(db):
     assert {r["mbid"] for r in rows} == {"m1", "m2"}
 
 
+def test_standalone_records_inventory_locally_without_master_url(db):
+    db.add_or_update_track(Track(mbid="m1", title="T", artist="A", local_path="/a"))
+    summary = main_run_inventory_report(db, {
+        "device_id": "standalone-1",
+        "device_role": "standalone",
+        "is_master": False,
+    })
+    assert summary["mode"] == "local"
+    assert summary["written"] == 1
+
+
 def test_satellite_posts_to_master(db):
     db.add_or_update_track(Track(mbid="m1", title="T", artist="A", local_path="/a"))
     config = {
         "device_id": "sat-1",
         "device_role": "satellite",
+        "is_master": True,  # stale compatibility value must not grant authority
         "master_url": "http://host.local:5001/",
     }
     payload = {"success": True, "device_id": "sat-1", "received": 1, "written": 1}

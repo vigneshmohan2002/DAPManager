@@ -22,12 +22,34 @@ web_server.DownloadItem = DownloadItem
 
 
 @pytest.fixture(autouse=True)
-def _reset_config_singleton():
-    """Reset the ConfigManager singleton between tests."""
+def _reset_config_singleton(monkeypatch, tmp_path):
+    """Reset ConfigManager and keep tests away from the user's real config."""
     from src.config_manager import ConfigManager
+
     ConfigManager._instance = None
+    monkeypatch.setattr(
+        ConfigManager,
+        "CONFIG_FILE",
+        str(tmp_path / "config-must-be-explicitly-configured.json"),
+    )
     yield
     ConfigManager._instance = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_web_server_state():
+    """Prevent Flask globals installed by one test leaking into the next."""
+    web_server.config = None
+    web_server.task_manager = None
+    web_server.sync_scheduler = None
+    web_server.release_watcher_scheduler = None
+    web_server.library_maintenance_scheduler = None
+    yield
+    web_server.config = None
+    web_server.task_manager = None
+    web_server.sync_scheduler = None
+    web_server.release_watcher_scheduler = None
+    web_server.library_maintenance_scheduler = None
 
 
 @pytest.fixture(autouse=True)

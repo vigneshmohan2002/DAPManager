@@ -1,5 +1,8 @@
-import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from src.album_completer import (
     fetch_album_tracklist,
     get_missing_tracks_for_album,
@@ -9,6 +12,15 @@ from src.album_completer import (
     audit_library,
 )
 from src.db_manager import DatabaseManager, Track, DownloadItem
+
+
+@pytest.fixture(autouse=True)
+def local_download_queue(monkeypatch):
+    """Album completion queues locally without consulting host config."""
+    monkeypatch.setattr(
+        "src.download_request.get_config",
+        lambda: SimpleNamespace(is_master=True, master_url=""),
+    )
 
 
 @pytest.fixture

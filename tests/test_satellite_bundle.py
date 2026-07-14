@@ -6,7 +6,7 @@ import os
 import urllib.error
 import urllib.request
 import zipfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,6 +26,12 @@ def _make_fake_bundle(path):
 def cache_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def initialized_web_server(monkeypatch):
+    """The download route must not initialize the full server in unit tests."""
+    monkeypatch.setattr(web_server, "task_manager", web_server.TaskManager())
 
 
 def test_inject_adds_master_url_and_token():
@@ -218,6 +224,50 @@ def test_download_mac_embeds_token_when_set(client, tmp_path, monkeypatch):
     # With ?token= query → 200 too (browser-friendly variant).
     res = client.get("/download/mac?token=secret")
     assert res.status_code == 200
+
+
+def test_scoped_bundle_link_downloads_without_exposing_api_token(
+    client, tmp_path, monkeypatch
+):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "public_master_url": "http://m:5001",
+        "api_token": "secret",
+    }))
+    monkeypatch.setattr(web_server, "CONFIG_FILE", str(cfg_path))
+    web_server.config = MagicMock()
+    web_server.config._config = {"api_token": "secret"}
+    base = tmp_path / "base.zip"
+    _make_fake_bundle(base)
+    monkeypatch.setattr(
+        "src.satellite_bundle.ensure_cached_bundle", lambda *a, **kw: base
+    )
+
+    link = client.get(
+        "/api/satellite-bundle-link",
+        headers={"Authorization": "Bearer secret"},
+    ).get_json()["url"]
+    assert "secret" not in link
+    assert "bundle_token=" in link
+    path = link.removeprefix("http://m:5001")
+    res = client.get(path)
+    assert res.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(res.data)) as z:
+        assert z.read(
+            "DAPManager.app/Contents/Resources/master_token.txt"
+        ).decode() == "secret"
+
+
+def test_expired_bundle_link_is_rejected(client, tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "public_master_url": "http://m:5001",
+        "api_token": "secret",
+    }))
+    monkeypatch.setattr(web_server, "CONFIG_FILE", str(cfg_path))
+    expired = web_server._bundle_download_token("secret", 1)
+    res = client.get(f"/download/mac?bundle_token={expired}")
+    assert res.status_code == 401
 
 
 def test_download_mac_502_when_fetch_fails(client, master_config, monkeypatch):

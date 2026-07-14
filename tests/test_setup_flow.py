@@ -50,6 +50,7 @@ def test_save_config_master_matches_build_initial_config(client, fresh_config):
     written = json.loads(fresh_config.read_text())
     expected = build_initial_config(
         "master",
+        database_file=str(fresh_config.with_name("dap_library.db")),
         music_library_path=payload["music_library_path"],
         downloads_path=payload["downloads_path"],
         dap_mount_point=payload["dap_mount_point"],
@@ -68,6 +69,24 @@ def test_save_config_master_matches_build_initial_config(client, fresh_config):
         fast_search=payload["fast_search"],
     )
     assert written == expected
+
+
+def test_save_config_owns_absolute_database_path_and_ignores_client_value(
+    client, fresh_config
+):
+    res = client.post("/api/save_config", json={
+        "role": "master",
+        "music_library_path": "/tmp/m",
+        "downloads_path": "/tmp/d",
+        "database_file": "/tmp/client-selected.db",
+    })
+
+    assert res.status_code == 200
+    written = json.loads(fresh_config.read_text())
+    expected = str(fresh_config.with_name("dap_library.db"))
+    assert os.path.isabs(written["database_file"])
+    assert written["database_file"] == expected
+    assert written["database_file"] != "/tmp/client-selected.db"
 
 
 def test_save_config_satellite_writes_master_url(client, fresh_config):

@@ -29,7 +29,8 @@ class TestBuildInitialConfig(unittest.TestCase):
     def test_standalone_role(self):
         cfg = first_run.build_initial_config(
             "standalone", slsk_username="u", **self.BASE)
-        self.assertFalse(cfg["is_master"])
+        self.assertTrue(cfg["is_master"])
+        self.assertEqual(cfg["device_role"], "standalone")
         self.assertEqual(cfg["master_url"], "")
         self.assertEqual(cfg["slsk_username"], "u")
 

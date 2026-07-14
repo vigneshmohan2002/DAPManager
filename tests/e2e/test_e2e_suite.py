@@ -342,6 +342,26 @@ class TestSatellite(unittest.TestCase):
         self.assertFalse(cfg.get("is_master"))
         self.assertTrue(cfg.get("master_url"), "satellite has no master_url")
 
+    def test_album_cover_proxy(self):
+        # Artwork remains on the master.  The satellite endpoint should relay
+        # it on demand rather than requiring a copied local_path or cover file.
+        _, data = _req(MASTER, "GET", "/api/library/albums")
+        albums = data.get("albums", []) if isinstance(data, dict) else []
+        if not albums:
+            self.skipTest("master has no albums")
+        from urllib.parse import quote
+        aid = quote(albums[0]["id"], safe="")
+        master_status, master_body = _req(
+            MASTER, "GET", f"/api/library/albums/{aid}/cover", raw=True,
+        )
+        if master_status != 200:
+            self.skipTest("sample master album has no embedded artwork")
+        satellite_status, satellite_body = _req(
+            SATELLITE, "GET", f"/api/library/albums/{aid}/cover", raw=True,
+        )
+        self.assertEqual(satellite_status, 200)
+        self.assertEqual(satellite_body, master_body)
+
     def test_catalog_pull_populates_library(self):
         # Trigger the delta pull from the master, wait for it to finish.
         status, data = _req(SATELLITE, "POST", "/api/catalog/pull")

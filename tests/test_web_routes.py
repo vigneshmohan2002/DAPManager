@@ -229,6 +229,34 @@ def test_get_catalog_with_since_filter(client, mock_config):
     mock_db.get_catalog_since.assert_called_once_with("2026-04-17 12:00:00")
 
 
+def test_get_artist_tags_delta_returns_grouped_snapshots(client, mock_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_db.conn.execute.return_value.fetchone.return_value = {
+            "t": "2026-06-03 12:00:00",
+        }
+        mock_db.get_artist_tags_since.return_value = [{
+            "artist_name": "Artist",
+            "mbid": "artist-mbid",
+            "fetched_at": "2026-06-03 11:00:00",
+            "tags": [{"tag": "rock", "weight": 10}],
+        }]
+
+        res = client.get(
+            '/api/artist-tags?since=2026-06-03+10:00:00'
+        )
+
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["success"] is True
+    assert data["as_of"] == "2026-06-03 12:00:00"
+    assert data["count"] == 1
+    assert data["artist_tags"][0]["artist_name"] == "Artist"
+    mock_db.get_artist_tags_since.assert_called_once_with(
+        "2026-06-03 10:00:00"
+    )
+
+
 def test_catalog_pull_rejects_when_master_url_missing(client, mock_config):
     mock_config.master_url = ""
     res = client.post('/api/catalog/pull')
@@ -895,6 +923,90 @@ def test_library_album_cover_404_when_no_embedded_art(client, mock_config):
     assert res.status_code == 404
 
 
+def test_library_album_cover_proxies_master_when_no_local_path(client, mock_config):
+    mock_config._config = {"master_url": "http://master.example/"}
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.headers = {
+            "Content-Type": "image/jpeg",
+            "Content-Length": "4",
+            "Cache-Control": "public, max-age=86400",
+        }
+        upstream.iter_content.return_value = iter([b"JPEG"])
+        mock_get.return_value = upstream
+
+        res = client.get('/api/library/albums/Album%20One%7CArtist%2FName/cover')
+
+    assert res.status_code == 200
+    assert res.mimetype == "image/jpeg"
+    assert res.data == b"JPEG"
+    assert res.headers["Cache-Control"] == "public, max-age=86400"
+    call = mock_get.call_args
+    assert call.args[0] == (
+        "http://master.example/api/library/albums/"
+        "Album%20One%7CArtist%2FName/cover"
+    )
+    assert call.kwargs["stream"] is True
+    assert "Authorization" not in call.kwargs["headers"]
+    upstream.close.assert_called_once_with()
+
+
+def test_library_album_cover_proxies_when_local_file_has_no_art(client, mock_config):
+    mock_config._config = {"master_url": "http://master.example"}
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('src.cover_art.extract_cover', return_value=None), \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = "/m/1.flac"
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.headers = {"Content-Type": "image/png"}
+        upstream.iter_content.return_value = iter([b"PNG"])
+        mock_get.return_value = upstream
+
+        res = client.get('/api/library/albums/rmb-1/cover')
+
+    assert res.status_code == 200
+    assert res.mimetype == "image/png"
+    assert res.data == b"PNG"
+
+
+def test_library_album_cover_proxy_forwards_bearer_token(client, mock_config):
+    mock_config._config = {
+        "master_url": "http://master.example",
+        "api_token": "tok",
+    }
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.headers = {"Content-Type": "image/jpeg"}
+        upstream.iter_content.return_value = iter([b"X"])
+        mock_get.return_value = upstream
+
+        res = client.get(
+            '/api/library/albums/rmb-1/cover',
+            headers={"Authorization": "Bearer tok"},
+        )
+
+    assert res.status_code == 200
+    assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"
+
+
+def test_library_album_cover_proxy_returns_502_on_upstream_failure(client, mock_config):
+    mock_config._config = {"master_url": "http://master.example"}
+    import requests as _r
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get', side_effect=_r.ConnectionError("boom")):
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+        res = client.get('/api/library/albums/rmb-1/cover')
+
+    assert res.status_code == 502
+
+
 def test_library_album_tracks_returns_ordered_list(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         MockDB.return_value.__enter__.return_value.list_album_tracks.return_value = [
@@ -911,6 +1023,54 @@ def test_library_album_tracks_returns_ordered_list(client, mock_config):
     assert [t["mbid"] for t in data["tracks"]] == ["t-a", "t-b"]
     # Local path must not leak to the webview.
     assert "local_path" not in data["tracks"][0]
+
+
+def test_library_album_tracks_prefers_master_playable_rows(client, mock_config):
+    mock_config._config = {
+        "master_url": "http://master.example/",
+        "api_token": "tok",
+    }
+    upstream = MagicMock()
+    upstream.status_code = 200
+    upstream.headers = {"Content-Type": "application/json"}
+    upstream.content = json.dumps({
+        "success": True,
+        "tracks": [
+            {"mbid": "playable", "title": "Track 1", "track_number": 1},
+        ],
+    }).encode()
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get', return_value=upstream) as mock_get:
+        res = client.get(
+            '/api/library/albums/Album%20One%7CArtist%2FName/tracks',
+            headers={"Authorization": "Bearer tok"},
+        )
+
+    assert res.status_code == 200
+    assert [row["mbid"] for row in res.get_json()["tracks"]] == ["playable"]
+    assert mock_get.call_args.args[0] == (
+        "http://master.example/api/library/albums/"
+        "Album%20One%7CArtist%2FName/tracks"
+    )
+    assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"
+    MockDB.assert_not_called()
+    upstream.close.assert_called_once_with()
+
+
+def test_library_album_tracks_uses_replica_when_master_offline(client, mock_config):
+    mock_config._config = {"master_url": "http://master.example"}
+    import requests as _r
+    with patch('requests.get', side_effect=_r.ConnectionError("offline")), \
+         patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_album_tracks.return_value = [
+            {"mbid": "local", "title": "Track 1", "artist": "A", "album": "B",
+             "track_number": 1, "disc_number": 1, "local_path": "/m/a.flac",
+             "dap_path": None},
+        ]
+        res = client.get('/api/library/albums/rmb-1/tracks')
+
+    assert res.status_code == 200
+    assert [row["mbid"] for row in res.get_json()["tracks"]] == ["local"]
 
 
 def test_stream_serves_file_with_audio_mime(client, mock_config, tmp_path):
@@ -1096,13 +1256,21 @@ def test_get_config_redacts_secrets(client, mock_config, tmp_path, monkeypatch):
     assert data["config"]["slsk_password"] == ""
     assert data["config"]["jellyfin_api_key"] == ""
     assert data["config"]["music_library_path"] == "/music"
+    # Legacy files are presented through canonical role semantics.
+    assert data["config"]["device_role"] == "master"
+    assert data["config"]["is_master"] is True
     assert "slsk_password" in data["secret_keys"]
     # bool_keys + groups shipped so the desktop Settings dialog reads
     # them from the single config_keys.py source rather than drifting
     # like the web dashboard's hardcoded JS copy did.
     assert "report_inventory_to_host" in data["bool_keys"]
+    assert "is_master" not in data["editable_keys"]
+    assert "is_master" not in data["bool_keys"]
     assert isinstance(data["groups"], list) and data["groups"]
     assert {"label", "keys"} <= set(data["groups"][0].keys())
+    assert all(
+        "is_master" not in group["keys"] for group in data["groups"]
+    )
 
 
 def test_post_config_merges_and_ignores_unknown_keys(client, mock_config, tmp_path, monkeypatch):
@@ -1125,6 +1293,53 @@ def test_post_config_merges_and_ignores_unknown_keys(client, mock_config, tmp_pa
     assert saved["database_file"] == "dap.db"  # untouched
 
 
+def test_post_config_role_flip_resynchronizes_legacy_bool_and_schedulers(
+    client, mock_config, tmp_path, monkeypatch
+):
+    cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    with patch("web_server._start_release_watcher") as release_restart, \
+         patch("web_server._start_library_maintenance_scheduler") as maintenance_restart:
+        res = client.post("/api/config", json={
+            "device_role": "satellite",
+            # No longer editable; it must not override the canonical role.
+            "is_master": True,
+        })
+
+    assert res.status_code == 200
+    assert res.get_json()["changed"] == ["device_role"]
+    saved = json.loads(cfg_path.read_text())
+    assert saved["device_role"] == "satellite"
+    assert saved["is_master"] is False
+    release_restart.assert_called_once_with()
+    maintenance_restart.assert_called_once_with(run_on_startup=False)
+
+
+def test_post_config_ignores_legacy_bool_and_migrates_roleless_file(
+    client, mock_config, tmp_path, monkeypatch
+):
+    cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    res = client.post("/api/config", json={"is_master": False})
+
+    assert res.status_code == 200
+    assert res.get_json()["changed"] == []
+    saved = json.loads(cfg_path.read_text())
+    assert saved["device_role"] == "master"
+    assert saved["is_master"] is True
+
+
+def test_post_config_rejects_invalid_device_role(
+    client, mock_config, tmp_path, monkeypatch
+):
+    cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    before = cfg_path.read_text()
+
+    res = client.post("/api/config", json={"device_role": "overlord"})
+
+    assert res.status_code == 400
+    assert "device_role" in res.get_json()["message"]
+    assert cfg_path.read_text() == before
+
+
 def test_post_config_blank_secret_keeps_existing(client, mock_config, tmp_path, monkeypatch):
     cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
     res = client.post('/api/config', json={
@@ -1144,6 +1359,46 @@ def test_post_config_rejects_non_object(client, mock_config, tmp_path, monkeypat
     _config_roundtrip_fixtures(tmp_path, monkeypatch)
     res = client.post('/api/config', json=[1, 2, 3])
     assert res.status_code == 400
+
+
+def test_maintenance_scheduler_reloads_without_startup_run(
+    client, mock_config, tmp_path, monkeypatch
+):
+    _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    with patch('web_server._start_library_maintenance_scheduler') as restart:
+        res = client.post('/api/config', json={
+            'library_maintenance_interval_seconds': 0,
+        })
+    assert res.status_code == 200
+    restart.assert_called_once_with(run_on_startup=False)
+
+
+def test_browser_token_rotation_refreshes_auth_cookie(
+    client, mock_config, tmp_path, monkeypatch
+):
+    cfg_path = _config_roundtrip_fixtures(tmp_path, monkeypatch)
+    raw = json.loads(cfg_path.read_text())
+    raw['api_token'] = 'old-secret'
+    cfg_path.write_text(json.dumps(raw))
+    mock_config._config = {'api_token': 'old-secret'}
+
+    def reload_mock():
+        mock_config._config = json.loads(cfg_path.read_text())
+
+    mock_config._load_config.side_effect = reload_mock
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    login = client.post('/auth', data={'token': 'old-secret', 'next': '/'})
+    assert login.status_code == 302
+
+    changed = client.post(
+        '/api/config',
+        json={'api_token': 'new-secret'},
+        headers={'Origin': 'http://localhost'},
+    )
+    assert changed.status_code == 200
+    assert 'HttpOnly' in changed.headers['Set-Cookie']
+    assert 'new-secret' in changed.headers['Set-Cookie']
+    assert client.get('/').status_code == 200
 
 
 def test_soft_delete_track_route_stamps(client, mock_config):
@@ -1293,22 +1548,28 @@ def test_sync_all_starts_task(client, mock_config):
     assert data["success"] is True
 
 
-def test_sync_state_returns_four_cursors(client, mock_config):
+def test_sync_state_returns_all_cursors(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
         mock_db.get_sync_state.side_effect = lambda key: {
             "last_catalog_sync": "2026-04-19 10:00:00",
+            "last_artist_tags_sync": "2026-04-19 10:00:30",
             "last_playlist_sync": "2026-04-19 10:01:00",
             "last_playlist_push": None,
+            "last_lyrics_sync": "2026-04-19 10:01:30",
             "last_inventory_report": "2026-04-19 10:02:00",
+            "last_contribute": "2026-04-19 10:03:00",
         }[key]
         res = client.get('/api/sync/state')
     data = res.get_json()
     assert data["success"] is True
     assert data["state"]["catalog_pull"] == "2026-04-19 10:00:00"
+    assert data["state"]["artist_tags_pull"] == "2026-04-19 10:00:30"
     assert data["state"]["playlist_pull"] == "2026-04-19 10:01:00"
     assert data["state"]["playlist_push"] is None
+    assert data["state"]["lyrics_pull"] == "2026-04-19 10:01:30"
     assert data["state"]["inventory_report"] == "2026-04-19 10:02:00"
+    assert data["state"]["contribute"] == "2026-04-19 10:03:00"
 
 
 def test_soft_delete_playlist_route(client, mock_config):
@@ -1379,6 +1640,41 @@ def test_post_suggestions_dedupes_within_payload(client, mock_config):
     assert mock_db.queue_download.call_count == 1
 
 
+def test_forward_suggestions_uses_configured_master_and_token(client, mock_config):
+    values = {
+        "master_url": "http://master.local:5001/",
+        "api_token": "shared-secret",
+    }
+    mock_config.get.side_effect = lambda key, default=None: values.get(key, default)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "success": True, "received": 1, "queued": 1, "skipped": 0,
+    }
+    with patch('requests.post', return_value=response) as post:
+        res = client.post('/api/suggestions/forward', json={
+            "items": [{"artist": "Radiohead", "title": "Idioteque"}],
+        })
+    assert res.status_code == 200
+    assert res.get_json()["queued"] == 1
+    post.assert_called_once_with(
+        "http://master.local:5001/api/suggestions",
+        json={"items": [{"artist": "Radiohead", "title": "Idioteque"}]},
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": "Bearer shared-secret",
+        },
+        timeout=(5, 30),
+    )
+
+
+def test_forward_suggestions_requires_master_url(client, mock_config):
+    mock_config.get.side_effect = lambda key, default=None: default
+    res = client.post('/api/suggestions/forward', json={"items": []})
+    assert res.status_code == 409
+    assert "master_url" in res.get_json()["message"]
+
+
 # ---------------------------------------------------------------------------
 # /api/* bearer-token auth (opt-in via api_token in config)
 # ---------------------------------------------------------------------------
@@ -1393,6 +1689,17 @@ def _token_config(monkeypatch):
     monkeypatch.setattr(web_server, "config", mock)
     monkeypatch.setattr(web_server, "task_manager", TaskManager())
     return mock
+
+
+@pytest.fixture
+def _browser_cookie_client(client, _token_config, monkeypatch):
+    """Log the Flask test browser in through the real HttpOnly-cookie flow."""
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    login = client.post('/auth', data={
+        'token': 'secret-xyz', 'next': '/',
+    }, follow_redirects=False)
+    assert login.status_code == 302
+    return client
 
 
 def test_api_requires_token_when_configured(client, _token_config):
@@ -1422,6 +1729,77 @@ def test_api_accepts_correct_token(client, _token_config):
     assert res.get_json()["success"] is True
 
 
+def test_api_accepts_query_token_for_media_style_get(client, _token_config):
+    """Audio/img elements cannot attach Authorization, so GET supports a token query."""
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('shutil.disk_usage') as mock_du:
+        mock_instance = MockDB.return_value.__enter__.return_value
+        mock_instance.get_library_stats.return_value = {
+            'tracks': 1, 'artists': 1, 'albums': 1, 'playlists': 0,
+            'incomplete_albums': 0,
+        }
+        mock_du.return_value = (100*1024**3, 50*1024**3, 50*1024**3)
+        res = client.get('/api/stats?token=secret-xyz')
+    assert res.status_code == 200
+
+
+def test_api_rejects_query_token_for_post(client, _token_config):
+    res = client.post('/api/suggestions?token=secret-xyz', json={"items": []})
+    assert res.status_code == 401
+
+
+def test_protected_page_never_embeds_configured_api_token(
+    client, _token_config, monkeypatch
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    res = client.get('/', follow_redirects=False)
+    assert res.status_code == 302
+    assert '/auth' in res.headers['Location']
+    assert b'secret-xyz' not in res.data
+
+    login = client.get('/auth')
+    assert login.status_code == 200
+    assert b'secret-xyz' not in login.data
+
+
+def test_browser_login_cookie_authenticates_ui_and_api(
+    client, _token_config, monkeypatch
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    login = client.post('/auth', data={
+        'token': 'secret-xyz', 'next': '/',
+    }, follow_redirects=False)
+    assert login.status_code == 302
+    cookie = login.headers['Set-Cookie']
+    assert 'HttpOnly' in cookie
+    assert 'SameSite=Strict' in cookie
+
+    page = client.get('/')
+    assert page.status_code == 200
+    assert b'secret-xyz' not in page.data
+
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('shutil.disk_usage') as mock_du:
+        MockDB.return_value.__enter__.return_value.get_library_stats.return_value = {
+            'tracks': 0, 'artists': 0, 'albums': 0, 'playlists': 0,
+            'incomplete_albums': 0,
+        }
+        mock_du.return_value = (1, 1, 0)
+        api = client.get('/api/stats')
+    assert api.status_code == 200
+
+
+def test_ui_query_token_bootstraps_cookie_then_strips_secret(
+    client, _token_config, monkeypatch
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    res = client.get('/?token=secret-xyz', follow_redirects=False)
+    assert res.status_code == 302
+    assert res.headers['Location'].endswith('/')
+    assert 'token=' not in res.headers['Location']
+    assert 'HttpOnly' in res.headers['Set-Cookie']
+
+
 def test_api_status_is_exempt_from_token(client, _token_config):
     """Health checks must not require the token."""
     res = client.get('/api/status')
@@ -1437,6 +1815,92 @@ def test_api_open_mode_when_token_empty(client, mock_config):
 def test_api_token_blocks_post_routes_too(client, _token_config):
     res = client.post('/api/suggestions', json={"items": []})
     assert res.status_code == 401
+
+
+@pytest.mark.parametrize("origin", [
+    "http://attacker.localhost",  # same-site, different host origin
+    "https://localhost",          # same host, different scheme origin
+    "https://evil.example",       # fully cross-site origin
+])
+def test_cookie_authenticated_post_rejects_cross_origin(
+    _browser_cookie_client, origin,
+):
+    res = _browser_cookie_client.post(
+        '/api/suggestions',
+        json={"items": []},
+        headers={"Origin": origin},
+    )
+    assert res.status_code == 403
+    assert "same-origin" in res.get_json()["message"]
+
+
+def test_cookie_authenticated_post_rejects_absent_provenance(
+    _browser_cookie_client,
+):
+    res = _browser_cookie_client.post(
+        '/api/suggestions', json={"items": []},
+    )
+    assert res.status_code == 403
+
+
+def test_cookie_authenticated_post_accepts_same_origin(
+    _browser_cookie_client,
+):
+    res = _browser_cookie_client.post(
+        '/api/suggestions',
+        json={"items": []},
+        headers={"Origin": "http://localhost"},
+    )
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+
+
+def test_cookie_authenticated_post_accepts_same_origin_referer(
+    _browser_cookie_client,
+):
+    res = _browser_cookie_client.post(
+        '/api/suggestions',
+        json={"items": []},
+        headers={"Referer": "http://localhost/satellite"},
+    )
+    assert res.status_code == 200
+
+
+def test_bearer_authenticated_tauri_post_does_not_require_web_origin(
+    client, _token_config, monkeypatch,
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    res = client.post(
+        '/api/suggestions',
+        json={"items": []},
+        headers={
+            "Authorization": "Bearer secret-xyz",
+            "Origin": "tauri://localhost",
+        },
+    )
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+    assert res.headers["Access-Control-Allow-Origin"] == "tauri://localhost"
+
+
+def test_tauri_preflight_is_narrowly_allowed(client, _token_config):
+    res = client.options('/api/suggestions', headers={
+        'Origin': 'tauri://localhost',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type',
+    })
+    assert res.status_code == 204
+    assert res.headers['Access-Control-Allow-Origin'] == 'tauri://localhost'
+    assert 'Authorization' in res.headers['Access-Control-Allow-Headers']
+
+
+def test_unknown_origin_does_not_receive_cors_access(client, _token_config):
+    res = client.options('/api/suggestions', headers={
+        'Origin': 'https://evil.example',
+        'Access-Control-Request-Method': 'POST',
+    })
+    assert res.status_code == 401
+    assert 'Access-Control-Allow-Origin' not in res.headers
 
 
 # ---------------------------------------------------------------------------
@@ -1730,7 +2194,9 @@ def test_record_play_returns_event_id(client, mock_config):
 
     assert res.status_code == 201
     assert res.get_json() == {"success": True, "event_id": 42}
-    inst.record_play_event.assert_called_once_with("abc", source="desktop")
+    inst.record_play_event.assert_called_once_with(
+        "abc", source="desktop", listened_ms=None,
+    )
 
 
 def test_record_play_accepts_omitted_source(client, mock_config):
@@ -1740,7 +2206,9 @@ def test_record_play_accepts_omitted_source(client, mock_config):
         res = client.post('/api/library/plays', json={"mbid": "xyz"})
 
     assert res.status_code == 201
-    inst.record_play_event.assert_called_once_with("xyz", source=None)
+    inst.record_play_event.assert_called_once_with(
+        "xyz", source=None, listened_ms=None,
+    )
 
 
 def test_record_play_rejects_blank_mbid(client, mock_config):
@@ -1764,6 +2232,7 @@ def test_play_stats_aggregates_db_helpers(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
         inst.play_count_since.return_value = 7
+        inst.listening_time_since.return_value = 3723000
         inst.top_tracks_since.return_value = [
             {"mbid": "t1", "title": "Yellow", "artist": "Coldplay", "album": "P", "plays": 3},
         ]
@@ -1774,28 +2243,38 @@ def test_play_stats_aggregates_db_helpers(client, mock_config):
             {"id": 9, "mbid": "t1", "played_at": "2026-04-27 10:00:00",
              "source": "desktop", "title": "Yellow", "artist": "Coldplay", "album": "P"},
         ]
+        inst.plays_by_hour.return_value = [
+            {"hour": 10, "plays": 3},
+        ]
         res = client.get('/api/library/play-stats?since=2026-01-01&limit=5')
 
     assert res.status_code == 200
     data = res.get_json()
     assert data["success"] is True
     assert data["total"] == 7
+    assert data["listening_time_ms"] == 3723000
     assert data["top_tracks"][0]["plays"] == 3
     assert data["top_artists"][0]["distinct_tracks"] == 2
     assert data["recent"][0]["mbid"] == "t1"
+    assert data["hour_of_day"][10] == 3
+    assert len(data["hour_of_day"]) == 24
     inst.play_count_since.assert_called_once_with("2026-01-01")
+    inst.listening_time_since.assert_called_once_with("2026-01-01")
     inst.top_tracks_since.assert_called_once_with("2026-01-01", limit=5)
     inst.top_artists_since.assert_called_once_with("2026-01-01", limit=5)
     inst.recent_plays.assert_called_once_with(limit=5)
+    inst.plays_by_hour.assert_called_once_with("2026-01-01")
 
 
 def test_play_stats_defaults_to_no_since_and_limit_20(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
         inst.play_count_since.return_value = 0
+        inst.listening_time_since.return_value = 0
         inst.top_tracks_since.return_value = []
         inst.top_artists_since.return_value = []
         inst.recent_plays.return_value = []
+        inst.plays_by_hour.return_value = []
         res = client.get('/api/library/play-stats')
 
     assert res.status_code == 200
@@ -1809,9 +2288,11 @@ def test_play_stats_clamps_limit_to_safe_range(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
         inst.play_count_since.return_value = 0
+        inst.listening_time_since.return_value = 0
         inst.top_tracks_since.return_value = []
         inst.top_artists_since.return_value = []
         inst.recent_plays.return_value = []
+        inst.plays_by_hour.return_value = []
         client.get('/api/library/play-stats?limit=99999')
 
     inst.top_tracks_since.assert_called_once_with(None, limit=200)

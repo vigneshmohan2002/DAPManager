@@ -4,12 +4,14 @@ import pytest
 import requests
 
 from src.catalog_sync import (
+    ARTIST_TAGS_SYNC_STATE_KEY,
     CatalogClient,
     LYRICS_SYNC_STATE_KEY,
     PLAYLIST_PUSH_STATE_KEY,
     PLAYLIST_SYNC_STATE_KEY,
     SYNC_STATE_KEY,
     main_run_catalog_pull,
+    main_run_artist_tags_pull,
     main_run_lyrics_pull,
     main_run_playlist_pull,
     main_run_playlist_push,
@@ -359,6 +361,98 @@ def test_main_run_lyrics_pull_uses_config_master_url(db):
     ) as mock_get:
         main_run_lyrics_pull(db, config)
     assert mock_get.call_args.args[0] == "http://host.local:5001/api/lyrics"
+
+
+def test_pull_artist_tags_replaces_snapshots_and_advances_cursor(db):
+    db.apply_artist_tags_row({
+        "artist_name": "Changed",
+        "mbid": "old-mbid",
+        "fetched_at": "2026-05-01 10:00:00",
+        "tags": [{"tag": "old", "weight": 2}],
+    })
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True,
+        "as_of": "2026-06-03 12:00:00",
+        "count": 2,
+        "artist_tags": [
+            {
+                "artist_name": "Changed",
+                "mbid": "new-mbid",
+                "fetched_at": "2026-06-03 11:00:00",
+                "tags": [{"tag": "new", "weight": 9}],
+            },
+            {
+                "artist_name": "No Match",
+                "mbid": None,
+                "fetched_at": "2026-06-03 11:30:00",
+                "tags": [],
+            },
+        ],
+    }
+    with patch.object(
+        client.session, "get", return_value=_mock_response(payload)
+    ) as mock_get:
+        summary = client.pull_artist_tags()
+
+    assert mock_get.call_args.args[0] == "http://host.local:5001/api/artist-tags"
+    assert mock_get.call_args.kwargs["params"] == {}
+    assert summary == {
+        "received": 2,
+        "inserted": 1,
+        "updated": 1,
+        "stale": 0,
+        "skipped": 0,
+        "since": None,
+        "as_of": "2026-06-03 12:00:00",
+    }
+    assert db.get_top_tags_for_artist("Changed") == [
+        {"tag": "new", "weight": 9},
+    ]
+    assert db.get_top_tags_for_artist("No Match") == []
+    assert db.get_sync_state(ARTIST_TAGS_SYNC_STATE_KEY) == (
+        "2026-06-03 12:00:00"
+    )
+
+
+def test_pull_artist_tags_uses_its_own_cursor(db):
+    db.set_sync_state(ARTIST_TAGS_SYNC_STATE_KEY, "2026-06-03 12:00:00")
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True,
+        "as_of": "2026-06-04 12:00:00",
+        "count": 0,
+        "artist_tags": [],
+    }
+    with patch.object(
+        client.session, "get", return_value=_mock_response(payload)
+    ) as mock_get:
+        client.pull_artist_tags()
+
+    assert mock_get.call_args.kwargs["params"] == {
+        "since": "2026-06-03 12:00:00",
+    }
+    assert db.get_sync_state(ARTIST_TAGS_SYNC_STATE_KEY) == (
+        "2026-06-04 12:00:00"
+    )
+
+
+def test_main_run_artist_tags_pull_uses_config_master_url(db):
+    config = {"master_url": "http://host.local:5001/"}
+    payload = {
+        "success": True,
+        "as_of": "2026-06-03 12:00:00",
+        "count": 0,
+        "artist_tags": [],
+    }
+    with patch(
+        "src.catalog_sync.requests.Session.get",
+        return_value=_mock_response(payload),
+    ) as mock_get:
+        main_run_artist_tags_pull(db, config)
+    assert mock_get.call_args.args[0] == (
+        "http://host.local:5001/api/artist-tags"
+    )
 
 
 def test_catalog_client_sets_bearer_header_when_token_given(db):

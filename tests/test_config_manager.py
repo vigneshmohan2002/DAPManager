@@ -407,6 +407,93 @@ def test_device_identity_generated_on_first_run():
                 on_disk = json.load(f)
             assert on_disk["device_id"] == config.device_id
             assert on_disk["device_role"] == "satellite"
+            assert on_disk["is_master"] is False
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
+def test_legacy_is_master_true_migrates_to_master_role():
+    """A pre-device_role master must not be silently demoted on upgrade."""
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        _write_minimal_config(config_file, overrides={"is_master": True})
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.device_role == "master"
+            assert config.is_master is True
+
+            with open(config_file) as f:
+                on_disk = json.load(f)
+            assert on_disk["device_role"] == "master"
+            assert on_disk["is_master"] is True
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
+@pytest.mark.parametrize(
+    ("device_role", "stale_is_master", "expected_is_master"),
+    [
+        ("satellite", True, False),
+        ("master", False, True),
+        ("standalone", False, True),
+    ],
+)
+def test_device_role_wins_and_resynchronizes_legacy_bool(
+    device_role, stale_is_master, expected_is_master
+):
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        _write_minimal_config(
+            config_file,
+            overrides={
+                "device_role": device_role,
+                "is_master": stale_is_master,
+            },
+        )
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.device_role == device_role
+            assert config.is_master is expected_is_master
+
+            with open(config_file) as f:
+                on_disk = json.load(f)
+            assert on_disk["device_role"] == device_role
+            assert on_disk["is_master"] is expected_is_master
+        finally:
+            ConfigManager.CONFIG_FILE = original_file
+            ConfigManager._instance = None
+
+
+def test_invalid_explicit_device_role_fails_closed_and_is_persisted():
+    ConfigManager._instance = None
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_file = os.path.join(temp_dir, "config.json")
+        _write_minimal_config(
+            config_file,
+            overrides={"device_role": "overlord", "is_master": True},
+        )
+
+        original_file = ConfigManager.CONFIG_FILE
+        ConfigManager.CONFIG_FILE = config_file
+        try:
+            config = get_config()
+            assert config.device_role == "satellite"
+            assert config.is_master is False
+
+            with open(config_file) as f:
+                on_disk = json.load(f)
+            assert on_disk["device_role"] == "satellite"
+            assert on_disk["is_master"] is False
         finally:
             ConfigManager.CONFIG_FILE = original_file
             ConfigManager._instance = None

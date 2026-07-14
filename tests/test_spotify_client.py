@@ -1,6 +1,9 @@
-import pytest
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from src.spotify_client import SpotifyClient
 from src.db_manager import DatabaseManager, Playlist, Track, DownloadItem
 
@@ -179,7 +182,11 @@ def test_process_track_success(mock_musicbrainz, mock_spotify, mock_credentials,
         'external_ids': {'isrc': 'USXX123456789'}
     }
 
-    client._process_track(spotify_track, "test_playlist", 1)
+    with patch(
+        "src.download_request.get_config",
+        return_value=SimpleNamespace(is_master=True, master_url=""),
+    ):
+        client._process_track(spotify_track, "test_playlist", 1)
 
     track = db.get_track_by_mbid("test_mbid")
     assert track is not None
