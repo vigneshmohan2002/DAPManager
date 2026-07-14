@@ -3,7 +3,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.db_manager import DatabaseManager, Track
-from src.contribution_sync import main_run_contribute, main_run_contribute_one
+from src.contribution_sync import (
+    CONTRIBUTE_STATE_KEY,
+    TERMINAL,
+    VALID_STATUSES,
+    main_run_contribute,
+    main_run_contribute_one,
+)
 
 
 @pytest.fixture
@@ -27,6 +33,26 @@ def _sat_config():
         "device_role": "satellite",
         "master_url": "http://host.local:5001/",
     }
+
+
+def test_contribution_status_contract_is_exact():
+    assert VALID_STATUSES == {
+        "attempting",
+        "have_better",
+        "satisfied",
+        "needs_upload",
+        "ingested",
+    }
+    assert TERMINAL == {"have_better", "satisfied", "ingested"}
+
+
+def test_successful_empty_contribution_run_stamps_cursor(db):
+    assert db.get_sync_state(CONTRIBUTE_STATE_KEY) is None
+
+    out = main_run_contribute(db, _sat_config())
+
+    assert out == {"offered": 0, "uploaded": 0, "satisfied": 0, "errors": 0}
+    assert db.get_sync_state(CONTRIBUTE_STATE_KEY) is not None
 
 
 def test_master_role_is_noop(db):

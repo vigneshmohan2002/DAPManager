@@ -5,6 +5,80 @@ import tempfile
 import pytest
 from src.db_manager import Track, DownloadItem, DatabaseManager, Playlist
 
+
+EXPECTED_SCHEMA_COLUMNS = {
+    "albums": ("release_mbid", "album_title", "total_tracks"),
+    "artist_tags": ("artist_name", "mbid", "tag", "weight", "fetched_at"),
+    "contributed": ("mbid", "contribution_id", "status", "updated_at"),
+    "contributions": (
+        "id", "device_id", "mbid", "isrc", "artist", "title", "album",
+        "target_quality", "acquired_quality", "status", "download_id",
+        "created_at", "updated_at",
+    ),
+    "device_inventory": ("device_id", "mbid", "local_path", "reported_at"),
+    "download_queue": (
+        "id", "search_query", "playlist_id", "status", "last_attempt",
+        "mbid_guess",
+    ),
+    "duplicates": ("id", "mbid", "file_path"),
+    "lyrics": ("track_mbid", "lrc", "synced", "source", "fetched_at"),
+    "play_events": ("id", "track_mbid", "played_at", "source", "listened_ms"),
+    "playlist_tracks": ("playlist_id", "track_mbid", "track_order"),
+    "playlists": (
+        "playlist_id", "name", "spotify_url", "updated_at", "deleted_at",
+        "smart_rules",
+    ),
+    "split_album_dismissals": ("incident_key", "dismissed_at"),
+    "sync_state": ("key", "value"),
+    "tracks": (
+        "mbid", "title", "artist", "album", "isrc", "local_path",
+        "dap_path", "synced_to_dap", "release_mbid", "track_number",
+        "disc_number", "updated_at", "deleted_at", "tag_tier", "tag_score",
+        "is_liked",
+    ),
+}
+
+
+def test_database_schema_table_column_and_index_contract(db):
+    tables = {
+        row["name"]
+        for row in db.conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    assert tables == set(EXPECTED_SCHEMA_COLUMNS)
+
+    actual_columns = {
+        table: tuple(row["name"] for row in db.conn.execute(
+            f'PRAGMA table_info("{table}")'
+        ))
+        for table in tables
+    }
+    assert actual_columns == EXPECTED_SCHEMA_COLUMNS
+
+    indexes = {}
+    for row in db.conn.execute(
+        "SELECT name, tbl_name, sql FROM sqlite_master "
+        "WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+    ):
+        columns = tuple(
+            column["name"]
+            for column in db.conn.execute(f'PRAGMA index_info("{row["name"]}")')
+        )
+        indexes[row["name"]] = (
+            row["tbl_name"],
+            columns,
+            " WHERE " in (row["sql"] or "").upper(),
+        )
+
+    assert indexes == {
+        "idx_artist_tags_tag": ("artist_tags", ("tag",), False),
+        "idx_play_events_played_at": ("play_events", ("played_at",), False),
+        "idx_play_events_track_mbid": ("play_events", ("track_mbid",), False),
+        "idx_tracks_is_liked": ("tracks", ("is_liked",), True),
+    }
+
 def test_add_and_get_track(db):
     t = Track(
         mbid="12345",
@@ -403,6 +477,91 @@ def test_schema_migration_renames_ipod_columns():
             assert track.synced_to_dap is True
         finally:
             mgr.close()
+
+
+def test_legacy_schema_migration_preserves_rows_and_adds_all_contract_fields(
+    tmp_path,
+):
+    db_path = tmp_path / "legacy-all.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE tracks (
+            mbid TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT,
+            isrc TEXT,
+            local_path TEXT UNIQUE,
+            ipod_path TEXT,
+            synced_to_ipod INTEGER DEFAULT 0,
+            release_mbid TEXT,
+            track_number INTEGER,
+            disc_number INTEGER
+        );
+        CREATE TABLE play_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_mbid TEXT NOT NULL,
+            played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            source TEXT
+        );
+        CREATE TABLE playlists (
+            playlist_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            spotify_url TEXT
+        );
+        INSERT INTO tracks (
+            mbid, title, artist, ipod_path, synced_to_ipod
+        ) VALUES ('legacy-track', 'Song', 'Artist', '/old/device.flac', 1);
+        INSERT INTO play_events (track_mbid, source)
+        VALUES ('legacy-track', 'legacy-player');
+        INSERT INTO playlists (playlist_id, name, spotify_url)
+        VALUES ('legacy-list', 'Legacy', '');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    mgr = DatabaseManager(str(db_path))
+    try:
+        for table in ("tracks", "play_events", "playlists"):
+            columns = tuple(
+                row["name"]
+                for row in mgr.conn.execute(f'PRAGMA table_info("{table}")')
+            )
+            assert columns == EXPECTED_SCHEMA_COLUMNS[table]
+
+        track = mgr.conn.execute(
+            "SELECT * FROM tracks WHERE mbid = 'legacy-track'"
+        ).fetchone()
+        assert track["dap_path"] == "/old/device.flac"
+        assert track["synced_to_dap"] == 1
+        assert track["updated_at"] is not None
+        assert track["deleted_at"] is None
+        assert track["tag_tier"] is None
+        assert track["tag_score"] is None
+        assert track["is_liked"] == 0
+
+        event = mgr.conn.execute(
+            "SELECT * FROM play_events WHERE track_mbid = 'legacy-track'"
+        ).fetchone()
+        assert event["source"] == "legacy-player"
+        assert event["listened_ms"] is None
+
+        playlist = mgr.conn.execute(
+            "SELECT * FROM playlists WHERE playlist_id = 'legacy-list'"
+        ).fetchone()
+        assert playlist["name"] == "Legacy"
+        assert playlist["updated_at"] is not None
+        assert playlist["deleted_at"] is None
+        assert playlist["smart_rules"] is None
+
+        liked_index = mgr.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'idx_tracks_is_liked'"
+        ).fetchone()
+        assert "WHERE is_liked = 1" in liked_index["sql"]
+    finally:
+        mgr.close()
 
 
 def _catalog_row(db, mbid):

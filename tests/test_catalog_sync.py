@@ -1,3 +1,4 @@
+from inspect import signature
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,6 +33,20 @@ def _mock_response(payload, status=200):
     resp.json.return_value = payload
     resp.raise_for_status = MagicMock()
     return resp
+
+
+def test_catalog_client_public_constructor_contract():
+    params = signature(CatalogClient).parameters
+    assert tuple(params) == (
+        "db",
+        "master_url",
+        "progress_callback",
+        "timeout",
+        "api_token",
+    )
+    assert params["progress_callback"].default is None
+    assert params["timeout"].default == 30
+    assert params["api_token"].default is None
 
 
 def test_pull_initial_sends_no_since_and_applies_rows(db):
@@ -111,6 +126,26 @@ def test_pull_raises_on_master_failure(db):
             client.pull()
     # Cursor NOT advanced on failure
     assert db.get_sync_state(SYNC_STATE_KEY) is None
+
+
+def test_pull_does_not_advance_cursor_when_applying_a_row_fails(db):
+    old_cursor = "2026-04-18 12:00:00"
+    db.set_sync_state(SYNC_STATE_KEY, old_cursor)
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True,
+        "as_of": "2026-04-18 13:00:00",
+        "tracks": [{"mbid": "m1", "title": "Song", "artist": "Artist"}],
+    }
+    with patch.object(
+        client.session, "get", return_value=_mock_response(payload)
+    ), patch.object(
+        db, "apply_catalog_row", side_effect=RuntimeError("write failed")
+    ):
+        with pytest.raises(RuntimeError, match="write failed"):
+            client.pull()
+
+    assert db.get_sync_state(SYNC_STATE_KEY) == old_cursor
 
 
 def test_pull_does_not_advance_cursor_when_as_of_missing(db):

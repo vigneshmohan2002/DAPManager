@@ -162,8 +162,7 @@ mod tests {
         fs::create_dir_all(&res).unwrap();
         write(&res.join("master_url.txt"), "http://m:5001");
 
-        let outcome =
-            seed_satellite_config(&cfg, &res, dir.path()).unwrap();
+        let outcome = seed_satellite_config(&cfg, &res, dir.path()).unwrap();
         assert_eq!(outcome, SeedOutcome::AlreadyConfigured);
         // Existing file untouched.
         assert_eq!(fs::read_to_string(&cfg).unwrap(), "{\"existing\": true}");
@@ -176,8 +175,7 @@ mod tests {
         let res = dir.path().join("res");
         fs::create_dir_all(&res).unwrap();
 
-        let outcome =
-            seed_satellite_config(&cfg, &res, dir.path()).unwrap();
+        let outcome = seed_satellite_config(&cfg, &res, dir.path()).unwrap();
         assert_eq!(outcome, SeedOutcome::NoBundleConfig);
         assert!(!cfg.exists());
     }
@@ -188,10 +186,12 @@ mod tests {
         let cfg = dir.path().join("DAPManager").join("config.json");
         let res = dir.path().join("res");
         fs::create_dir_all(&res).unwrap();
-        write(&res.join("master_url.txt"), "http://master.tail.ts.net:5001\n");
+        write(
+            &res.join("master_url.txt"),
+            "http://master.tail.ts.net:5001\n",
+        );
 
-        let outcome =
-            seed_satellite_config(&cfg, &res, dir.path()).unwrap();
+        let outcome = seed_satellite_config(&cfg, &res, dir.path()).unwrap();
         assert_eq!(
             outcome,
             SeedOutcome::Seeded {
@@ -200,8 +200,7 @@ mod tests {
             }
         );
 
-        let written: Value =
-            serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        let written: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(written["master_url"], "http://master.tail.ts.net:5001");
         assert_eq!(written["device_role"], "satellite");
         assert_eq!(written["is_master"], false);
@@ -218,8 +217,7 @@ mod tests {
         write(&res.join("master_url.txt"), "http://m:5001/");
         write(&res.join("master_token.txt"), "abc123\n");
 
-        let outcome =
-            seed_satellite_config(&cfg, &res, dir.path()).unwrap();
+        let outcome = seed_satellite_config(&cfg, &res, dir.path()).unwrap();
         assert_eq!(
             outcome,
             SeedOutcome::Seeded {
@@ -227,10 +225,31 @@ mod tests {
                 has_token: true,
             }
         );
-        let written: Value =
-            serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        let written: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(written["api_token"], "abc123");
         assert_eq!(written["master_url"], "http://m:5001");
+    }
+
+    #[test]
+    fn blank_bundled_token_is_not_written_to_config() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("DAPManager").join("config.json");
+        let res = dir.path().join("res");
+        fs::create_dir_all(&res).unwrap();
+        write(&res.join("master_url.txt"), "http://m:5001");
+        write(&res.join("master_token.txt"), "  \n");
+
+        let outcome = seed_satellite_config(&cfg, &res, dir.path()).unwrap();
+        assert_eq!(
+            outcome,
+            SeedOutcome::Seeded {
+                master_url: "http://m:5001".to_string(),
+                has_token: false,
+            }
+        );
+
+        let written: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(written.get("api_token").is_none());
     }
 
     #[test]
@@ -241,8 +260,7 @@ mod tests {
         fs::create_dir_all(&res).unwrap();
         write(&res.join("master_url.txt"), "   \n");
 
-        let outcome =
-            seed_satellite_config(&cfg, &res, dir.path()).unwrap();
+        let outcome = seed_satellite_config(&cfg, &res, dir.path()).unwrap();
         assert_eq!(outcome, SeedOutcome::NoBundleConfig);
         assert!(!cfg.exists());
     }

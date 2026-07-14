@@ -365,11 +365,7 @@ fn check_backend_port(bind: BackendBind, port: u16) -> io::Result<()> {
     Ok(())
 }
 
-fn report_startup_error(
-    backend: &BackendHandle,
-    app_handle: &tauri::AppHandle,
-    message: String,
-) {
+fn report_startup_error(backend: &BackendHandle, app_handle: &tauri::AppHandle, message: String) {
     eprintln!("DAPManager: {message}");
     backend.set_startup_error(message.clone());
     let _ = app_handle.emit("backend-error", message);
@@ -418,8 +414,8 @@ fn resolve_python() -> String {
     #[cfg(target_os = "macos")]
     {
         let candidates = [
-            "/opt/homebrew/bin/python3",   // Apple Silicon Homebrew (M1/M2/M3)
-            "/usr/local/bin/python3",      // Intel Homebrew / python.org pkg
+            "/opt/homebrew/bin/python3", // Apple Silicon Homebrew (M1/M2/M3)
+            "/usr/local/bin/python3",    // Intel Homebrew / python.org pkg
             "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
         ];
         for p in candidates {
@@ -500,7 +496,9 @@ fn ensure_venv(
         ));
     }
 
-    eprintln!("DAPManager: installing Python requirements (this may take a minute on first launch)…");
+    eprintln!(
+        "DAPManager: installing Python requirements (this may take a minute on first launch)…"
+    );
     let status = Command::new(&python_bin)
         .args([
             "-m",
@@ -590,11 +588,7 @@ enum ChromeAction {
 // Pure decision: should the chrome change, and which way? Split out
 // from the side-effect wrapper below so the threshold + scale-factor
 // rounding can be unit-tested without a real WebviewWindow.
-fn decide_chrome_action(
-    physical_size: (u32, u32),
-    scale: f64,
-    is_decorated: bool,
-) -> ChromeAction {
+fn decide_chrome_action(physical_size: (u32, u32), scale: f64, is_decorated: bool) -> ChromeAction {
     let scale = if scale > 0.0 { scale } else { 1.0 };
     let width = (physical_size.0 as f64 / scale).round() as u32;
     let height = (physical_size.1 as f64 / scale).round() as u32;
@@ -629,10 +623,11 @@ fn handle_mini_player_chrome(window: &WebviewWindow, size: &PhysicalSize<u32>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod chrome_tests {
     use super::{
-        bind_for_config_value, check_backend_port, decide_chrome_action,
-        read_api_token, safe_restart_fallback, BackendBind, BackendHandle,
+        bind_for_config_path, bind_for_config_value, check_backend_port, decide_chrome_action,
+        read_api_token, safe_restart_fallback, BackendBind, BackendHandle, BackendLifecycle,
         ChromeAction, MINI_PLAYER_SIZE,
     };
     use serde_json::json;
@@ -734,34 +729,77 @@ mod chrome_tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing.json");
         assert_eq!(read_api_token(&missing), "");
-        let invalid = dir.path().join("invalid.json");
-        fs::write(&invalid, "not-json").unwrap();
-        assert_eq!(read_api_token(&invalid), "");
+
+        for raw in [
+            "not-json",
+            r#"{}"#,
+            r#"{"api_token":null}"#,
+            r#"{"api_token":123}"#,
+            r#"{"api_token":{"value":"nested-secret"}}"#,
+        ] {
+            fs::write(&missing, raw).unwrap();
+            assert_eq!(read_api_token(&missing), "", "config was {raw}");
+        }
     }
 
     #[test]
     fn startup_error_is_persistent_and_first_failure_wins() {
         let backend = BackendHandle::new(5001);
+        assert_eq!(backend.get_startup_error(), None);
         backend.set_startup_error("first failure".to_string());
         backend.set_startup_error("later failure".to_string());
-        assert_eq!(backend.get_startup_error().as_deref(), Some("first failure"));
+        assert_eq!(
+            backend.get_startup_error().as_deref(),
+            Some("first failure")
+        );
+
+        backend.clear_startup_error();
+        assert_eq!(backend.get_startup_error(), None);
+
+        backend.set_startup_error("new failure".to_string());
+        assert_eq!(backend.get_startup_error().as_deref(), Some("new failure"));
     }
 
     #[test]
-    fn backend_port_probe_rejects_an_occupied_loopback_port() {
+    fn restart_without_launch_parameters_is_non_destructive() {
+        let backend = BackendHandle::new(5123);
+        backend.set_startup_error("startup failed".to_string());
+
+        let result = backend.restart();
+
+        assert!(!result.success);
+        assert_eq!(
+            result.message,
+            "Backend restart is not ready yet; launch parameters are unavailable."
+        );
+        assert_eq!(result.bind_host, "127.0.0.1");
+        assert!(!result.backend_running);
+        assert_eq!(
+            backend.get_startup_error().as_deref(),
+            Some("startup failed")
+        );
+    }
+
+    #[test]
+    fn backend_port_probe_respects_ownership_and_releases_its_probe() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         assert!(check_backend_port(BackendBind::Loopback, port).is_err());
+
         drop(listener);
         assert!(check_backend_port(BackendBind::Loopback, port).is_ok());
+
+        let new_owner = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        assert!(check_backend_port(BackendBind::Loopback, port).is_err());
+        drop(new_owner);
     }
 
     #[test]
     fn only_master_with_nonempty_token_gets_network_bind() {
         assert_eq!(
             bind_for_config_value(&json!({
-                "device_role": "master",
-                "api_token": "secret"
+                "device_role": "  MASTER  ",
+                "api_token": "  secret  "
             })),
             BackendBind::Network
         );
@@ -777,12 +815,82 @@ mod chrome_tests {
     }
 
     #[test]
+    fn config_path_defaults_to_loopback_until_an_authenticated_master_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.json");
+        assert_eq!(bind_for_config_path(None), BackendBind::Loopback);
+        assert_eq!(bind_for_config_path(Some(&missing)), BackendBind::Loopback);
+
+        let config = dir.path().join("config.json");
+        fs::write(&config, "not-json").unwrap();
+        assert_eq!(bind_for_config_path(Some(&config)), BackendBind::Loopback);
+
+        fs::write(&config, r#"{"device_role":"master","api_token":"secret"}"#).unwrap();
+        assert_eq!(bind_for_config_path(Some(&config)), BackendBind::Network);
+
+        fs::write(
+            &config,
+            r#"{"device_role":"satellite","api_token":"secret"}"#,
+        )
+        .unwrap();
+        assert_eq!(bind_for_config_path(Some(&config)), BackendBind::Loopback);
+    }
+
+    #[test]
     fn restart_fallback_can_only_reduce_network_exposure() {
         assert_eq!(
             safe_restart_fallback(BackendBind::Network),
             Some(BackendBind::Loopback)
         );
         assert_eq!(safe_restart_fallback(BackendBind::Loopback), None);
+    }
+
+    #[test]
+    fn stopping_without_a_child_clears_stale_bind_state() {
+        let mut lifecycle = BackendLifecycle {
+            child: None,
+            launch: None,
+            active_bind: Some(BackendBind::Network),
+        };
+
+        BackendHandle::stop_locked(&mut lifecycle).unwrap();
+
+        assert!(lifecycle.child.is_none());
+        assert!(lifecycle.launch.is_none());
+        assert_eq!(lifecycle.active_bind, None);
+    }
+
+    #[test]
+    fn failed_master_restart_exhausts_fallback_without_claiming_a_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        fs::write(&config, r#"{"device_role":"master","api_token":"secret"}"#).unwrap();
+        let missing_python = dir.path().join("missing-python");
+        let backend = BackendHandle::new(0);
+        {
+            let mut lifecycle = backend.lifecycle.lock().unwrap();
+            lifecycle.launch = Some(super::BackendLaunch {
+                project_root: dir.path().to_path_buf(),
+                python: missing_python.to_string_lossy().into_owned(),
+                config_path: Some(config),
+            });
+        }
+
+        let result = backend.restart();
+
+        assert!(!result.success);
+        assert_eq!(result.bind_host, "0.0.0.0");
+        assert!(!result.backend_running);
+        assert!(result
+            .message
+            .contains("Could not restart the Python backend on 0.0.0.0:0"));
+        assert_eq!(
+            backend.get_startup_error().as_deref(),
+            Some(result.message.as_str())
+        );
+        let lifecycle = backend.lifecycle.lock().unwrap();
+        assert!(lifecycle.child.is_none());
+        assert_eq!(lifecycle.active_bind, None);
     }
 }
 

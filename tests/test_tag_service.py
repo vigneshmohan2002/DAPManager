@@ -1,12 +1,32 @@
 """Tests for src.tag_service — identify (fingerprint+lookup) and write_tags."""
 
 import os
+from inspect import signature
 from unittest.mock import MagicMock, patch
 
 import pytest
 from mutagen.flac import FLAC, StreamInfo
 
 from src import tag_service
+
+
+def test_public_tag_service_signature_contract():
+    identify = signature(tag_service.identify_file).parameters
+    assert tuple(identify) == ("filepath", "api_key", "contact")
+    assert identify["contact"].default == ""
+
+    write = signature(tag_service.write_tags).parameters
+    assert tuple(write) == ("filepath", "meta")
+
+    update_album = signature(tag_service.update_album_tags).parameters
+    assert tuple(update_album) == (
+        "filepath",
+        "album",
+        "album_artist",
+        "release_mbid",
+    )
+    assert update_album["album_artist"].default is None
+    assert update_album["release_mbid"].default is None
 
 
 # ---------------------------------------------------------------------------
