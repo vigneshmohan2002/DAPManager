@@ -5,7 +5,12 @@ from types import SimpleNamespace
 import pytest
 from mutagen.flac import FLAC
 
-from src.catalog_linker import main_run_catalog_linker
+from src.catalog_linker import (
+    _build_link_plan,
+    _candidate_match,
+    _execute_link_plan,
+    main_run_catalog_linker,
+)
 from src.db_manager import DatabaseManager, Track
 
 
@@ -81,6 +86,38 @@ def test_accepts_raw_config_dict(db, tmp_path):
         db, {"music_library_path": str(root)}
     )
     assert summary["linked"] == 1
+
+
+def test_candidate_match_builds_unique_and_ambiguous_decisions():
+    assert _candidate_match(["one"], "linked-isrc") == (
+        "one",
+        "linked-isrc",
+    )
+    assert _candidate_match(["one", "two"], "linked-isrc") == (
+        None,
+        "ambiguous",
+    )
+    assert _candidate_match([], "linked-isrc") is None
+
+
+def test_link_plan_is_read_only_until_executed(db, tmp_path):
+    path = str(tmp_path / "planned.flac")
+    db.add_or_update_track(Track(mbid="planned", title="Song", artist="A"))
+
+    plan = _build_link_plan(db, path, {
+        "artist": "A",
+        "title": "Song",
+        "album": "",
+        "mbid": "planned",
+        "isrc": "",
+    })
+
+    assert plan.mbid == "planned"
+    assert plan.outcome == "linked-mbid"
+    assert db.get_track_by_mbid("planned").local_path is None
+
+    assert _execute_link_plan(db, plan) is True
+    assert db.get_track_by_mbid("planned").local_path == path
 
 
 def test_link_by_mbid_wins_over_artist_title(db, library):

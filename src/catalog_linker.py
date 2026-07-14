@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Iterable, Literal, Optional, TypedDict
 
 import mutagen
 from mutagen.easyid3 import EasyID3
+
+from .contracts import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,34 @@ except ValueError:
 
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"}
 
+LinkOutcome = Literal[
+    "linked-mbid",
+    "linked-isrc",
+    "linked-name",
+    "linked-name-album",
+    "no-match",
+    "ambiguous",
+]
+
+
+class LinkTags(TypedDict):
+    """Normalized file tags used by the catalog matching ladder."""
+
+    artist: str
+    title: str
+    album: str
+    mbid: str
+    isrc: str
+
+
+@dataclass(frozen=True)
+class LinkPlan:
+    """A side-effect-free decision for one on-disk file."""
+
+    path: str
+    mbid: Optional[str]
+    outcome: LinkOutcome
+
 
 def _iter_audio_files(root: str):
     for dirpath, _dirnames, filenames in os.walk(root):
@@ -49,7 +80,7 @@ def _iter_audio_files(root: str):
                 yield os.path.join(dirpath, name)
 
 
-def _read_link_tags(path: str) -> Optional[dict]:
+def _read_link_tags(path: str) -> Optional[LinkTags]:
     """Return the subset of tags the linker actually uses, or None on error."""
     try:
         audio = mutagen.File(path, easy=True)
@@ -75,7 +106,19 @@ def _read_link_tags(path: str) -> Optional[dict]:
     }
 
 
-def _match_one(db, tags: dict) -> tuple[Optional[str], str]:
+def _candidate_match(
+    candidates: Iterable[str], outcome: LinkOutcome
+) -> Optional[tuple[Optional[str], LinkOutcome]]:
+    """Return a pure unique/ambiguous decision for one matching tier."""
+    hits = list(candidates)
+    if len(hits) == 1:
+        return hits[0], outcome
+    if len(hits) > 1:
+        return None, "ambiguous"
+    return None
+
+
+def _match_one(db, tags: LinkTags) -> tuple[Optional[str], LinkOutcome]:
     """Resolve tags to an mbid by walking the priority ladder.
 
     Returns (mbid_or_None, outcome) where outcome is one of:
@@ -96,26 +139,28 @@ def _match_one(db, tags: dict) -> tuple[Optional[str], str]:
 
     # 2. ISRC — only act on unambiguous matches.
     if tags["isrc"]:
-        isrc_hits = db.find_unlinked_tracks_by_isrc(tags["isrc"])
-        if len(isrc_hits) == 1:
-            return isrc_hits[0], "linked-isrc"
-        if len(isrc_hits) > 1:
-            return None, "ambiguous"
+        decision = _candidate_match(
+            db.find_unlinked_tracks_by_isrc(tags["isrc"]), "linked-isrc"
+        )
+        if decision is not None:
+            return decision
 
     # 3. (artist, title), with album disambiguation when needed.
     if tags["artist"] and tags["title"]:
         name_hits = db.find_unlinked_tracks_by_artist_title(
             tags["artist"], tags["title"],
         )
-        if len(name_hits) == 1:
-            return name_hits[0], "linked-name"
+        decision = _candidate_match(name_hits, "linked-name")
+        if decision is not None and decision[1] != "ambiguous":
+            return decision
         if len(name_hits) > 1 and tags["album"]:
-            album_hits = db.find_unlinked_tracks_by_artist_title_album(
-                tags["artist"], tags["title"], tags["album"],
+            album_decision = _candidate_match(
+                db.find_unlinked_tracks_by_artist_title_album(
+                    tags["artist"], tags["title"], tags["album"],
+                ),
+                "linked-name-album",
             )
-            if len(album_hits) == 1:
-                return album_hits[0], "linked-name-album"
-            return None, "ambiguous"
+            return album_decision or (None, "ambiguous")
         if len(name_hits) > 1:
             return None, "ambiguous"
 
@@ -128,21 +173,27 @@ def _mbid_is_eligible(db, mbid: str) -> bool:
     The cheaper path would be to read deleted_at off the Track dataclass,
     but it isn't exposed there — the DB-side helper already has the
     correct filter, so use it."""
-    cursor = db.conn.cursor()
-    cursor.execute(
-        "SELECT 1 FROM tracks "
-        "WHERE mbid = ? AND local_path IS NULL AND deleted_at IS NULL",
-        (mbid,),
-    )
-    hit = cursor.fetchone() is not None
-    cursor.close()
-    return hit
+    return db.is_track_unlinked_and_live(mbid)
+
+
+def _build_link_plan(db, path: str, tags: LinkTags) -> LinkPlan:
+    """Build one match plan without changing a catalog row."""
+    mbid, outcome = _match_one(db, tags)
+    return LinkPlan(path=path, mbid=mbid, outcome=outcome)
+
+
+def _execute_link_plan(db, plan: LinkPlan) -> bool:
+    """Apply a previously-built link plan, returning whether it mutated."""
+    if plan.mbid is None:
+        return False
+    db.update_track_local_path(plan.mbid, plan.path)
+    return True
 
 
 def main_run_catalog_linker(
     db,
     config,
-    progress_callback: Optional[Callable[[dict], None]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> dict:
     """Walk ``config.music_library_path`` and link unlinked catalog rows.
 
@@ -199,19 +250,18 @@ def main_run_catalog_linker(
             errors += 1
             continue
 
-        mbid, outcome = _match_one(db, tags)
-        if mbid is None:
-            if outcome == "ambiguous":
+        plan = _build_link_plan(db, path, tags)
+        if not _execute_link_plan(db, plan):
+            if plan.outcome == "ambiguous":
                 ambiguous += 1
             else:
                 skipped += 1
             continue
 
-        db.update_track_local_path(mbid, path)
         linked += 1
-        if outcome == "linked-mbid":
+        if plan.outcome == "linked-mbid":
             linked_by_mbid += 1
-        elif outcome == "linked-isrc":
+        elif plan.outcome == "linked-isrc":
             linked_by_isrc += 1
         else:  # linked-name, linked-name-album
             linked_by_name += 1

@@ -13,13 +13,39 @@ import os
 import re
 import hashlib
 import logging
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from collections import defaultdict
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 _SIMILARITY_THRESHOLD = 0.82
+
+
+@dataclass(frozen=True)
+class AlbumReassignmentPlan:
+    """All inputs needed for one database and optional file-tag mutation."""
+
+    source_album_id: str
+    target_album: str
+    target_artist: str
+    target_release_mbid: Optional[str]
+    write_file_tags: bool
+    source_album: str = ""
+    source_artist: str = ""
+    planned_track_count: int = 0
+
+
+@dataclass(frozen=True)
+class EditionClusterPlan:
+    """Ordered source moves targeting one canonical edition."""
+
+    target_album: str
+    target_artist: str
+    target_release_mbid: Optional[str]
+    moves: Tuple[AlbumReassignmentPlan, ...]
+
 
 # Parenthetical / bracketed edition tags we strip to find an album's base name.
 _EDITION_PAREN_RE = re.compile(
@@ -95,27 +121,19 @@ def detect_split_albums(db, include_dismissed: bool = False) -> List[dict]:
 
     Dismissed incidents are filtered out unless ``include_dismissed`` is True.
     """
-    cursor = db.conn.cursor()
-    cursor.execute(
-        """
-        SELECT
-            mbid, title, artist, album, track_number, disc_number,
-            local_path, release_mbid,
-            COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
-        FROM tracks
-        WHERE deleted_at IS NULL
-          AND album IS NOT NULL AND album != ''
-          AND artist IS NOT NULL AND artist != ''
-        ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE,
-                 COALESCE(disc_number, 1), COALESCE(track_number, 9999)
-        """
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    cursor.close()
-
+    rows = db.list_split_album_tracks()
     incidents = []
     incidents.extend(_folder_splits(rows))
     incidents.extend(_name_similarity_splits(rows))
+
+    dismissed = set() if include_dismissed else db.get_dismissed_split_albums()
+    return _finalize_incidents(incidents, dismissed)
+
+
+def _finalize_incidents(
+    incidents: List[dict], dismissed: Set[str]
+) -> List[dict]:
+    """Deduplicate, key, and filter read-only detection results."""
 
     # Deduplicate: if a pair already appears as a folder split, skip name split
     seen_pairs = set()
@@ -134,13 +152,12 @@ def detect_split_albums(db, include_dismissed: bool = False) -> List[dict]:
         deduped.append(inc)
 
     # Stamp each incident with its stable key and drop dismissed ones.
-    dismissed = set() if include_dismissed else db.get_dismissed_split_albums()
     result = []
     for inc in deduped:
-        inc["key"] = incident_key(inc)
-        if inc["key"] in dismissed:
+        key = incident_key(inc)
+        if key in dismissed:
             continue
-        result.append(inc)
+        result.append({**inc, "key": key})
 
     return result
 
@@ -315,20 +332,7 @@ def merge_album_groups(
 
 def _load_album_summaries(db) -> List[dict]:
     """All album groups in the library as summaries (album, artist, mbid, tracks)."""
-    cursor = db.conn.cursor()
-    cursor.execute(
-        """
-        SELECT
-            mbid, title, artist, album, track_number, disc_number, release_mbid,
-            COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
-        FROM tracks
-        WHERE deleted_at IS NULL
-          AND album IS NOT NULL AND album != ''
-          AND artist IS NOT NULL AND artist != ''
-        """
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    cursor.close()
+    rows = db.list_album_group_tracks()
     groups_map = defaultdict(list)
     for r in rows:
         groups_map[r["album_id"]].append(r)
@@ -347,14 +351,8 @@ def _pick_canonical(groups: List[dict]) -> dict:
     )
 
 
-def find_edition_clusters(db) -> List[dict]:
-    """Group albums sharing a base name+artist where editions can be consolidated.
-
-    Returns clusters with a ``canonical`` (the superset/deluxe) and ``others``
-    (base/standard editions to fold in). Only clusters with 2+ distinct album
-    groups are returned.
-    """
-    summaries = _load_album_summaries(db)
+def _build_edition_clusters(summaries: List[dict]) -> List[dict]:
+    """Build canonical-edition groups from already-loaded summaries."""
     clusters = defaultdict(list)
     for s in summaries:
         base = _norm_album_base(s["album"])
@@ -375,6 +373,82 @@ def find_edition_clusters(db) -> List[dict]:
     return result
 
 
+def find_edition_clusters(db) -> List[dict]:
+    """Group albums sharing a base name+artist where editions can be consolidated.
+
+    Returns clusters with a ``canonical`` (the superset/deluxe) and ``others``
+    (base/standard editions to fold in). Only clusters with 2+ distinct album
+    groups are returned.
+    """
+    return _build_edition_clusters(_load_album_summaries(db))
+
+
+def _build_album_reassignment_plan(
+    source_album_id: str,
+    target_album: str,
+    target_artist: str,
+    target_release_mbid: Optional[str],
+    *,
+    write_file_tags: bool = True,
+    source_album: str = "",
+    source_artist: str = "",
+    planned_track_count: int = 0,
+) -> AlbumReassignmentPlan:
+    """Create one immutable album move without touching DB or files."""
+    return AlbumReassignmentPlan(
+        source_album_id=source_album_id,
+        target_album=target_album,
+        target_artist=target_artist,
+        target_release_mbid=target_release_mbid,
+        write_file_tags=write_file_tags,
+        source_album=source_album,
+        source_artist=source_artist,
+        planned_track_count=planned_track_count,
+    )
+
+
+def _execute_album_reassignment_plan(db, plan: AlbumReassignmentPlan) -> dict:
+    """Apply one planned DB move, then perform its optional file tagging."""
+    reassigned = db.reassign_album_group_tracks(
+        plan.source_album_id,
+        plan.target_album,
+        plan.target_artist,
+        plan.target_release_mbid,
+        include_local_paths=plan.write_file_tags,
+    )
+    if reassigned["matched"] == 0:
+        return {"moved": 0, "tagged": 0, "tag_errors": []}
+
+    tagged = 0
+    tag_errors: List[str] = []
+    if plan.write_file_tags:
+        from src.tag_service import TAGGABLE_EXTENSIONS, update_album_tags
+
+        for row in reassigned["tracks"]:
+            path = (row.get("local_path") or "").strip()
+            if not path or not os.path.isfile(path):
+                continue
+            if os.path.splitext(path)[1].lower() not in TAGGABLE_EXTENSIONS:
+                continue
+            try:
+                update_album_tags(
+                    path,
+                    album=plan.target_album,
+                    album_artist=plan.target_artist,
+                    release_mbid=plan.target_release_mbid or None,
+                )
+                tagged += 1
+            except Exception as e:  # one bad file shouldn't abort the merge
+                tag_errors.append(f"{os.path.basename(path)}: {e}")
+                logger.warning("update_album_tags failed for %s: %s", path, e)
+
+    return {
+        "moved": reassigned["moved"],
+        "tagged": tagged,
+        "tag_errors": tag_errors,
+    }
+
+
 def _reassign_to_album(
     db, source_album_id: str, target_album: str, target_artist: str,
     target_release_mbid: Optional[str], write_file_tags: bool = True,
@@ -390,68 +464,14 @@ def _reassign_to_album(
     (album, albumartist, musicbrainz_albumid) so external readers like Jellyfin
     pick up the change. Returns ``{moved, tagged, tag_errors}``.
     """
-    cursor = db.conn.cursor()
-    cursor.execute(
-        """
-        SELECT mbid FROM tracks
-        WHERE deleted_at IS NULL
-          AND COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) = ?
-        """,
-        (source_album_id,),
+    plan = _build_album_reassignment_plan(
+        source_album_id,
+        target_album,
+        target_artist,
+        target_release_mbid,
+        write_file_tags=write_file_tags,
     )
-    mbids = [r[0] for r in cursor.fetchall()]
-    if not mbids:
-        cursor.close()
-        return {"moved": 0, "tagged": 0, "tag_errors": []}
-    ph = ",".join("?" * len(mbids))
-    if target_release_mbid:
-        cursor.execute(
-            f"""
-            UPDATE tracks SET album = ?, release_mbid = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE mbid IN ({ph})
-            """,
-            [target_album, target_release_mbid] + mbids,
-        )
-    else:
-        cursor.execute(
-            f"""
-            UPDATE tracks SET album = ?, artist = ?, release_mbid = '',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE mbid IN ({ph})
-            """,
-            [target_album, target_artist] + mbids,
-        )
-    n = cursor.rowcount
-    db.conn.commit()
-
-    tagged = 0
-    tag_errors: List[str] = []
-    if write_file_tags:
-        cursor.execute(
-            f"SELECT mbid, local_path FROM tracks WHERE mbid IN ({ph})", mbids
-        )
-        rows = cursor.fetchall()
-        from src.tag_service import update_album_tags, TAGGABLE_EXTENSIONS
-        for row in rows:
-            path = (dict(row).get("local_path") or "").strip()
-            if not path or not os.path.isfile(path):
-                continue
-            if os.path.splitext(path)[1].lower() not in TAGGABLE_EXTENSIONS:
-                continue
-            try:
-                update_album_tags(
-                    path,
-                    album=target_album,
-                    album_artist=target_artist,
-                    release_mbid=target_release_mbid or None,
-                )
-                tagged += 1
-            except Exception as e:  # one bad file shouldn't abort the merge
-                tag_errors.append(f"{os.path.basename(path)}: {e}")
-                logger.warning("update_album_tags failed for %s: %s", path, e)
-
-    cursor.close()
-    return {"moved": n, "tagged": tagged, "tag_errors": tag_errors}
+    return _execute_album_reassignment_plan(db, plan)
 
 
 def retag_files_from_db(db, only_mismatched: bool = True) -> dict:
@@ -463,15 +483,7 @@ def retag_files_from_db(db, only_mismatched: bool = True) -> dict:
     metadata-only operation (e.g. an earlier consolidation that didn't tag).
     Returns ``{tagged, skipped, errors}``.
     """
-    cursor = db.conn.cursor()
-    cursor.execute(
-        """
-        SELECT mbid, album, artist, release_mbid, local_path FROM tracks
-        WHERE deleted_at IS NULL AND local_path IS NOT NULL AND local_path != ''
-        """
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    cursor.close()
+    rows = db.list_local_album_tag_rows()
 
     from src.tag_service import update_album_tags, read_current_tags, TAGGABLE_EXTENSIONS
     tagged = 0
@@ -505,13 +517,43 @@ def retag_files_from_db(db, only_mismatched: bool = True) -> dict:
     return {"tagged": tagged, "skipped": skipped, "errors": errors}
 
 
+def _build_edition_consolidation_plans(
+    clusters: List[dict],
+) -> Tuple[EditionClusterPlan, ...]:
+    """Freeze all edition moves before any cluster is mutated."""
+    plans: List[EditionClusterPlan] = []
+    for cluster in clusters:
+        canonical = cluster["canonical"]
+        moves = tuple(
+            _build_album_reassignment_plan(
+                other["album_id"],
+                canonical["album"],
+                canonical["artist"],
+                canonical["release_mbid"],
+                source_album=other["album"],
+                source_artist=other["artist"],
+                planned_track_count=other["track_count"],
+            )
+            for other in cluster["others"]
+        )
+        plans.append(
+            EditionClusterPlan(
+                target_album=canonical["album"],
+                target_artist=canonical["artist"],
+                target_release_mbid=canonical["release_mbid"],
+                moves=moves,
+            )
+        )
+    return tuple(plans)
+
+
 def consolidate_editions(db, dry_run: bool = False) -> dict:
     """Fold base/standard album editions into their superset (deluxe) edition.
 
     Returns a summary: total tracks that would move / moved, albums merged,
     and a per-cluster breakdown for preview.
     """
-    clusters = find_edition_clusters(db)
+    plans = _build_edition_consolidation_plans(find_edition_clusters(db))
     summary = {
         "albums_merged": 0,
         "tracks_reassigned": 0,
@@ -519,29 +561,29 @@ def consolidate_editions(db, dry_run: bool = False) -> dict:
         "tag_errors": [],
         "clusters": [],
     }
-    for c in clusters:
-        canon = c["canonical"]
+    for cluster in plans:
         cluster_moved = 0
         folded = []
-        for o in c["others"]:
+        for move in cluster.moves:
             if dry_run:
-                moved = o["track_count"]
+                moved = move.planned_track_count
             else:
-                res = _reassign_to_album(
-                    db, o["album_id"], canon["album"], canon["artist"],
-                    canon["release_mbid"], write_file_tags=True,
-                )
+                res = _execute_album_reassignment_plan(db, move)
                 moved = res["moved"]
                 summary["files_tagged"] += res["tagged"]
                 summary["tag_errors"].extend(res["tag_errors"])
             cluster_moved += moved
-            folded.append({"album": o["album"], "artist": o["artist"], "tracks": moved})
+            folded.append({
+                "album": move.source_album,
+                "artist": move.source_artist,
+                "tracks": moved,
+            })
             summary["albums_merged"] += 1
         summary["tracks_reassigned"] += cluster_moved
         summary["clusters"].append({
-            "into": canon["album"],
-            "artist": canon["artist"],
-            "release_mbid": canon["release_mbid"],
+            "into": cluster.target_album,
+            "artist": cluster.target_artist,
+            "release_mbid": cluster.target_release_mbid,
             "folded": folded,
             "tracks_reassigned": cluster_moved,
         })

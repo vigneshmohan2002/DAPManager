@@ -8,7 +8,7 @@ import os
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional, Set, Tuple, TypedDict, cast
 from collections import defaultdict
 from datetime import datetime
 
@@ -18,6 +18,48 @@ logger = logging.getLogger(__name__)
 # scheduled for removal. Register an explicit ISO-format adapter so writes
 # from `datetime.now()` keep working on 3.13+.
 sqlite3.register_adapter(datetime, lambda d: d.isoformat())
+
+
+class LocalAlbumSnapshot(TypedDict):
+    """Local identity and occupied disc/track positions for one release."""
+
+    artist: str
+    album: Optional[str]
+    positions: Set[Tuple[Optional[int], Optional[int]]]
+
+
+class AlbumGroupTrackRow(TypedDict):
+    mbid: str
+    title: str
+    artist: str
+    album: str
+    track_number: Optional[int]
+    disc_number: Optional[int]
+    release_mbid: Optional[str]
+    album_id: str
+
+
+class SplitAlbumTrackRow(AlbumGroupTrackRow):
+    local_path: Optional[str]
+
+
+class AlbumTagRow(TypedDict):
+    mbid: str
+    album: Optional[str]
+    artist: str
+    release_mbid: Optional[str]
+    local_path: str
+
+
+class TrackPathRow(TypedDict):
+    mbid: str
+    local_path: Optional[str]
+
+
+class AlbumGroupReassignment(TypedDict):
+    matched: int
+    moved: int
+    tracks: List[TrackPathRow]
 
 
 @dataclass
@@ -567,6 +609,18 @@ class DatabaseManager:
         cursor.close()
         return rows
 
+    def is_track_unlinked_and_live(self, mbid: str) -> bool:
+        """Return whether a catalog row may safely claim a local file."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM tracks "
+            "WHERE mbid = ? AND local_path IS NULL AND deleted_at IS NULL",
+            (mbid,),
+        )
+        eligible = cursor.fetchone() is not None
+        cursor.close()
+        return eligible
+
     # --- Album Methods ---
     def update_album_metadata(
         self, release_mbid: str, album_title: str, total_tracks: int
@@ -643,6 +697,52 @@ class DatabaseManager:
         finally:
             if cursor:
                 cursor.close()
+
+    def get_local_album_snapshot(
+        self, release_mbid: str
+    ) -> Optional[LocalAlbumSnapshot]:
+        """Return album identity and occupied positions for local tracks.
+
+        This deliberately mirrors the album completer's historic two-query
+        read, including its treatment of soft-deleted rows.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT artist, album FROM tracks "
+            "WHERE release_mbid = ? AND local_path IS NOT NULL LIMIT 1",
+            (release_mbid,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        if not row:
+            return None
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT disc_number, track_number FROM tracks "
+            "WHERE release_mbid = ? AND local_path IS NOT NULL",
+            (release_mbid,),
+        )
+        positions = {(item[0], item[1]) for item in cursor.fetchall()}
+        cursor.close()
+        return {
+            "artist": row[0],
+            "album": row[1],
+            "positions": positions,
+        }
+
+    def update_track_release_mbid(self, mbid: str, release_mbid: str) -> int:
+        """Assign one track to a release and preserve the legacy commit point."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET release_mbid = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
+            (release_mbid, mbid),
+        )
+        changed = cursor.rowcount
+        self.conn.commit()
+        cursor.close()
+        return changed
 
     def get_album_track_counts(self) -> List[dict]:
         """Get all albums with their local track count vs expected total."""
@@ -3068,6 +3168,122 @@ class DatabaseManager:
         cursor.execute("DELETE FROM duplicates WHERE mbid = ?", (mbid,))
         self.conn.commit()
         cursor.close()
+
+    # --- Album grouping maintenance ---
+    def list_split_album_tracks(self) -> List[SplitAlbumTrackRow]:
+        """Rows used by folder/name split-album detection."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                mbid, title, artist, album, track_number, disc_number,
+                local_path, release_mbid,
+                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
+            FROM tracks
+            WHERE deleted_at IS NULL
+              AND album IS NOT NULL AND album != ''
+              AND artist IS NOT NULL AND artist != ''
+            ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE,
+                     COALESCE(disc_number, 1), COALESCE(track_number, 9999)
+            """
+        )
+        rows = cast(List[SplitAlbumTrackRow], [
+            dict(row) for row in cursor.fetchall()
+        ])
+        cursor.close()
+        return rows
+
+    def list_album_group_tracks(self) -> List[AlbumGroupTrackRow]:
+        """Rows used to plan edition consolidation without local paths."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                mbid, title, artist, album, track_number, disc_number, release_mbid,
+                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
+            FROM tracks
+            WHERE deleted_at IS NULL
+              AND album IS NOT NULL AND album != ''
+              AND artist IS NOT NULL AND artist != ''
+            """
+        )
+        rows = cast(List[AlbumGroupTrackRow], [
+            dict(row) for row in cursor.fetchall()
+        ])
+        cursor.close()
+        return rows
+
+    def reassign_album_group_tracks(
+        self,
+        source_album_id: str,
+        target_album: str,
+        target_artist: str,
+        target_release_mbid: Optional[str],
+        include_local_paths: bool = True,
+    ) -> AlbumGroupReassignment:
+        """Apply one planned album-group move and commit it once."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT mbid FROM tracks
+            WHERE deleted_at IS NULL
+              AND COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) = ?
+            """,
+            (source_album_id,),
+        )
+        mbids = [row[0] for row in cursor.fetchall()]
+        if not mbids:
+            cursor.close()
+            return {"matched": 0, "moved": 0, "tracks": []}
+
+        placeholders = ",".join("?" * len(mbids))
+        if target_release_mbid:
+            cursor.execute(
+                f"""
+                UPDATE tracks SET album = ?, release_mbid = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE mbid IN ({placeholders})
+                """,
+                [target_album, target_release_mbid] + mbids,
+            )
+        else:
+            cursor.execute(
+                f"""
+                UPDATE tracks SET album = ?, artist = ?, release_mbid = '',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE mbid IN ({placeholders})
+                """,
+                [target_album, target_artist] + mbids,
+            )
+        moved = cursor.rowcount
+        self.conn.commit()
+
+        tracks: List[TrackPathRow] = []
+        if include_local_paths:
+            cursor.execute(
+                f"SELECT mbid, local_path FROM tracks "
+                f"WHERE mbid IN ({placeholders})",
+                mbids,
+            )
+            tracks = cast(
+                List[TrackPathRow], [dict(row) for row in cursor.fetchall()]
+            )
+        cursor.close()
+        return {"matched": len(mbids), "moved": moved, "tracks": tracks}
+
+    def list_local_album_tag_rows(self) -> List[AlbumTagRow]:
+        """Album-level metadata for tracks backed by a local file."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT mbid, album, artist, release_mbid, local_path FROM tracks
+            WHERE deleted_at IS NULL AND local_path IS NOT NULL AND local_path != ''
+            """
+        )
+        rows = cast(List[AlbumTagRow], [
+            dict(row) for row in cursor.fetchall()
+        ])
+        cursor.close()
+        return rows
 
     # --- Split-album dismissals ---
     def get_dismissed_split_albums(self) -> set:

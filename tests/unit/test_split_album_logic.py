@@ -99,5 +99,57 @@ class TestIncidentKey(unittest.TestCase):
         self.assertNotEqual(sad.incident_key(inc1), sad.incident_key(inc3))
 
 
+class TestIncidentFinalization(unittest.TestCase):
+    def test_folder_incident_wins_without_mutating_detection_results(self):
+        groups = [{"album_id": "a"}, {"album_id": "b"}]
+        folder = {"type": "folder", "directory": "/music", "groups": groups}
+        name = {"type": "name", "similarity": 0.99, "groups": groups}
+
+        result = sad._finalize_incidents([folder, name], set())
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["type"], "folder")
+        self.assertIn("key", result[0])
+        self.assertNotIn("key", folder)
+        self.assertNotIn("key", name)
+
+    def test_dismissed_key_is_filtered(self):
+        incident = {
+            "type": "name",
+            "similarity": 0.9,
+            "groups": [{"album_id": "a"}, {"album_id": "b"}],
+        }
+        key = sad.incident_key(incident)
+        self.assertEqual(sad._finalize_incidents([incident], {key}), [])
+
+
+class TestEditionPlanning(unittest.TestCase):
+    def test_consolidation_plan_freezes_ordered_source_moves(self):
+        canonical = {
+            "album_id": "release-deluxe",
+            "album": "Album (Deluxe)",
+            "artist": "Artist",
+            "release_mbid": "release-deluxe",
+            "track_count": 10,
+        }
+        standard = {
+            "album_id": "Album|Artist",
+            "album": "Album",
+            "artist": "Artist",
+            "release_mbid": None,
+            "track_count": 2,
+        }
+
+        plans = sad._build_edition_consolidation_plans([
+            {"canonical": canonical, "others": [standard]}
+        ])
+
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0].target_album, "Album (Deluxe)")
+        self.assertEqual(plans[0].moves[0].source_album_id, "Album|Artist")
+        self.assertEqual(plans[0].moves[0].planned_track_count, 2)
+        self.assertTrue(plans[0].moves[0].write_file_tags)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

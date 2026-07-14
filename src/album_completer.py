@@ -4,7 +4,20 @@ incomplete albums, and queues missing songs for download.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+    TypedDict,
+    Union,
+    cast,
+)
 
 from . import musicbrainz_client as mb
 from .db_manager import DatabaseManager, DownloadItem
@@ -12,8 +25,93 @@ from .download_request import queue_or_forward
 
 logger = logging.getLogger(__name__)
 
+TrackPosition = Tuple[int, int]
+LocalTrackPosition = Tuple[Optional[int], Optional[int]]
+AlbumTracklist = Dict[TrackPosition, str]
+CompletionProgressCallback = Callable[[Dict[str, str]], None]
 
-def fetch_album_tracklist(release_mbid: str) -> Dict[Tuple[int, int], str]:
+
+class MissingTrack(TypedDict):
+    disc: int
+    track: int
+    title: str
+
+
+class MissingAlbumDetails(TypedDict):
+    artist: str
+    album: Optional[str]
+    mbid: str
+    total_tracks: int
+    have: int
+    missing_count: int
+    missing_tracks: List[MissingTrack]
+
+
+class CompletionError(TypedDict):
+    error: str
+
+
+MissingAlbumResult = Union[MissingAlbumDetails, CompletionError]
+
+
+@dataclass(frozen=True)
+class AlbumDiscoveryPlan:
+    """Metadata write selected from read-only MusicBrainz responses."""
+
+    release_mbid: str
+    album_title: str
+    total_tracks: int
+
+
+@dataclass(frozen=True)
+class DownloadPlanItem:
+    """One possible queue mutation and its existing progress messages."""
+
+    search_query: str
+    mbid_guess: str
+    queued_message: str
+    duplicate_message: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AlbumQueuePlan:
+    """Side-effect-free queue plan for one incomplete album."""
+
+    artist: str
+    album: Optional[str]
+    items: Tuple[DownloadPlanItem, ...]
+
+
+@dataclass(frozen=True)
+class TrackReleaseAssignment:
+    """One discovered track-to-release write."""
+
+    track_mbid: str
+    release_mbid: str
+
+
+def _parse_album_tracklist(result: Mapping[str, Any]) -> AlbumTracklist:
+    """Build a track-position map from a MusicBrainz release response."""
+    track_map: AlbumTracklist = {}
+    if "release" in result and "medium-list" in result["release"]:
+        for medium in result["release"]["medium-list"]:
+            try:
+                disc_num = int(medium["position"])
+            except ValueError:
+                disc_num = 1
+
+            if "track-list" in medium:
+                for track in medium["track-list"]:
+                    try:
+                        track_num = int(track["number"])
+                        title = track["recording"]["title"]
+                        track_map[(disc_num, track_num)] = title
+                    except (ValueError, KeyError):
+                        continue
+    return track_map
+
+
+def fetch_album_tracklist(release_mbid: str) -> AlbumTracklist:
     """
     Queries MusicBrainz for the full tracklist of a release.
     Returns: {(disc_num, track_num): "Track Title"}
@@ -23,27 +121,76 @@ def fetch_album_tracklist(release_mbid: str) -> Dict[Tuple[int, int], str]:
             release_mbid, includes=["media", "recordings"]
         )
 
-        track_map = {}
-        if "release" in result and "medium-list" in result["release"]:
-            for medium in result["release"]["medium-list"]:
-                try:
-                    disc_num = int(medium["position"])
-                except ValueError:
-                    disc_num = 1
-
-                if "track-list" in medium:
-                    for track in medium["track-list"]:
-                        try:
-                            t_num = int(track["number"])
-                            t_title = track["recording"]["title"]
-                            track_map[(disc_num, t_num)] = t_title
-                        except (ValueError, KeyError):
-                            pass
-        return track_map
+        return _parse_album_tracklist(result)
 
     except Exception as e:
         logger.error(f"Failed to fetch tracklist for {release_mbid}: {e}")
         return {}
+
+
+def _select_release(
+    releases: List[dict], album_hint: str = ""
+) -> Optional[dict]:
+    """Choose the same preferred release without performing any writes."""
+    target = None
+    clean_hint = (album_hint or "").strip().lower()
+    if clean_hint:
+        for release in releases:
+            if release.get("title", "").strip().lower() == clean_hint:
+                target = release
+                break
+
+    if not target:
+        for release in releases:
+            if release.get("status", "").lower() == "official":
+                target = release
+                break
+
+    if not target and releases:
+        target = releases[0]
+    return target
+
+
+def _build_album_discovery_plan(
+    target: Mapping[str, Any],
+    details: Mapping[str, Any],
+    album_hint: str,
+) -> AlbumDiscoveryPlan:
+    """Create the album metadata mutation plan from API responses."""
+    release_mbid = cast(str, target["id"])
+    total_tracks = 0
+    if "release" in details and "medium-list" in details["release"]:
+        for medium in details["release"]["medium-list"]:
+            total_tracks += int(medium.get("track-count", 0))
+
+    album_title = cast(
+        str, target.get("title", album_hint or "Unknown Album")
+    )
+    return AlbumDiscoveryPlan(
+        release_mbid=release_mbid,
+        album_title=album_title,
+        total_tracks=total_tracks,
+    )
+
+
+def _execute_album_discovery_plan(
+    db: DatabaseManager, plan: AlbumDiscoveryPlan
+) -> None:
+    """Persist a discovery plan at the legacy album-metadata commit point."""
+    if plan.total_tracks <= 0:
+        return
+    db.update_album_metadata(
+        plan.release_mbid, plan.album_title, plan.total_tracks
+    )
+
+
+def _execute_track_release_assignment(
+    db: DatabaseManager, assignment: TrackReleaseAssignment
+) -> None:
+    """Persist a track assignment at the original per-track commit point."""
+    db.update_track_release_mbid(
+        assignment.track_mbid, assignment.release_mbid
+    )
 
 
 def discover_album_for_track(
@@ -64,84 +211,37 @@ def discover_album_for_track(
         if not releases:
             return None
 
-        target = None
-        clean_hint = (album_hint or "").strip().lower()
+        target = _select_release(releases, album_hint)
+        if target is None:
+            return None
 
-        # Prefer matching album name
-        if clean_hint:
-            for rel in releases:
-                if rel.get("title", "").strip().lower() == clean_hint:
-                    target = rel
-                    break
-
-        # Fallback to official release
-        if not target:
-            for rel in releases:
-                if rel.get("status", "").lower() == "official":
-                    target = rel
-                    break
-
-        if not target:
-            target = releases[0]
-
-        release_mbid = target["id"]
-
-        details = mb.get_release_by_id(release_mbid, includes=["media"])
-        total = 0
-        if "release" in details and "medium-list" in details["release"]:
-            for m in details["release"]["medium-list"]:
-                total += int(m.get("track-count", 0))
-
-        album_title = target.get("title", album_hint or "Unknown Album")
-        if total > 0:
-            db.update_album_metadata(release_mbid, album_title, total)
-
-        return release_mbid
+        details = mb.get_release_by_id(target["id"], includes=["media"])
+        plan = _build_album_discovery_plan(target, details, album_hint)
+        _execute_album_discovery_plan(db, plan)
+        return plan.release_mbid
 
     except Exception as e:
         logger.error(f"Album discovery failed for recording {recording_mbid}: {e}")
         return None
 
 
-def get_missing_tracks_for_album(db: DatabaseManager, release_mbid: str) -> dict:
-    """
-    Returns details about missing tracks for a specific album.
-    """
-    cursor = db.conn.cursor()
-    cursor.execute(
-        "SELECT artist, album FROM tracks WHERE release_mbid = ? AND local_path IS NOT NULL LIMIT 1",
-        (release_mbid,),
-    )
-    row = cursor.fetchone()
-    cursor.close()
-
-    if not row:
-        return {"error": f"No local tracks found for release {release_mbid}"}
-
-    artist_name, album_title = row[0], row[1]
-
-    local_tracks = set()
-    cursor = db.conn.cursor()
-    cursor.execute(
-        "SELECT disc_number, track_number FROM tracks WHERE release_mbid = ? AND local_path IS NOT NULL",
-        (release_mbid,),
-    )
-    for r in cursor.fetchall():
-        local_tracks.add((r[0], r[1]))
-    cursor.close()
-
-    official_tracks = fetch_album_tracklist(release_mbid)
-    if not official_tracks:
-        return {"error": "Failed to fetch official tracklist from MusicBrainz"}
-
-    missing_items = []
+def _build_missing_album_details(
+    *,
+    release_mbid: str,
+    artist: str,
+    album: Optional[str],
+    local_tracks: Set[LocalTrackPosition],
+    official_tracks: AlbumTracklist,
+) -> MissingAlbumDetails:
+    """Create a completion snapshot without database or network access."""
+    missing_items: List[MissingTrack] = []
     for (disc, track), title in sorted(official_tracks.items()):
         if (disc, track) not in local_tracks:
             missing_items.append({"disc": disc, "track": track, "title": title})
 
     return {
-        "artist": artist_name,
-        "album": album_title,
+        "artist": artist,
+        "album": album,
         "mbid": release_mbid,
         "total_tracks": len(official_tracks),
         "have": len(local_tracks),
@@ -150,8 +250,107 @@ def get_missing_tracks_for_album(db: DatabaseManager, release_mbid: str) -> dict
     }
 
 
+def get_missing_tracks_for_album(
+    db: DatabaseManager, release_mbid: str
+) -> MissingAlbumResult:
+    """
+    Returns details about missing tracks for a specific album.
+    """
+    snapshot = db.get_local_album_snapshot(release_mbid)
+    if snapshot is None:
+        return {"error": f"No local tracks found for release {release_mbid}"}
+
+    official_tracks = fetch_album_tracklist(release_mbid)
+    if not official_tracks:
+        return {"error": "Failed to fetch official tracklist from MusicBrainz"}
+    return _build_missing_album_details(
+        release_mbid=release_mbid,
+        artist=snapshot["artist"],
+        album=snapshot["album"],
+        local_tracks=snapshot["positions"],
+        official_tracks=official_tracks,
+    )
+
+
+def _build_album_queue_plan(
+    data: MissingAlbumDetails, release_mbid: str
+) -> AlbumQueuePlan:
+    """Choose album-versus-track downloads without mutating the queue."""
+    artist = data["artist"]
+    album = data["album"]
+    missing = data["missing_tracks"]
+    total = data["total_tracks"]
+    missing_count = data["missing_count"]
+    if missing_count == 0:
+        return AlbumQueuePlan(artist=artist, album=album, items=())
+
+    missing_pct = (missing_count / total) * 100 if total else 0
+    if missing_count > 3 or missing_pct > 60:
+        query = f"::ALBUM:: {artist} - {album}"
+        return AlbumQueuePlan(
+            artist=artist,
+            album=album,
+            items=(
+                DownloadPlanItem(
+                    search_query=query,
+                    mbid_guess=release_mbid,
+                    queued_message=(
+                        f"  Queued full album: {artist} - {album} "
+                        f"({missing_count}/{total} missing)"
+                    ),
+                    duplicate_message=(
+                        f"  Album already queued: {artist} - {album}"
+                    ),
+                ),
+            ),
+        )
+
+    return AlbumQueuePlan(
+        artist=artist,
+        album=album,
+        items=tuple(
+            DownloadPlanItem(
+                search_query=f"{artist} - {item['title']}",
+                mbid_guess="",
+                queued_message=f"  Queued: {artist} - {item['title']}",
+            )
+            for item in missing
+        ),
+    )
+
+
+def _execute_album_queue_plan(
+    db: DatabaseManager,
+    plan: AlbumQueuePlan,
+    report: Callable[[str], None],
+) -> Tuple[int, int]:
+    """Apply a queue plan sequentially, preserving duplicate checks."""
+    queued = 0
+    skipped = 0
+    for item in plan.items:
+        if db.is_download_queued(item.search_query):
+            skipped += 1
+            if item.duplicate_message:
+                report(item.duplicate_message)
+            continue
+        queue_or_forward(
+            db,
+            DownloadItem(
+                search_query=item.search_query,
+                playlist_id="COMPLETER",
+                mbid_guess=item.mbid_guess,
+                status="pending",
+            ),
+        )
+        report(item.queued_message)
+        queued += 1
+    return queued, skipped
+
+
 def queue_missing_tracks_for_album(
-    db: DatabaseManager, release_mbid: str, progress_callback=None
+    db: DatabaseManager,
+    release_mbid: str,
+    progress_callback: Optional[CompletionProgressCallback] = None,
 ) -> dict:
     """
     Identifies missing tracks for an album and queues them for download.
@@ -163,63 +362,34 @@ def queue_missing_tracks_for_album(
         logger.warning(f"Skipping album {release_mbid}: {data['error']}")
         return {"error": data["error"]}
 
-    artist = data["artist"]
-    album = data["album"]
-    missing = data["missing_tracks"]
-    total = data["total_tracks"]
-    missing_count = data["missing_count"]
-
-    if missing_count == 0:
-        return {"album": album, "artist": artist, "queued": 0, "skipped_existing": 0}
+    plan = _build_album_queue_plan(data, release_mbid)
+    if not plan.items:
+        return {
+            "album": plan.album,
+            "artist": plan.artist,
+            "queued": 0,
+            "skipped_existing": 0,
+        }
 
     def _report(msg):
         logger.info(msg)
         if progress_callback:
             progress_callback({"detail": msg})
 
-    queued = 0
-    skipped = 0
-
-    # If missing a lot, queue the whole album as one download
-    missing_pct = (missing_count / total) * 100 if total else 0
-    if missing_count > 3 or missing_pct > 60:
-        query = f"::ALBUM:: {artist} - {album}"
-        if db.is_download_queued(query):
-            _report(f"  Album already queued: {artist} - {album}")
-            skipped = 1
-        else:
-            queue_or_forward(db, DownloadItem(
-                search_query=query,
-                playlist_id="COMPLETER",
-                mbid_guess=release_mbid,
-                status="pending",
-            ))
-            _report(f"  Queued full album: {artist} - {album} ({missing_count}/{total} missing)")
-            queued = 1
-    else:
-        for item in missing:
-            query = f"{artist} - {item['title']}"
-            if db.is_download_queued(query):
-                skipped += 1
-                continue
-            queue_or_forward(db, DownloadItem(
-                search_query=query,
-                playlist_id="COMPLETER",
-                mbid_guess="",
-                status="pending",
-            ))
-            _report(f"  Queued: {query}")
-            queued += 1
+    queued, skipped = _execute_album_queue_plan(db, plan, _report)
 
     return {
-        "album": album,
-        "artist": artist,
+        "album": plan.album,
+        "artist": plan.artist,
         "queued": queued,
         "skipped_existing": skipped,
     }
 
 
-def complete_albums(db: DatabaseManager, progress_callback=None) -> dict:
+def complete_albums(
+    db: DatabaseManager,
+    progress_callback: Optional[CompletionProgressCallback] = None,
+) -> dict:
     """
     Full album completion pipeline:
       1. Discover album metadata for tracks that are missing it
@@ -265,14 +435,11 @@ def complete_albums(db: DatabaseManager, progress_callback=None) -> dict:
             )
 
             if release_mbid:
-                # Update the track's release_mbid in the DB
-                cursor = db.conn.cursor()
-                cursor.execute(
-                    "UPDATE tracks SET release_mbid = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
-                    (release_mbid, track.mbid),
+                assignment = TrackReleaseAssignment(
+                    track_mbid=track.mbid,
+                    release_mbid=release_mbid,
                 )
-                db.conn.commit()
-                cursor.close()
+                _execute_track_release_assignment(db, assignment)
                 summary["albums_discovered"] += 1
                 _detail(f"  Found album: {release_mbid}")
             else:

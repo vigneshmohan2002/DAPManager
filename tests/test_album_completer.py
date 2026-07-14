@@ -4,6 +4,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.album_completer import (
+    _build_album_discovery_plan,
+    _build_album_queue_plan,
+    _build_missing_album_details,
+    _execute_album_discovery_plan,
     fetch_album_tracklist,
     get_missing_tracks_for_album,
     queue_missing_tracks_for_album,
@@ -94,6 +98,40 @@ def test_fetch_album_tracklist_api_error():
         assert fetch_album_tracklist("bad_mbid") == {}
 
 
+def test_discovery_plan_is_pure_until_executed():
+    db = MagicMock()
+    plan = _build_album_discovery_plan(
+        {"id": "release-1", "title": "Album"},
+        {"release": {"medium-list": [{"track-count": "7"}]}},
+        "",
+    )
+
+    assert plan.release_mbid == "release-1"
+    assert plan.total_tracks == 7
+    db.update_album_metadata.assert_not_called()
+
+    _execute_album_discovery_plan(db, plan)
+    db.update_album_metadata.assert_called_once_with("release-1", "Album", 7)
+
+
+def test_track_release_facade_keeps_per_track_commit_boundary():
+    events = []
+    cursor = MagicMock(rowcount=1)
+    cursor.execute.side_effect = lambda *_args: events.append("execute")
+    cursor.close.side_effect = lambda: events.append("close")
+    connection = MagicMock()
+    connection.cursor.return_value = cursor
+    connection.commit.side_effect = lambda: events.append("commit")
+    fake_db = SimpleNamespace(conn=connection)
+
+    changed = DatabaseManager.update_track_release_mbid(
+        fake_db, "track", "release"
+    )
+
+    assert changed == 1
+    assert events == ["execute", "commit", "close"]
+
+
 # ---------------------------------------------------------------------------
 # get_missing_tracks_for_album
 # ---------------------------------------------------------------------------
@@ -135,6 +173,37 @@ def test_get_missing_album_complete(db):
     assert result["missing_count"] == 0
 
 
+def test_missing_details_plan_is_sorted_and_side_effect_free():
+    official = {(1, 3): "Three", (1, 1): "One", (1, 2): "Two"}
+    local = {(1, 1)}
+
+    result = _build_missing_album_details(
+        release_mbid="r1",
+        artist="Artist",
+        album="Album",
+        local_tracks=local,
+        official_tracks=official,
+    )
+
+    assert [item["track"] for item in result["missing_tracks"]] == [2, 3]
+    assert local == {(1, 1)}
+    assert official[(1, 1)] == "One"
+
+
+def test_missing_snapshot_preserves_legacy_soft_deleted_positions(db):
+    _add_track(db, mbid="gone", track_number=1, release_mbid="r1")
+    db.soft_delete_track("gone")
+
+    with patch("src.album_completer.fetch_album_tracklist") as mock_fetch:
+        mock_fetch.return_value = {(1, 1): "One", (1, 2): "Two"}
+        result = get_missing_tracks_for_album(db, "r1")
+
+    assert result["have"] == 1
+    assert result["missing_tracks"] == [
+        {"disc": 1, "track": 2, "title": "Two"}
+    ]
+
+
 # ---------------------------------------------------------------------------
 # queue_missing_tracks_for_album
 # ---------------------------------------------------------------------------
@@ -144,6 +213,28 @@ def test_queue_missing_error_handling():
         mock_get.return_value = {"error": "Test error"}
         result = queue_missing_tracks_for_album(MagicMock(), "bad_mbid")
         assert "error" in result
+
+
+def test_album_queue_plan_is_built_without_queue_access():
+    data = {
+        "artist": "Artist",
+        "album": "Album",
+        "mbid": "payload-release",
+        "total_tracks": 10,
+        "have": 1,
+        "missing_count": 4,
+        "missing_tracks": [
+            {"disc": 1, "track": number, "title": f"Track {number}"}
+            for number in range(2, 6)
+        ],
+    }
+
+    plan = _build_album_queue_plan(data, "argument-release")
+
+    assert len(plan.items) == 1
+    assert plan.items[0].search_query == "::ALBUM:: Artist - Album"
+    # Preserve the public call argument as the queued release guess.
+    assert plan.items[0].mbid_guess == "argument-release"
 
 
 def test_queue_individual_tracks(db):
