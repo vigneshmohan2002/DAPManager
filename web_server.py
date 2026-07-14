@@ -23,6 +23,12 @@ from src.services.media_proxy_service import (
     request_album_tracks,
     request_stream,
 )
+from src.services.scheduler_service import (
+    build_library_maintenance_scheduler,
+    build_release_watcher_scheduler,
+    build_sync_scheduler,
+    stop_scheduler,
+)
 from src.services.task_service import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -49,12 +55,7 @@ library_maintenance_scheduler = None
 
 
 def _stop_scheduler(instance) -> None:
-    if instance is None:
-        return
-    try:
-        instance.stop()
-    except Exception as e:
-        logger.warning("Could not stop scheduler cleanly: %s", e)
+    stop_scheduler(instance, event_logger=logger)
 
 
 def init_app_logic():
@@ -97,22 +98,16 @@ def _start_sync_scheduler(*, run_on_startup: Optional[bool] = None):
 
     _stop_scheduler(sync_scheduler)
     sync_scheduler = None
-    interval = int(config._config.get("sync_interval_seconds") or 0)
-    on_startup = (
-        bool(config._config.get("sync_on_startup") or False)
-        if run_on_startup is None
-        else bool(run_on_startup)
+    sync_scheduler = build_sync_scheduler(
+        config_values=config._config,
+        db_path=config.db_path,
+        config_context=config,
+        task_manager=task_manager,
+        task_target=run_sync_all,
+        scheduler_factory=SyncScheduler,
+        run_on_startup=run_on_startup,
+        event_logger=logger,
     )
-
-    def _trigger():
-        started, message = task_manager.start_task(
-            run_sync_all, (config.db_path, config), "Sync All (scheduled)"
-        )
-        if not started:
-            logger.info("Sync All tick deferred: %s", message)
-        return started
-
-    sync_scheduler = SyncScheduler(interval, _trigger, run_on_startup=on_startup)
     sync_scheduler.start()
 
 
@@ -130,25 +125,18 @@ def _start_release_watcher():
 
     _stop_scheduler(release_watcher_scheduler)
     release_watcher_scheduler = None
-    if not config.is_master:
-        logger.info("release_watcher disabled on non-authority device.")
+    release_watcher_scheduler = build_release_watcher_scheduler(
+        config_values=config._config,
+        is_master=config.is_master,
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        lidarr_client_factory=_build_lidarr_client,
+        watch_tick=run_watch_tick,
+        scheduler_factory=SyncScheduler,
+        event_logger=logger,
+    )
+    if release_watcher_scheduler is None:
         return
-    if not bool(config._config.get("lidarr_watch_enabled") or False):
-        logger.info("release_watcher disabled (lidarr_watch_enabled != true).")
-        release_watcher_scheduler = None
-        return
-
-    interval = int(config._config.get("lidarr_watch_interval_seconds") or 3600)
-
-    def _trigger():
-        client = _build_lidarr_client(config._config)
-        if client is None:
-            logger.debug("release_watcher: Lidarr unavailable; skipping tick.")
-            return
-        with DatabaseManager(config.db_path) as db:
-            run_watch_tick(db, client)
-
-    release_watcher_scheduler = SyncScheduler(interval, _trigger, run_on_startup=False)
     release_watcher_scheduler.start()
 
 
@@ -168,41 +156,20 @@ def _start_library_maintenance_scheduler(
 
     _stop_scheduler(library_maintenance_scheduler)
     library_maintenance_scheduler = None
-    if not config.is_master:
-        logger.info("Library maintenance disabled on non-master device.")
-        library_maintenance_scheduler = None
-        return
-
-    interval = maintenance_interval_seconds(config._config)
-    if interval <= 0:
-        logger.info(
-            "Library maintenance disabled "
-            "(library_maintenance_interval_seconds <= 0)."
-        )
-        library_maintenance_scheduler = None
-        return
-    on_startup = (
-        bool(config._config.get("library_maintenance_on_startup") or False)
-        if run_on_startup is None
-        else bool(run_on_startup)
+    library_maintenance_scheduler = build_library_maintenance_scheduler(
+        config_values=config._config,
+        is_master=config.is_master,
+        db_path=config.db_path,
+        config_context=config,
+        task_manager=task_manager,
+        task_target=run_library_maintenance_task,
+        interval_resolver=maintenance_interval_seconds,
+        scheduler_factory=SyncScheduler,
+        run_on_startup=run_on_startup,
+        event_logger=logger,
     )
-
-    def _trigger():
-        started, message = task_manager.start_task(
-            run_library_maintenance_task,
-            (config.db_path, config),
-            "Library maintenance (scheduled)",
-        )
-        if not started:
-            logger.info("Library maintenance tick deferred: %s", message)
-        return started
-
-    library_maintenance_scheduler = SyncScheduler(
-        interval,
-        _trigger,
-        run_on_startup=on_startup,
-        startup_delay_seconds=5.0,
-    )
+    if library_maintenance_scheduler is None:
+        return
     library_maintenance_scheduler.start()
 
 
