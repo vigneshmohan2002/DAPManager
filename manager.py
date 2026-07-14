@@ -4,9 +4,9 @@ and Album Completeness Auditing.
 """
 
 import logging
-import time
 import os
-import sys
+from dataclasses import dataclass
+from typing import Callable, Protocol
 
 # Internal imports
 from src.logger_setup import setup_logging
@@ -15,7 +15,12 @@ from src.db_manager import DatabaseManager
 from src.library_scanner import main_scan_library, LibraryScanner
 from src.spotify_client import SpotifyClient
 from src.downloader import main_run_downloader, Downloader
-from src.sync_dap import main_run_sync
+from src.sync_dap import (
+    SyncMode,
+    SyncRequest,
+    main_run_sync,
+    run_sync_request,
+)
 from src.utils import EnvironmentManager
 from src.album_completer import audit_library, complete_albums
 
@@ -24,6 +29,23 @@ from src.album_completer import audit_library, complete_albums
 # Setup logging first
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+class ManagerConfig(Protocol):
+    db_path: str
+    music_library: str
+    contact_email: str
+    jellyfin_enabled: bool
+    _config: dict
+
+
+@dataclass(frozen=True)
+class CliContext:
+    db_path: str
+    config: ManagerConfig
+
+
+CommandHandler = Callable[[CliContext], bool]
 
 
 def print_menu():
@@ -74,6 +96,33 @@ def get_conversion_format() -> str:
     }
 
     return format_map.get(choice, "flac")
+
+
+def confirm_large_sync(_track_count: int) -> bool:
+    """CLI confirmation injected into the otherwise non-interactive sync core."""
+    return input("This may take a while. Continue? (y/n): ").strip().lower() == "y"
+
+
+def run_cli_sync(
+    db: DatabaseManager,
+    config: dict,
+    mode: SyncMode,
+    conversion_format: str,
+    *,
+    artist_filter: str | None = None,
+    reconcile: bool = False,
+) -> None:
+    run_sync_request(
+        db,
+        config,
+        SyncRequest(
+            mode=mode,
+            conversion_format=conversion_format,
+            artist_filter=artist_filter,
+            reconcile=reconcile,
+        ),
+        confirm_large_sync=confirm_large_sync,
+    )
 
 
 def show_sync_stats(db: DatabaseManager, config):
@@ -263,335 +312,338 @@ def clean_dap_music(db, config):
         print(f"Error: {e}")
 
 
-def main():
-    """Main application loop."""
+def handle_scan_library(context: CliContext) -> bool:
+    logger.info("=" * 60)
+    logger.info("Scanning Local Library")
+    logger.info("=" * 60)
+    print("\n Scanning music library...")
+    print("This may take a while on first run (Picard tagging)...\n")
+    with DatabaseManager(context.db_path) as db:
+        main_scan_library(db, context.config._config)
+    print("\n Scan complete!")
+    logger.info("Scan Complete")
+    return False
 
-    # Load configuration
+
+def handle_add_spotify_playlist(context: CliContext) -> bool:
+    logger.info("=" * 60)
+    logger.info("Adding Spotify Playlist")
+    logger.info("=" * 60)
+    if not EnvironmentManager.validate_environment():
+        return False
+
+    print("\n Enter Spotify playlist URL")
+    print("Example: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")
+    playlist_url = input("\nURL: ").strip()
+    if not playlist_url.startswith("http"):
+        print(" Invalid URL. Must be a full Spotify playlist URL.")
+        return False
+
+    print("\nProcessing playlist...")
+    with DatabaseManager(context.db_path) as db:
+        SpotifyClient(db).process_playlist(playlist_url)
+    print("\n Playlist processed!")
+    logger.info("Playlist Processed")
+    return False
+
+
+def handle_download_queue(context: CliContext) -> bool:
+    logger.info("=" * 60)
+    logger.info("Running Download Queue")
+    logger.info("=" * 60)
+    print("\nProcessing download queue...")
+    print("This will download any tracks not found locally.\n")
+    with DatabaseManager(context.db_path) as db:
+        main_run_downloader(db, context.config._config)
+    print("\n Download queue finished!")
+    logger.info("Download Queue Finished")
+    return False
+
+
+def handle_playlist_sync(context: CliContext) -> bool:
+    logger.info("=" * 60)
+    logger.info("Syncing Playlists to DAP")
+    logger.info("=" * 60)
+    print("\n Syncing playlist tracks to DAP...")
+    conversion_format = get_conversion_format()
+    print(f"\n Converting to {conversion_format.upper()}...")
+    with DatabaseManager(context.db_path) as db:
+        run_cli_sync(
+            db,
+            context.config._config,
+            SyncMode.PLAYLISTS_ONLY,
+            conversion_format,
+        )
+    print("\n Playlist sync complete!")
+    logger.info("Playlist Sync Complete")
+    return False
+
+
+def handle_library_sync(context: CliContext) -> bool:
+    logger.info("=" * 60)
+    logger.info("Syncing Full Library to DAP")
+    logger.info("=" * 60)
+    print("\n  FULL LIBRARY SYNC")
+    print("This will sync ALL tracks in your library to the DAP.")
+    with DatabaseManager(context.db_path) as db:
+        show_sync_stats(db, context.config._config)
+
+    print("\n" + "=" * 60)
+    if input("Continue with full library sync? (y/n): ").strip().lower() != "y":
+        print(" Sync cancelled.")
+        return False
+
+    conversion_format = get_conversion_format()
+    print(f"\n Converting to {conversion_format.upper()}...")
+    print(" This may take a LONG time for large libraries...\n")
+    with DatabaseManager(context.db_path) as db:
+        run_cli_sync(
+            db,
+            context.config._config,
+            SyncMode.FULL_LIBRARY,
+            conversion_format,
+        )
+    print("\n Full library sync complete!")
+    logger.info("Full Library Sync Complete")
+    return False
+
+
+def handle_selective_sync(context: CliContext) -> bool:
+    logger.info("=" * 60)
+    logger.info("Selective Sync")
+    logger.info("=" * 60)
+    print("\nSelective Sync")
+    print("Enter an artist name to sync only their tracks.")
+    print("Leave blank to see all pending tracks.\n")
+    conversion_format = get_conversion_format()
+    artist_filter = input(
+        "Enter artist name to filter (or press Enter for all): "
+    ).strip() or None
+    with DatabaseManager(context.db_path) as db:
+        run_cli_sync(
+            db,
+            context.config._config,
+            SyncMode.SELECTIVE,
+            conversion_format,
+            artist_filter=artist_filter,
+        )
+    print("\n Selective sync complete!")
+    logger.info("Selective Sync Complete")
+    return False
+
+
+def handle_clean_dap(context: CliContext) -> bool:
+    print("\n> CLEAN: Deleting all files from DAP Music folder...")
+    with DatabaseManager(context.db_path) as db:
+        clean_dap_music(db, context.config._config)
+    logger.info("DAP clean process finished.")
+    return False
+
+
+def handle_reconcile_dap(context: CliContext) -> bool:
+    print("\n> RECONCILE: Matching DAP files to local database...")
+    with DatabaseManager(context.db_path) as db:
+        reconcile_dap(db, context.config._config)
+    logger.info("DAP reconciliation process finished.")
+    return False
+
+
+def handle_clear_duplicates(context: CliContext) -> bool:
+    from src.clear_dupes import find_and_resolve_duplicates
+
+    print("\n> DUPES: Analyzing library for duplicate tracks...")
+    with DatabaseManager(context.db_path) as db:
+        find_and_resolve_duplicates(db)
+    logger.info("Duplicate resolution finished.")
+    return False
+
+
+def handle_batch_sync(_context: CliContext) -> bool:
+    print("\n> BATCH: Starting full automation cycle...")
+    logger.info("Starting Batch Sync")
+    try:
+        batch_sync()
+    except Exception as error:
+        logger.error(f"Batch sync failed: {error}")
+        print(f"Batch sync failed: {error}")
+    logger.info("Batch Sync finished.")
+    return False
+
+
+def handle_album_audit(context: CliContext) -> bool:
+    logger.info("Starting Album Completeness Audit")
+    print("\n> AUDIT: Finding incomplete albums...")
+    with DatabaseManager(context.db_path) as db:
+        incomplete = audit_library(db)
+
+    if not incomplete:
+        print("\nAll albums in your library are complete!")
+        logger.info("Audit finished.")
+        return False
+
+    print(f"\nFound {len(incomplete)} incomplete albums:\n")
+    for item in incomplete:
+        status = f"{item['have']}/{item['total']} (missing {item['missing']})"
+        print(f"  {item['artist']} - {item['album']}  [{status}]")
+    print(f"\n{len(incomplete)} incomplete albums found.")
+    proceed = input(
+        "\nWould you like to queue missing tracks for download? (y/n): "
+    ).strip().lower()
+    if proceed != "y":
+        logger.info("Audit finished.")
+        return False
+
+    print("\nQueueing missing tracks (this may take a while)...\n")
+    with DatabaseManager(context.db_path) as db:
+        summary = complete_albums(db)
+    print(f"\nDone! Queued {summary['tracks_queued']} downloads.")
+    print(f"  Albums discovered: {summary['albums_discovered']}")
+    print(f"  Errors: {summary['errors']}")
+    if summary["tracks_queued"] > 0:
+        run_downloads = input("\nRun the downloader now? (y/n): ").strip().lower()
+        if run_downloads == "y":
+            with DatabaseManager(context.db_path) as db:
+                main_run_downloader(db, context.config._config)
+            print("\nDownload queue finished!")
+    logger.info("Audit finished.")
+    return False
+
+
+def handle_complete_albums(context: CliContext) -> bool:
+    logger.info("Starting Album Completion")
+    print("\n" + "=" * 60)
+    print("  ALBUM COMPLETION")
+    print("=" * 60)
+    print("This will:")
+    print("  1. Discover album info for tracks missing it")
+    print("  2. Identify all incomplete albums")
+    print("  3. Queue missing tracks for download")
+    print("  4. Run the downloader")
+    print("=" * 60)
+    if input("\nProceed? (y/n): ").strip().lower() != "y":
+        print("Cancelled.")
+        return False
+
+    print("\n[Step 1-3] Analysing library and queueing missing tracks...\n")
+    with DatabaseManager(context.db_path) as db:
+        summary = complete_albums(db)
+
+    print(f"\n{'=' * 60}")
+    print(f"  Albums discovered:    {summary['albums_discovered']}")
+    print(f"  Incomplete albums:    {summary['incomplete_albums']}")
+    print(f"  Tracks queued:        {summary['tracks_queued']}")
+    print(f"  Already queued:       {summary['albums_skipped_existing']}")
+    print(f"  Errors:               {summary['errors']}")
+    print(f"{'=' * 60}")
+
+    if summary["tracks_queued"] <= 0:
+        print("\nNo new tracks to download. Library looks good!")
+        logger.info("Album Completion finished.")
+        return False
+
+    print("\n[Step 4] Running downloader...\n")
+    with DatabaseManager(context.db_path) as db:
+        main_run_downloader(db, context.config._config)
+    print("\nDownload queue finished!")
+    if input("\nRe-scan library to pick up new files? (y/n): ").strip().lower() == "y":
+        with DatabaseManager(context.db_path) as db:
+            main_scan_library(db, context.config._config)
+        print("\nRe-scan complete!")
+    logger.info("Album Completion finished.")
+    return False
+
+
+def handle_jellyfin_pull(context: CliContext) -> bool:
+    logger.info("Starting Jellyfin Pull")
+    if not context.config.jellyfin_enabled:
+        print(
+            "\nJellyfin not configured. Set jellyfin_url, "
+            "jellyfin_api_key, and jellyfin_user_id in config.json."
+        )
+        return False
+
+    from src.jellyfin_client import main_run_jellyfin_pull
+
+    print("\n> JELLYFIN: Pulling audio + playlists from Jellyfin...")
+    with DatabaseManager(context.db_path) as db:
+        summary = main_run_jellyfin_pull(db, context.config._config)
+    print(
+        f"\nDone. Pulled {summary['pulled']}, skipped {summary['skipped']}, "
+        f"failed {summary['failed']}, mirrored {summary['playlists_mirrored']} playlists."
+    )
+    logger.info("Jellyfin Pull finished.")
+    return False
+
+
+def handle_exit(_context: CliContext) -> bool:
+    print("\n" + "=" * 60)
+    print("  Thanks for using DAP Manager!")
+    print("=" * 60)
+    logger.info("Exiting DAP Manager")
+    return True
+
+
+COMMAND_HANDLERS: dict[str, CommandHandler] = {
+    "1": handle_scan_library,
+    "2": handle_add_spotify_playlist,
+    "3": handle_download_queue,
+    "4": handle_playlist_sync,
+    "5": handle_library_sync,
+    "6": handle_selective_sync,
+    "7": handle_clean_dap,
+    "8": handle_reconcile_dap,
+    "9": handle_clear_duplicates,
+    "10": handle_batch_sync,
+    "11": handle_album_audit,
+    "12": handle_complete_albums,
+    "13": handle_jellyfin_pull,
+    "14": handle_exit,
+}
+
+
+def main():
+    """Main application loop driven by the explicit command registry."""
     try:
         config = get_config()
     except SystemExit:
         return
 
     from src import musicbrainz_client
-    musicbrainz_client.configure(config.contact_email)
 
-    db_path = config.db_path
+    musicbrainz_client.configure(config.contact_email)
+    context = CliContext(db_path=config.db_path, config=config)
 
     print("\n" + "=" * 60)
     print("  Welcome to DAP Manager!")
     print("=" * 60)
-    print(f"  Database: {db_path}")
+    print(f"  Database: {context.db_path}")
     print(f"  Library:  {config.music_library}")
     print("=" * 60)
 
     while True:
         print_menu()
         choice = input("\nEnter your choice (1-14): ").strip()
+        handler = COMMAND_HANDLERS.get(choice)
+        if handler is None:
+            print(f"\n Invalid choice '{choice}'. Please enter 1-14.")
+            continue
 
         try:
-            if choice == "1":
-                # ============================================
-                # Scan Local Library
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Scanning Local Library")
-                logger.info("=" * 60)
-
-                print("\n Scanning music library...")
-                print("This may take a while on first run (Picard tagging)...\n")
-
-                with DatabaseManager(db_path) as db:
-                    main_scan_library(db, config._config)
-
-                print("\n Scan complete!")
-                logger.info("Scan Complete")
-
-            elif choice == "2":
-                # ============================================
-                # Add Spotify Playlist
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Adding Spotify Playlist")
-                logger.info("=" * 60)
-
-                # Check environment variables
-                if not EnvironmentManager.validate_environment():
-                    continue
-
-                print("\n Enter Spotify playlist URL")
-                print(
-                    "Example: https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
-                )
-
-                playlist_url = input("\nURL: ").strip()
-
-                if not playlist_url.startswith("http"):
-                    print(" Invalid URL. Must be a full Spotify playlist URL.")
-                    continue
-
-                print(f"\nProcessing playlist...")
-
-                with DatabaseManager(db_path) as db:
-                    spot_client = SpotifyClient(db)
-                    spot_client.process_playlist(playlist_url)
-
-                print("\n Playlist processed!")
-                logger.info("Playlist Processed")
-
-            elif choice == "3":
-                # ============================================
-                # Run Download Queue
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Running Download Queue")
-                logger.info("=" * 60)
-
-                print("\nProcessing download queue...")
-                print("This will download any tracks not found locally.\n")
-
-                with DatabaseManager(db_path) as db:
-                    main_run_downloader(db, config._config)
-
-                print("\n Download queue finished!")
-                logger.info("Download Queue Finished")
-
-            elif choice == "4":
-                # ============================================
-                # Sync Playlists to DAP
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Syncing Playlists to DAP")
-                logger.info("=" * 60)
-
-                print("\n Syncing playlist tracks to DAP...")
-
-                fmt = get_conversion_format()
-                print(f"\n Converting to {fmt.upper()}...")
-
-                with DatabaseManager(db_path) as db:
-                    main_run_sync(
-                        db, config._config, sync_mode="playlists", conversion_format=fmt
-                    )
-
-                print("\n Playlist sync complete!")
-                logger.info("Playlist Sync Complete")
-
-            elif choice == "5":
-                # ============================================
-                # Sync FULL Library to DAP
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Syncing Full Library to DAP")
-                logger.info("=" * 60)
-
-                print("\n  FULL LIBRARY SYNC")
-                print("This will sync ALL tracks in your library to the DAP.")
-
-                # Show what will be synced
-                with DatabaseManager(db_path) as db:
-                    show_sync_stats(db, config._config)
-
-                print("\n" + "=" * 60)
-                confirm = (
-                    input("Continue with full library sync? (y/n): ").strip().lower()
-                )
-
-                if confirm != "y":
-                    print(" Sync cancelled.")
-                    continue
-
-                fmt = get_conversion_format()
-                print(f"\n Converting to {fmt.upper()}...")
-                print(" This may take a LONG time for large libraries...\n")
-
-                with DatabaseManager(db_path) as db:
-                    main_run_sync(
-                        db, config._config, sync_mode="library", conversion_format=fmt
-                    )
-
-                print("\n Full library sync complete!")
-                logger.info("Full Library Sync Complete")
-
-            elif choice == "6":
-                # ============================================
-                # Selective Sync (by Artist)
-                # ============================================
-                logger.info("=" * 60)
-                logger.info("Selective Sync")
-                logger.info("=" * 60)
-
-                print("\nSelective Sync")
-                print("Enter an artist name to sync only their tracks.")
-                print("Leave blank to see all pending tracks.\n")
-
-                fmt = get_conversion_format()
-
-                with DatabaseManager(db_path) as db:
-                    main_run_sync(
-                        db, config._config, sync_mode="selective", conversion_format=fmt
-                    )
-
-                print("\n Selective sync complete!")
-                logger.info("Selective Sync Complete")
-
-            elif choice == "7":
-                # 7. Clean DAP Music
-                print("\n> CLEAN: Deleting all files from DAP Music folder...")
-                with DatabaseManager(db_path) as db:
-                    clean_dap_music(db, config._config)
-                logger.info("DAP clean process finished.")
-
-            elif choice == "8":
-                # 8. Reconcile existing DAP files
-                print("\n> RECONCILE: Matching DAP files to local database...")
-                with DatabaseManager(db_path) as db:
-                    reconcile_dap(db, config._config)
-                logger.info("DAP reconciliation process finished.")
-
-            elif choice == "9":
-                # 9. Clear Duplicates
-                # Wraps the standalone clear_dupes functionality
-                from src.clear_dupes import find_and_resolve_duplicates
-
-                print("\n> DUPES: Analyzing library for duplicate tracks...")
-                with DatabaseManager(db_path) as db:
-                    find_and_resolve_duplicates(db)
-                logger.info("Duplicate resolution finished.")
-
-            elif choice == "10":
-                # 10. Batch Sync (Automation)
-                print("\n> BATCH: Starting full automation cycle...")
-                logger.info("Starting Batch Sync")
-                try:
-                    batch_sync()
-                except Exception as e:
-                    logger.error(f"Batch sync failed: {e}")
-                    print(f"Batch sync failed: {e}")
-                logger.info("Batch Sync finished.")
-
-            elif choice == "11":
-                # 11. Audit Incomplete Albums
-                logger.info("Starting Album Completeness Audit")
-                print("\n> AUDIT: Finding incomplete albums...")
-                with DatabaseManager(db_path) as db:
-                    incomplete = audit_library(db)
-
-                if not incomplete:
-                    print("\nAll albums in your library are complete!")
-                else:
-                    print(f"\nFound {len(incomplete)} incomplete albums:\n")
-                    for item in incomplete:
-                        status = f"{item['have']}/{item['total']} (missing {item['missing']})"
-                        print(f"  {item['artist']} - {item['album']}  [{status}]")
-                    print(f"\n{len(incomplete)} incomplete albums found.")
-                    proceed = input("\nWould you like to queue missing tracks for download? (y/n): ").strip().lower()
-                    if proceed == "y":
-                        print("\nQueueing missing tracks (this may take a while)...\n")
-                        with DatabaseManager(db_path) as db:
-                            summary = complete_albums(db)
-                        print(f"\nDone! Queued {summary['tracks_queued']} downloads.")
-                        print(f"  Albums discovered: {summary['albums_discovered']}")
-                        print(f"  Errors: {summary['errors']}")
-                        queue_count = summary['tracks_queued']
-                        if queue_count > 0:
-                            run_dl = input("\nRun the downloader now? (y/n): ").strip().lower()
-                            if run_dl == "y":
-                                with DatabaseManager(db_path) as db:
-                                    main_run_downloader(db, config._config)
-                                print("\nDownload queue finished!")
-
-                logger.info("Audit finished.")
-
-            elif choice == "12":
-                # 12. Complete Albums (fully automated)
-                logger.info("Starting Album Completion")
-                print("\n" + "=" * 60)
-                print("  ALBUM COMPLETION")
-                print("=" * 60)
-                print("This will:")
-                print("  1. Discover album info for tracks missing it")
-                print("  2. Identify all incomplete albums")
-                print("  3. Queue missing tracks for download")
-                print("  4. Run the downloader")
-                print("=" * 60)
-
-                confirm = input("\nProceed? (y/n): ").strip().lower()
-                if confirm != "y":
-                    print("Cancelled.")
-                    continue
-
-                print("\n[Step 1-3] Analysing library and queueing missing tracks...\n")
-                with DatabaseManager(db_path) as db:
-                    summary = complete_albums(db)
-
-                print(f"\n{'=' * 60}")
-                print(f"  Albums discovered:    {summary['albums_discovered']}")
-                print(f"  Incomplete albums:    {summary['incomplete_albums']}")
-                print(f"  Tracks queued:        {summary['tracks_queued']}")
-                print(f"  Already queued:       {summary['albums_skipped_existing']}")
-                print(f"  Errors:               {summary['errors']}")
-                print(f"{'=' * 60}")
-
-                if summary['tracks_queued'] > 0:
-                    print("\n[Step 4] Running downloader...\n")
-                    with DatabaseManager(db_path) as db:
-                        main_run_downloader(db, config._config)
-                    print("\nDownload queue finished!")
-
-                    rescan = input("\nRe-scan library to pick up new files? (y/n): ").strip().lower()
-                    if rescan == "y":
-                        with DatabaseManager(db_path) as db:
-                            main_scan_library(db, config._config)
-                        print("\nRe-scan complete!")
-                else:
-                    print("\nNo new tracks to download. Library looks good!")
-
-                logger.info("Album Completion finished.")
-
-            elif choice == "13":
-                # 13. Pull from Jellyfin
-                logger.info("Starting Jellyfin Pull")
-                if not config.jellyfin_enabled:
-                    print(
-                        "\nJellyfin not configured. Set jellyfin_url, "
-                        "jellyfin_api_key, and jellyfin_user_id in config.json."
-                    )
-                    continue
-
-                from src.jellyfin_client import main_run_jellyfin_pull
-                print("\n> JELLYFIN: Pulling audio + playlists from Jellyfin...")
-                with DatabaseManager(db_path) as db:
-                    summary = main_run_jellyfin_pull(db, config._config)
-                print(
-                    f"\nDone. Pulled {summary['pulled']}, skipped {summary['skipped']}, "
-                    f"failed {summary['failed']}, mirrored {summary['playlists_mirrored']} playlists."
-                )
-                logger.info("Jellyfin Pull finished.")
-
-            elif choice == "14":
-                # 14. Exit
-                print("\n" + "=" * 60)
-                print("  Thanks for using DAP Manager!")
-                print("=" * 60)
-                logger.info("Exiting DAP Manager")
+            if handler(context):
                 break
-
-            else:
-                print(f"\n Invalid choice '{choice}'. Please enter 1-14.")
-
         except KeyboardInterrupt:
             print("\n\nOperation cancelled by user (Ctrl+C).")
             logger.info("Operation cancelled by user")
             print("Returning to menu...\n")
-        except Exception as e:
+        except Exception as error:
             logger.error("=" * 60)
             logger.error("AN ERROR OCCURRED")
             logger.error("=" * 60)
-            logger.error(f"Error: {e}", exc_info=True)
+            logger.error(f"Error: {error}", exc_info=True)
             print("\n" + "=" * 60)
             print("  AN ERROR OCCURRED")
             print("=" * 60)
-            print(f"Error: {e}")
+            print(f"Error: {error}")
             print("\nTroubleshooting:")
             print("  1. Check 'dap_manager.log' for detailed error info")
             print("  2. Verify all paths in 'config.json' are correct")

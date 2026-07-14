@@ -6,16 +6,18 @@ Enhanced DAP synchronization with full library sync support.
 import os
 import subprocess
 import logging
-from typing import List, Optional, Set
+from dataclasses import dataclass
+from typing import Callable, List, Optional
 from enum import Enum
 from .db_manager import DatabaseManager, Track
 from .library_scanner import LibraryScanner
 from .downloader import Downloader
 import shutil
-import mutagen
 from .utils import get_mbid_from_tags, sanitize_path_component
 
 logger = logging.getLogger(__name__)
+
+SyncConfirmation = Callable[[int], bool]
 
 
 class SyncMode(Enum):
@@ -24,6 +26,16 @@ class SyncMode(Enum):
     PLAYLISTS_ONLY = "playlists"  # Only sync tracks in playlists
     FULL_LIBRARY = "library"  # Sync entire library
     SELECTIVE = "selective"  # Sync specific tracks/artists
+
+
+@dataclass(frozen=True)
+class SyncRequest:
+    """Non-interactive input for one DAP synchronization run."""
+
+    mode: SyncMode = SyncMode.PLAYLISTS_ONLY
+    conversion_format: str = "flac"
+    artist_filter: Optional[str] = None
+    reconcile: bool = False
 
 
 class ConversionOptions:
@@ -248,6 +260,7 @@ class EnhancedDapSyncer:
         self,
         mode: SyncMode = SyncMode.PLAYLISTS_ONLY,
         artist_filter: Optional[str] = None,
+        confirm_large_sync: Optional[SyncConfirmation] = None,
     ):
         """
         Syncs tracks based on the specified mode.
@@ -266,13 +279,9 @@ class EnhancedDapSyncer:
 
         logger.info(f"Found {len(tracks_to_sync)} track(s) to sync")
 
-        # Ask for confirmation if syncing large number.
-        # NOTE: uses input() — only safe under CLI. Web callers should pre-confirm
-        # before invoking this code path.
         if len(tracks_to_sync) > 50:
             logger.warning(f"About to sync {len(tracks_to_sync)} tracks.")
-            confirm = input("This may take a while. Continue? (y/n): ").strip().lower()
-            if confirm != "y":
+            if confirm_large_sync and not confirm_large_sync(len(tracks_to_sync)):
                 logger.info("Sync cancelled by user")
                 return
 
@@ -512,6 +521,7 @@ class EnhancedDapSyncer:
         artist_filter: Optional[str] = None,
         skip_downloads: bool = False,
         reconcile: bool = False,
+        confirm_large_sync: Optional[SyncConfirmation] = None,
     ):
         """
         Main sync entry point.
@@ -534,7 +544,7 @@ class EnhancedDapSyncer:
         if not skip_downloads:
             self._run_downloader()
 
-        self._sync_tracks(mode, artist_filter)
+        self._sync_tracks(mode, artist_filter, confirm_large_sync)
         
         # New Step: Import from DAP (2-Way)
         self._import_missing_tracks_from_dap()
@@ -572,47 +582,24 @@ class EnhancedDapSyncer:
         return stats
 
 
-def main_run_sync(
-    db: DatabaseManager,
-    config: dict,
-    sync_mode: str = "playlists",
-    conversion_format: str = "flac",
-    reconcile: bool = False,
-):
-    """
-    Enhanced main entry point with sync options.
+def sync_mode_from_value(value: str) -> SyncMode:
+    """Map the stable CLI/API string vocabulary onto ``SyncMode``."""
+    return {
+        "playlists": SyncMode.PLAYLISTS_ONLY,
+        "library": SyncMode.FULL_LIBRARY,
+        "selective": SyncMode.SELECTIVE,
+    }.get(value, SyncMode.PLAYLISTS_ONLY)
 
-    :param sync_mode: "playlists", "library", or "selective"
-    :param conversion_format: "flac", "mp3", "opus", "aac"
-    :param reconcile: Run reconciliation step
-    """
-    # Extract configuration
-    slsk_cmd_base = config.get("slsk_cmd_base", [])
-    downloads_path = config.get("downloads_path")
-    music_library_path = config.get("music_library_path")
-    picard_cmd_path = config.get("picard_cmd_path")
-    ffmpeg_path = config.get("ffmpeg_path")
-    dap_mount = config.get("dap_mount_point")
-    dap_music_dir = config.get("dap_music_dir_name", "Music")
-    dap_playlist_dir = config.get("dap_playlist_dir_name", "Playlists")
 
-    # Get conversion settings from config
-    sample_rate = config.get("conversion_sample_rate", 44100)
-    bit_depth = config.get("conversion_bit_depth", 16)
-    quality = config.get("conversion_quality")  # For lossy formats
-
-    # Create conversion options
-    conversion_opts = ConversionOptions(
-        sample_rate=sample_rate,
-        bit_depth=bit_depth,
+def _build_syncer(
+    db: DatabaseManager, config: dict, conversion_format: str
+) -> EnhancedDapSyncer:
+    conversion_options = ConversionOptions(
+        sample_rate=config.get("conversion_sample_rate", 44100),
+        bit_depth=config.get("conversion_bit_depth", 16),
         format=conversion_format,
-        quality=quality,
+        quality=config.get("conversion_quality"),
     )
-
-    # Initialize components
-    from .library_scanner import LibraryScanner
-
-    scanner = LibraryScanner(db, picard_cmd_path)
     downloader = Downloader(
         db=db,
         scanner=LibraryScanner(db, config.get("picard_cmd_path")),
@@ -622,40 +609,54 @@ def main_run_sync(
         slsk_username=config.get("slsk_username"),
         slsk_password=config.get("slsk_password"),
     )
-
-    syncer = EnhancedDapSyncer(
+    return EnhancedDapSyncer(
         db=db,
         downloader=downloader,
-        ffmpeg_path=ffmpeg_path,
-        dap_mount=dap_mount,
-        dap_music_dir=dap_music_dir,
-        dap_playlist_dir=dap_playlist_dir,
-        conversion_options=conversion_opts,
+        ffmpeg_path=config.get("ffmpeg_path"),
+        dap_mount=config.get("dap_mount_point"),
+        dap_music_dir=config.get("dap_music_dir_name", "Music"),
+        dap_playlist_dir=config.get("dap_playlist_dir_name", "Playlists"),
+        conversion_options=conversion_options,
     )
 
-    # Show stats before sync
+
+def run_sync_request(
+    db: DatabaseManager,
+    config: dict,
+    request: SyncRequest,
+    *,
+    confirm_large_sync: Optional[SyncConfirmation] = None,
+) -> None:
+    """Execute a typed sync request without reading from stdin."""
+    syncer = _build_syncer(db, config, request.conversion_format)
     stats = syncer.get_sync_stats()
     logger.info(
         f"Library stats: {stats['total_tracks']} tracks total, "
         f"{stats['pending_tracks']} pending sync "
         f"({stats['sync_percentage']:.1f}% synced)"
     )
+    syncer.run_sync(
+        mode=request.mode,
+        artist_filter=request.artist_filter,
+        reconcile=request.reconcile,
+        confirm_large_sync=confirm_large_sync,
+    )
 
-    # Convert sync mode string to enum
-    mode_map = {
-        "playlists": SyncMode.PLAYLISTS_ONLY,
-        "library": SyncMode.FULL_LIBRARY,
-        "selective": SyncMode.SELECTIVE,
-    }
-    mode = mode_map.get(sync_mode, SyncMode.PLAYLISTS_ONLY)
 
-    # Run sync
-    artist_filter = None
-    if mode == SyncMode.SELECTIVE:
-        artist_filter = input(
-            "Enter artist name to filter (or press Enter for all): "
-        ).strip()
-        if not artist_filter:
-            artist_filter = None
-
-    syncer.run_sync(mode=mode, artist_filter=artist_filter, reconcile=reconcile)
+def main_run_sync(
+    db: DatabaseManager,
+    config: dict,
+    sync_mode: str = "playlists",
+    conversion_format: str = "flac",
+    reconcile: bool = False,
+):
+    """Run a non-interactive DAP sync through the compatibility entry point."""
+    run_sync_request(
+        db,
+        config,
+        SyncRequest(
+            mode=sync_mode_from_value(sync_mode),
+            conversion_format=conversion_format,
+            reconcile=reconcile,
+        ),
+    )
