@@ -3,7 +3,44 @@ import os
 import json
 import tempfile
 from unittest.mock import patch, MagicMock
-from src.config_manager import ConfigManager, get_config
+from src.config_manager import (
+    ConfigManager,
+    get_config,
+    normalize_device_role,
+    normalize_legacy_config_keys,
+)
+
+
+def test_normalize_device_role_is_case_insensitive_and_rejects_non_roles():
+    assert normalize_device_role("  MASTER ") == "master"
+    assert normalize_device_role("standalone") == "standalone"
+    assert normalize_device_role("overlord") is None
+    assert normalize_device_role(True) is None
+
+
+def test_legacy_key_normalization_is_pure_and_reports_conflicts():
+    original = {
+        "ipod_mount_point": "/legacy/dap",
+        "master_url": "http://canonical:5001",
+        "dap_manager_host_url": "http://legacy:5001",
+    }
+
+    normalized, migrated, conflicts = normalize_legacy_config_keys(
+        original,
+        ConfigManager.LEGACY_KEY_MAP,
+    )
+
+    assert original == {
+        "ipod_mount_point": "/legacy/dap",
+        "master_url": "http://canonical:5001",
+        "dap_manager_host_url": "http://legacy:5001",
+    }
+    assert normalized["dap_mount_point"] == "/legacy/dap"
+    assert "ipod_mount_point" not in normalized
+    assert normalized["master_url"] == "http://canonical:5001"
+    assert normalized["dap_manager_host_url"] == "http://legacy:5001"
+    assert migrated is True
+    assert conflicts == [("dap_manager_host_url", "master_url")]
 
 
 def test_config_manager_singleton():

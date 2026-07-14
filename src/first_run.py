@@ -9,10 +9,12 @@ writes the same role-aware config shape.
 
 import os
 import socket
-from typing import Literal, Optional
+from typing import Optional, TypeAlias
+
+from src.contracts import DeviceRole, InitialConfig
 
 
-Role = Literal["master", "satellite", "standalone"]
+Role: TypeAlias = DeviceRole
 
 
 def is_first_run(config_path: str = "config.json") -> bool:
@@ -24,9 +26,64 @@ def suggest_device_name() -> str:
     """Hostname-based default so the wizard has something reasonable to
     show for `device_id` / display name without the user typing one."""
     try:
-        return (socket.gethostname() or "").split(".")[0] or "dap-satellite"
+        return _device_name_from_hostname(socket.gethostname())
     except Exception:
         return "dap-satellite"
+
+
+def _device_name_from_hostname(hostname: str) -> str:
+    """Return the first hostname label or the historical fallback name."""
+    return (hostname or "").split(".")[0] or "dap-satellite"
+
+
+def _without_trailing_slash(value: str) -> str:
+    """Normalize an optional base URL without changing other URL content."""
+    return (value or "").rstrip("/")
+
+
+def _base_config(
+    role: Role,
+    *,
+    music_library_path: str,
+    downloads_path: str,
+    database_file: Optional[str],
+    dap_mount_point: str,
+    api_token: str,
+    acoustid_api_key: str,
+    contact_email: str,
+    fast_search: bool,
+    remove_ft: bool,
+    desperate_mode: bool,
+    strict_quality: bool,
+) -> InitialConfig:
+    """Build fields shared by every role without applying role policy."""
+    return {
+        # Direct callers retain the historical relative default.  The setup
+        # server supplies an absolute path beside its resolved config file so
+        # packaged desktop builds never create the DB under app Resources.
+        "database_file": database_file or "dap_library.db",
+        "music_library_path": music_library_path,
+        "downloads_path": downloads_path,
+        "ffmpeg_path": "ffmpeg",
+        "slsk_cmd_base": ["slsk-batchdl"],
+        "dap_mount_point": dap_mount_point or "",
+        "dap_music_dir_name": "Music",
+        "dap_playlist_dir_name": "Playlists",
+        "conversion_sample_rate": 44100,
+        "conversion_bit_depth": 16,
+        "fast_search": bool(fast_search),
+        "remove_ft": bool(remove_ft),
+        "desperate_mode": bool(desperate_mode),
+        "strict_quality": bool(strict_quality),
+        "is_master": role in ("master", "standalone"),
+        "device_role": role,
+        "acoustid_api_key": acoustid_api_key,
+        "contact_email": contact_email,
+        "artist_tag_max_age_days": 30,
+        "library_maintenance_interval_seconds": 604800,
+        "library_maintenance_on_startup": False,
+        "api_token": api_token,
+    }
 
 
 def build_initial_config(
@@ -56,7 +113,7 @@ def build_initial_config(
     remove_ft: bool = False,
     desperate_mode: bool = False,
     strict_quality: bool = False,
-) -> dict:
+) -> InitialConfig:
     """Shape a config.json dict for a first-run install.
 
     ``device_role`` drives the defaults.  The legacy ``is_master`` field is
@@ -72,33 +129,20 @@ def build_initial_config(
     if not music_library_path or not downloads_path:
         raise ValueError("music_library_path and downloads_path are required")
 
-    cfg: dict = {
-        # Direct callers retain the historical relative default.  The setup
-        # server supplies an absolute path beside its resolved config file so
-        # packaged desktop builds never create the DB under app Resources.
-        "database_file": database_file or "dap_library.db",
-        "music_library_path": music_library_path,
-        "downloads_path": downloads_path,
-        "ffmpeg_path": "ffmpeg",
-        "slsk_cmd_base": ["slsk-batchdl"],
-        "dap_mount_point": dap_mount_point or "",
-        "dap_music_dir_name": "Music",
-        "dap_playlist_dir_name": "Playlists",
-        "conversion_sample_rate": 44100,
-        "conversion_bit_depth": 16,
-        "fast_search": bool(fast_search),
-        "remove_ft": bool(remove_ft),
-        "desperate_mode": bool(desperate_mode),
-        "strict_quality": bool(strict_quality),
-        "is_master": role in ("master", "standalone"),
-        "device_role": role,
-        "acoustid_api_key": acoustid_api_key,
-        "contact_email": contact_email,
-        "artist_tag_max_age_days": 30,
-        "library_maintenance_interval_seconds": 604800,
-        "library_maintenance_on_startup": False,
-        "api_token": api_token,
-    }
+    cfg = _base_config(
+        role,
+        music_library_path=music_library_path,
+        downloads_path=downloads_path,
+        database_file=database_file,
+        dap_mount_point=dap_mount_point,
+        api_token=api_token,
+        acoustid_api_key=acoustid_api_key,
+        contact_email=contact_email,
+        fast_search=fast_search,
+        remove_ft=remove_ft,
+        desperate_mode=desperate_mode,
+        strict_quality=strict_quality,
+    )
 
     if role == "master":
         cfg.update({
@@ -111,29 +155,31 @@ def build_initial_config(
             "lidarr_url": lidarr_url,
             "lidarr_api_key": lidarr_api_key,
             "master_url": "",
-            "public_master_url": (public_master_url or "").rstrip("/"),
+            "public_master_url": _without_trailing_slash(public_master_url),
             "report_inventory_to_host": True,
         })
-    elif role == "satellite":
+        return cfg
+
+    if role == "satellite":
         cfg.update({
             "slsk_username": "",
             "slsk_password": "",
-            "master_url": (master_url or "").rstrip("/"),
+            "master_url": _without_trailing_slash(master_url),
             "report_inventory_to_host": bool(report_inventory_to_host),
             "contribute_to_host": bool(contribute_to_host),
         })
         if device_name:
             cfg["device_name"] = device_name
-    else:  # standalone
-        cfg.update({
-            "slsk_username": slsk_username,
-            "slsk_password": slsk_password,
-            "jellyfin_url": jellyfin_url,
-            "jellyfin_api_key": jellyfin_api_key,
-            "jellyfin_user_id": jellyfin_user_id,
-            "master_url": "",
-            "public_master_url": (public_master_url or "").rstrip("/"),
-            "report_inventory_to_host": False,
-        })
+        return cfg
 
+    cfg.update({
+        "slsk_username": slsk_username,
+        "slsk_password": slsk_password,
+        "jellyfin_url": jellyfin_url,
+        "jellyfin_api_key": jellyfin_api_key,
+        "jellyfin_user_id": jellyfin_user_id,
+        "master_url": "",
+        "public_master_url": _without_trailing_slash(public_master_url),
+        "report_inventory_to_host": False,
+    })
     return cfg

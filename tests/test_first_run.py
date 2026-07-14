@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from src import first_run as first_run_module
 from src.first_run import build_initial_config, is_first_run, suggest_device_name
 
 
@@ -19,6 +20,25 @@ def test_suggest_device_name_returns_non_empty():
     name = suggest_device_name()
     assert name
     assert "." not in name  # hostname's domain part is stripped
+
+
+def test_suggest_device_name_uses_fallback_when_hostname_lookup_fails(monkeypatch):
+    def fail_hostname_lookup():
+        raise OSError("hostname unavailable")
+
+    monkeypatch.setattr(first_run_module.socket, "gethostname", fail_hostname_lookup)
+
+    assert suggest_device_name() == "dap-satellite"
+
+
+def test_suggest_device_name_uses_first_hostname_label(monkeypatch):
+    monkeypatch.setattr(
+        first_run_module.socket,
+        "gethostname",
+        lambda: "living-room.example.test",
+    )
+
+    assert suggest_device_name() == "living-room"
 
 
 def test_master_payload_flags_master_and_keeps_creds():

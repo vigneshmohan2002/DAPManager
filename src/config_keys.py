@@ -12,7 +12,15 @@ able to edit from either UI:
 4. If it's a bool, add it to ``BOOL_KEYS`` so the UI renders a checkbox.
 """
 
-SECRET_KEYS = frozenset({
+from typing import Dict, Final, FrozenSet, List, Tuple, TypeAlias
+
+from src.contracts import ConfigValue
+
+
+ConfigGroup: TypeAlias = Tuple[str, List[str]]
+
+
+SECRET_KEYS: Final[FrozenSet[str]] = frozenset({
     "slsk_password",
     "jellyfin_api_key",
     "api_token",
@@ -23,13 +31,13 @@ SECRET_KEYS = frozenset({
 # Runtime/UI defaults for optional keys introduced after many installations
 # already had a config.json. The config endpoint overlays these without
 # rewriting the user's file; saving Settings persists any explicit changes.
-DEFAULT_VALUES = {
+DEFAULT_VALUES: Final[Dict[str, ConfigValue]] = {
     "artist_tag_max_age_days": 30,
     "library_maintenance_interval_seconds": 604800,
     "library_maintenance_on_startup": False,
 }
 
-EDITABLE_KEYS = frozenset({
+EDITABLE_KEYS: Final[FrozenSet[str]] = frozenset({
     "music_library_path",
     "downloads_path",
     "dap_mount_point",
@@ -68,7 +76,7 @@ EDITABLE_KEYS = frozenset({
     "lidarr_watch_interval_seconds",
 })
 
-BOOL_KEYS = frozenset({
+BOOL_KEYS: Final[FrozenSet[str]] = frozenset({
     "fast_search",
     "remove_ft",
     "desperate_mode",
@@ -83,7 +91,7 @@ BOOL_KEYS = frozenset({
 
 # Ordered groups for UI rendering. Each entry: (label, [keys...]).
 # Keep the ordering stable — users build muscle memory.
-GROUPS = [
+GROUPS: Final[List[ConfigGroup]] = [
     ("Paths", [
         "music_library_path",
         "downloads_path",
