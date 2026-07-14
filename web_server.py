@@ -5,6 +5,7 @@ from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
+from src.services import contribution_service
 from src.services.library_service import (
     availability_for,
     is_master_configured,
@@ -3211,34 +3212,14 @@ def _attempt_timeout_seconds() -> int:
     the master acquiring it and ask the satellite to upload. Guards against a
     master whose download queue is never processed (the row would otherwise
     stay 'pending' forever and the upload fallback would never fire)."""
-    try:
-        cfg = getattr(config, "_config", {}) or {}
-        # Tests and integrations sometimes provide a light-weight config
-        # object without ConfigManager's dictionary-backed ``_config``.  Do
-        # not let a mock/object's integer coercion turn the one-hour default
-        # into a one-second timeout.
-        if not isinstance(cfg, dict):
-            return 3600
-        return int(cfg.get("contribution_attempt_timeout_seconds", 3600))
-    except (TypeError, ValueError):
-        return 3600
+    values = getattr(config, "_config", {}) or {}
+    return contribution_service.attempt_timeout_seconds(values)
 
 
 def _contribution_age_seconds(contrib: dict) -> Optional[float]:
     """Seconds since the contribution was created. ``created_at`` is a SQLite
     CURRENT_TIMESTAMP string in UTC."""
-    raw = contrib.get("created_at")
-    if not raw:
-        return None
-    from datetime import datetime, timezone
-
-    try:
-        created = datetime.strptime(str(raw), "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
-    except (TypeError, ValueError):
-        return None
-    return (datetime.now(timezone.utc) - created).total_seconds()
+    return contribution_service.contribution_age_seconds(contrib)
 
 
 def _find_acceptable_local_copy(db, identity: dict, target: Optional[dict]):
@@ -3254,43 +3235,7 @@ def _find_acceptable_local_copy(db, identity: dict, target: Optional[dict]):
 
     Returns ``(candidate_row, quality)`` or ``(None, None)``.
     """
-    from src.audio_quality import read_quality, meets_target
-
-    candidates = db.find_local_tracks_by_identity(
-        mbid=(identity.get("mbid") or "").strip() or None,
-        isrc=(identity.get("isrc") or "").strip() or None,
-        artist=(identity.get("artist") or "").strip() or None,
-        title=(identity.get("title") or "").strip() or None,
-        album=(identity.get("album") or "").strip() or None,
-    )
-    for candidate in candidates:
-        path = candidate.get("local_path")
-        if not path or not os.path.exists(path):
-            continue
-        quality = read_quality(path)
-        match_kind = candidate.get("identity_match")
-        if match_kind not in {"mbid", "isrc"} and quality and target:
-            try:
-                candidate_length = int(quality.get("length_ms") or 0)
-                target_length = int(target.get("length_ms") or 0)
-            except (TypeError, ValueError):
-                candidate_length = target_length = 0
-            if (
-                candidate_length
-                and target_length
-                and abs(candidate_length - target_length) > 5000
-            ):
-                continue
-        if meets_target(quality, target):
-            if match_kind != "mbid":
-                logger.info(
-                    "Contribution identity fallback matched %s via %s (%s)",
-                    identity.get("mbid") or "<no mbid>",
-                    match_kind,
-                    candidate.get("mbid") or "<no mbid>",
-                )
-            return candidate, quality
-    return None, None
+    return contribution_service.find_acceptable_local_copy(db, identity, target)
 
 
 def _evaluate_contribution(db, contrib: dict) -> dict:
@@ -3300,48 +3245,13 @@ def _evaluate_contribution(db, contrib: dict) -> dict:
     Returns the (possibly updated) row as a dict. Lazy: this is where the
     download worker's outcome gets reflected, so no worker hooks are needed.
     """
-    status = contrib["status"]
-    # Terminal states don't change.
-    if status in ("have_better", "satisfied", "ingested"):
-        return contrib
-
-    target = None
-    if contrib.get("target_quality"):
-        try:
-            target = json.loads(contrib["target_quality"])
-        except (TypeError, ValueError):
-            target = None
-
-    # Did the master acquire (or already have) a good-enough local copy?
-    local_match, local_q = _find_acceptable_local_copy(db, contrib, target)
-    if local_match:
-        db.update_contribution(
-            contrib["id"], status="satisfied",
-            acquired_quality=json.dumps(local_q) if local_q else None,
-        )
-        contrib = db.get_contribution(contrib["id"])
-        return contrib
-
-    # No good-enough local copy. Look at the download we queued: still
-    # pending → keep attempting; failed or gone-without-a-match → we need
-    # the bytes from the satellite.
-    dl_status = (
-        db.get_download_status(contrib["download_id"])
-        if contrib.get("download_id")
-        else None
+    return contribution_service.evaluate_contribution(
+        db,
+        contrib,
+        timeout_seconds=_attempt_timeout_seconds,
+        find_local_copy=_find_acceptable_local_copy,
+        age_seconds=_contribution_age_seconds,
     )
-    if dl_status == "pending":
-        # Still trying — unless we've been trying too long, in which case fall
-        # back to an upload so a stuck/unprocessed master queue can't stall it.
-        age = _contribution_age_seconds(contrib)
-        timed_out = age is not None and age >= _attempt_timeout_seconds()
-        new_status = "needs_upload" if timed_out else "attempting"
-    else:
-        new_status = "needs_upload"
-    if new_status != status:
-        db.update_contribution(contrib["id"], status=new_status)
-        contrib = db.get_contribution(contrib["id"])
-    return contrib
 
 
 @app.route("/api/contributions", methods=["GET"])
@@ -3359,20 +3269,17 @@ def list_contributions():
         limit = 200
     try:
         with DatabaseManager(config.db_path) as db:
-            rows = db.list_contributions(limit=limit)
-            rows = [_evaluate_contribution(db, row) for row in rows]
+            result = contribution_service.list_master_contributions(
+                db,
+                limit,
+                evaluate=lambda service_db, row, **_kwargs: (
+                    _evaluate_contribution(service_db, row)
+                ),
+            )
     except Exception as e:
         logger.error(f"list_contributions failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
-    for row in rows:
-        for key in ("target_quality", "acquired_quality"):
-            if row.get(key):
-                try:
-                    row[key] = json.loads(row[key])
-                except (TypeError, ValueError):
-                    pass
-    return jsonify({"success": True, "contributions": rows})
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/contributed", methods=["GET"])
@@ -3386,11 +3293,11 @@ def list_contributed():
         limit = 200
     try:
         with DatabaseManager(config.db_path) as db:
-            rows = db.list_contributed(limit=limit)
+            result = contribution_service.list_outgoing_contributions(db, limit)
     except Exception as e:
         logger.error("list_contributed failed: %s", e, exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-    return jsonify({"success": True, "contributions": rows})
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/contributions", methods=["POST"])
@@ -3406,7 +3313,6 @@ def post_contribution():
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     data = request.json or {}
-    mbid = (data.get("mbid") or "").strip()
     artist = (data.get("artist") or "").strip()
     title = (data.get("title") or "").strip()
     if not (artist and title):
@@ -3415,50 +3321,18 @@ def post_contribution():
             "message": "artist and title are required",
         }), 400
 
-    target_q = data.get("quality") if isinstance(data.get("quality"), dict) else None
-    target_json = json.dumps(target_q) if target_q else None
-
     try:
         with DatabaseManager(config.db_path) as db:
-            # Already hold a same-or-better local copy? Nothing to do.
-            local_match, local_q = _find_acceptable_local_copy(db, data, target_q)
-            if local_match:
-                cid = db.create_contribution(
-                    device_id=data.get("device_id"), mbid=mbid,
-                    isrc=data.get("isrc"), artist=artist, title=title,
-                    album=data.get("album"), target_quality=target_json,
-                    acquired_quality=json.dumps(local_q) if local_q else None,
-                    status="have_better",
-                )
-                return jsonify({
-                    "success": True, "contribution_id": cid,
-                    "status": "have_better",
-                })
-
-            # Try to acquire it ourselves via the existing download pipeline.
-            # Reuse an in-flight download for the same track if one exists so
-            # the poll logic doesn't mistake "already queued" for "no attempt"
-            # and jump straight to asking for an upload.
-            query = f"{artist} - {title}"
-            download_id = db.get_active_download_id(mbid, query)
-            if download_id is None:
-                download_id = db.queue_download(DownloadItem(
-                    search_query=query, playlist_id="CONTRIB",
-                    mbid_guess=mbid, status="pending",
-                ))
-            cid = db.create_contribution(
-                device_id=data.get("device_id"), mbid=mbid,
-                isrc=data.get("isrc"), artist=artist, title=title,
-                album=data.get("album"), target_quality=target_json,
-                status="attempting", download_id=download_id,
+            result = contribution_service.offer_contribution(
+                db,
+                data,
+                find_local_copy=_find_acceptable_local_copy,
+                download_item_factory=lambda **values: DownloadItem(**values),
             )
     except Exception as e:
         logger.error(f"post_contribution failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
-    return jsonify({
-        "success": True, "contribution_id": cid, "status": "attempting",
-    })
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/contributions/<int:contribution_id>", methods=["GET"])
@@ -3472,32 +3346,21 @@ def get_contribution_status(contribution_id: int):
         return jsonify({"success": False, "message": "Not initialized"}), 503
     try:
         with DatabaseManager(config.db_path) as db:
-            contrib = db.get_contribution(contribution_id)
-            if contrib is None:
-                return jsonify({
-                    "success": False, "message": "unknown contribution",
-                }), 404
-            contrib = _evaluate_contribution(db, contrib)
+            result = contribution_service.poll_contribution(
+                db,
+                contribution_id,
+                evaluate=lambda service_db, row, **_kwargs: (
+                    _evaluate_contribution(service_db, row)
+                ),
+            )
     except Exception as e:
         logger.error(f"get_contribution_status failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
-    return jsonify({
-        "success": True,
-        "status": contrib["status"],
-        "want_upload": contrib["status"] == "needs_upload",
-    })
+    return jsonify(result.payload), result.status_code
 
 
 def _discard_staged_upload(path: Optional[str]) -> None:
-    if not path:
-        return
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.warning("Could not remove staged contribution upload %s: %s", path, e)
+    contribution_service.discard_staged_upload(path)
 
 
 @app.route("/api/contributions/<int:contribution_id>/upload", methods=["POST"])
@@ -3516,129 +3379,22 @@ def upload_contribution(contribution_id: int):
             "success": False, "message": "multipart 'file' field is required",
         }), 400
 
-    import tempfile
-    from werkzeug.utils import secure_filename
-    from src.file_ingest import ingest_audio_file
-    from src.library_scanner import LibraryScanner
-    from src.audio_quality import read_quality
-
-    tmp_path = None
     try:
         with DatabaseManager(config.db_path) as db:
-            contrib = db.get_contribution(contribution_id)
-            if contrib is None:
-                return jsonify({
-                    "success": False, "message": "unknown contribution",
-                }), 404
-            if contrib.get("status") != "needs_upload":
-                return jsonify({
-                    "success": False,
-                    "status": contrib.get("status"),
-                    "message": "this contribution is not requesting an upload",
-                }), 409
-
-            target = None
-            if contrib.get("target_quality"):
-                try:
-                    parsed_target = json.loads(contrib["target_quality"])
-                    if isinstance(parsed_target, dict):
-                        target = parsed_target
-                except (TypeError, ValueError):
-                    target = None
-
-            # Stage under a unique path. Duplicate/retried multipart requests
-            # for the same contribution must never write the same temporary
-            # file concurrently.
-            staging_dir = os.path.join(config.downloads_dir, "_contrib")
-            os.makedirs(staging_dir, exist_ok=True)
-            safe_name = secure_filename(upload.filename) or "upload"
-            suffix = os.path.splitext(safe_name)[1]
-            fd, tmp_path = tempfile.mkstemp(
-                prefix=f"{contribution_id}_", suffix=suffix, dir=staging_dir,
+            result = contribution_service.process_contribution_upload(
+                db,
+                contribution_id,
+                upload,
+                downloads_dir=config.downloads_dir,
+                music_library=config.music_library,
+                picard_path=config.picard_path,
+                verify=_verify_upload,
+                find_local_copy=_find_acceptable_local_copy,
             )
-            os.close(fd)
-            upload.save(tmp_path)
-
-            # Verify on the staged file *before* moving anything into the
-            # library, so a worse-than-promised or truncated upload can't
-            # overwrite a good copy or pollute the catalog.
-            reject = _verify_upload(tmp_path, target)
-            if reject is not None:
-                _discard_staged_upload(tmp_path)
-                tmp_path = None
-                db.update_contribution(contribution_id, status="needs_upload")
-                return jsonify({
-                    "success": False, "status": "rejected", "message": reject,
-                }), 422
-
-            # The master's own pending acquisition may have completed while
-            # the satellite spent minutes uploading. Re-check both the state
-            # and the actual local quality immediately before ingest so the
-            # staged copy cannot overwrite a newly acquired better one.
-            latest = db.get_contribution(contribution_id)
-            if latest is None or latest.get("status") != "needs_upload":
-                _discard_staged_upload(tmp_path)
-                tmp_path = None
-                return jsonify({
-                    "success": False,
-                    "status": latest.get("status") if latest else None,
-                    "message": "the contribution stopped requesting an upload",
-                }), 409
-
-            local_match, local_q = _find_acceptable_local_copy(db, latest, target)
-            if local_match:
-                _discard_staged_upload(tmp_path)
-                tmp_path = None
-                db.update_contribution(
-                    contribution_id,
-                    status="satisfied",
-                    acquired_quality=json.dumps(local_q) if local_q else None,
-                )
-                if latest.get("download_id"):
-                    db.remove_from_queue(latest["download_id"])
-                return jsonify({
-                    "success": True,
-                    "status": "satisfied",
-                    "local_path": local_match.get("local_path"),
-                })
-
-            # Close the small window in which another poll can terminally
-            # update the row after the quality check but before file ingest.
-            latest = db.get_contribution(contribution_id)
-            if latest is None or latest.get("status") != "needs_upload":
-                _discard_staged_upload(tmp_path)
-                tmp_path = None
-                return jsonify({
-                    "success": False,
-                    "status": latest.get("status") if latest else None,
-                    "message": "the contribution stopped requesting an upload",
-                }), 409
-
-            dest = ingest_audio_file(
-                db, LibraryScanner(db, config.picard_path), config.music_library,
-                tmp_path, mbid_guess=latest.get("mbid"),
-                artist=latest.get("artist"), title=latest.get("title"),
-                album=latest.get("album"),
-            )
-            tmp_path = None
-
-            acquired_q = None
-            try:
-                acquired_q = json.dumps(read_quality(dest))
-            except Exception:
-                pass
-            db.update_contribution(
-                contribution_id, status="ingested", acquired_quality=acquired_q,
-            )
-            # The CONTRIB download we queued is now moot.
-            if latest.get("download_id"):
-                db.remove_from_queue(latest["download_id"])
     except Exception as e:
-        _discard_staged_upload(tmp_path)
         logger.error(f"upload_contribution failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
-    return jsonify({"success": True, "status": "ingested", "local_path": dest})
+    return jsonify(result.payload), result.status_code
 
 
 def _verify_upload(path: str, target: Optional[dict]) -> Optional[str]:
@@ -3646,25 +3402,7 @@ def _verify_upload(path: str, target: Optional[dict]) -> Optional[str]:
     truncated, or worse than the satellite promised; ``None`` when it's good.
     No ``target`` means the satellite reported no quality, so only the
     empty-file check applies."""
-    from src.audio_quality import read_quality, meets_target
-
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return "uploaded file is unreadable"
-    if size == 0:
-        return "uploaded file is empty"
-    if target:
-        promised = int(target.get("size_bytes") or 0)
-        # Tolerate container/transcode differences but catch gross truncation.
-        if promised and size < promised * 0.5:
-            return (
-                f"uploaded file is truncated ({size} bytes vs promised "
-                f"~{promised})"
-            )
-        if not meets_target(read_quality(path), target):
-            return "uploaded file is lower quality than promised"
-    return None
+    return contribution_service.verify_upload(path, target)
 
 
 @app.route("/api/audit", methods=["POST"])
