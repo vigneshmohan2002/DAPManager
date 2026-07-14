@@ -1,8 +1,52 @@
 import pytest
 import json
+import re
 from unittest.mock import patch, MagicMock
 from src.db_manager import DatabaseManager
+import web_server
 from web_server import build_suggestion_items, TaskManager
+
+
+@pytest.mark.parametrize(
+    ("page_path", "script_path", "requires_config"),
+    [
+        ("/setup", "/static/js/setup.js", False),
+        ("/library", "/static/js/library.js", True),
+        ("/player", "/static/js/player.js", True),
+        ("/satellite", "/static/js/satellite.js", True),
+        ("/", "/static/js/dashboard.js", True),
+    ],
+)
+def test_browser_pages_load_external_controllers(
+    client,
+    mock_config,
+    monkeypatch,
+    tmp_path,
+    page_path,
+    script_path,
+    requires_config,
+):
+    """Large page controllers stay cacheable and out of rendered markup."""
+    config_path = tmp_path / "config.json"
+    if requires_config:
+        config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(web_server, "CONFIG_FILE", str(config_path))
+
+    response = client.get(page_path)
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert f'<script src="{script_path}"></script>' in html
+    inline_scripts = re.findall(
+        r"<script(?:\s[^>]*)?>(.*?)</script>",
+        html,
+        flags=re.DOTALL,
+    )
+    assert all(len(body.strip()) < 500 for body in inline_scripts)
+
+    controller = client.get(script_path)
+    assert controller.status_code == 200
+    assert controller.get_data(as_text=True).startswith("// @ts-check\n")
 
 def test_api_status(client, mock_config):
     """Test the status endpoint returns correct structure."""
