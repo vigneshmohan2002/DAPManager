@@ -1,7 +1,8 @@
 # Onboarding — Master setup wizard + satellite client distribution
 
-Status: **shipped** (all six sub-stages, 9a–9f). Stage 9
-(Musicat-inspired polish) is the next focus.
+Status: **shipped** (all six sub-stages, 9a–9f). This document is the retained
+design and delivery record; subsequent desktop work is tracked in
+[`desktop-rewrite.md`](desktop-rewrite.md).
 
 The goal is a two-click satellite onboarding flow:
 
@@ -47,13 +48,14 @@ Stage 7a Settings screen.
   `request.host_url` is **not** used as a fallback — Docker Desktop
   serves it as `http://localhost:5001` from the operator's browser,
   which is not reachable from satellites.
-- **Auth: token-gate `/download/mac` and embed.** When master has
-  `api_token` set, the download endpoint enforces it (so only people
-  who already know the token can pull a pre-authed satellite); the
-  zip carries the token alongside the URL. Open mode (no token)
-  serves the artifact unauthenticated and embeds nothing.
-- **Wizard: heavier rewrite, multi-step stepper.** The current 196-
-  LOC single-form `setup.html` is replaced. The "Set up other
+- **Auth: scoped download link, embedded device credential.** When the master
+  has `api_token` set, authenticated setup/dashboard screens mint a one-hour
+  bundle-only URL. `/download/mac` validates that scoped token, then embeds the
+  API bearer in the returned zip so the satellite can authenticate on first
+  launch. Treat the downloaded zip as a credential. Open mode serves the
+  artifact unauthenticated and embeds no token.
+- **Wizard: heavier rewrite, multi-step stepper.** The former single-form
+  `setup.html` was replaced. The "Set up other
   devices" step at the end is the bridge that makes the download
   endpoint discoverable.
 - **Unsigned `.app` is acceptable** for now. If notarization gets on
@@ -139,35 +141,30 @@ Implementation pieces:
     409 with a clear message) when it's unset, since serving a
     bundle pinned to `localhost` or a LAN IP that isn't reachable
     from satellites is a worse outcome than failing loudly.
-  - Reads `api_token` from config; if set, enforces it on this route
-    and embeds it in the artifact.
+  - Reads `api_token` from config; if set, accepts bearer/cookie auth or a
+    bundle-scoped link and embeds the API credential in the artifact.
   - Returns a `application/zip` response with `Content-Disposition:
     attachment; filename=DAPManager-mac.zip`.
 
 The cache key is the GH release tag pinned in a Python constant
-(e.g. `DESKTOP_RELEASE_TAG = "desktop-v0.1.0"`). Bumping the constant
-in a Python release triggers a re-fetch; deletion of the cache file
+(`DESKTOP_RELEASE_TAG = "desktop-v0.2.0"` at the time of writing). Bumping the
+constant in a Python release triggers a re-fetch; deletion of the cache file
 forces it.
 
 ### Piece 2 — Tauri first-run pickup
 
 On Tauri launch, before the React app boots:
 
-- Rust side (`src-tauri/src/main.rs` or a setup hook): if no
-  `config.json` exists in the app-data dir, look for
-  `Contents/Resources/master_url.txt` (resolved via
-  `app.path().resource_dir()`). If present, read it + the optional
-  `master_token.txt` and write a minimal config:
-  ```json
-  {
-    "role": "satellite",
-    "dap_manager_host_url": "<value>",
-    "api_token": "<value-if-present>"
-  }
-  ```
-- React side: existing Stage 7a Settings flow renders the seeded
-  values; they're editable normally. If the user clears the field
-  and saves, the seeded value is gone.
+- The Rust setup hook in `src-tauri/src/lib.rs` checks whether the platform
+  `config.json` already exists, then looks for `master_url.txt` and optional
+  `master_token.txt` in `app.path().resource_dir()`.
+- When seeding is needed, it writes a complete ConfigManager-valid satellite
+  config: database/music/download paths below the user's home directory,
+  `device_role: "satellite"`, `is_master: false`, and the canonical
+  `master_url`. A non-empty embedded token becomes `api_token`; open-mode
+  bundles omit the key.
+- The React Settings flow renders those values normally. Subsequent edits are
+  authoritative because existing config files are never re-seeded.
 
 The choice to write to `config.json` (and not pass the values via a
 Tauri command on every load) means the seeding is one-shot. After
@@ -189,7 +186,7 @@ step's required fields are valid.
 | 3 | Public URL | public_master_url (auto-filled from `MASTER_PUBLIC_URL` env, then in-container `tailscale status --json`, else blank) | Master + standalone only; satellite uses `master_url` instead. Help text explains the env-var path for Docker users. |
 | 4 | Integrations | jellyfin_url + key + user_id, lidarr_url + key, spotify_client_id + secret, acoustid_api_key | All optional. Collapsed by default; expand-per-service. |
 | 5 | Auth | api_token (optional; "leave blank for open LAN mode") | Generates a default with a "regenerate" button if user wants one. |
-| 6 | Done — share with devices | (no fields) | Shows `/download/mac` URL, "Copy link" button, QR code. Master + standalone only. |
+| 6 | Done — share with devices | (no fields) | Mints a one-hour `/download/mac` URL, then shows Copy + QR. Master + standalone only. |
 
 Backend changes:
 
@@ -326,11 +323,11 @@ Decisions worth preserving:
   config.json. Means an operator can rotate `public_master_url` or
   the token from Settings and the next download reflects it
   immediately without busting `cache/desktop-bundle/<tag>.zip`.
-- **`?token=` query alongside `Authorization: Bearer`.** Browsers
-  can't natively send Bearer headers from a clicked link, and the
-  wizard's step-6 share screen needs a clickable URL. Query-string
-  tokens are usually a leak risk, but here the deployment is
-  Tailnet/LAN-only and the same token is embedded in the bundle the
+- **Bundle-scoped query token alongside `Authorization: Bearer`.** Browsers
+  can't natively send Bearer headers from a clicked link, so the authenticated
+  wizard/dashboard asks `/api/satellite-bundle-link` for a one-hour HMAC token
+  valid only on `/download/mac`. The general API bearer is never placed in the
+  share URL; it is embedded only in the downloaded bundle the
   request returns — there's nothing in the URL the recipient
   doesn't already get. `hmac.compare_digest` covers the comparison.
 - **`_read_master_config_for_download` re-reads config.json** rather
@@ -367,12 +364,9 @@ Decisions worth preserving:
   would have made the satellite immediately broken. Defaults for
   paths land under `~/Music/DAPManager` and `~/Downloads/DAPManager`
   — operators can edit from Settings if they want elsewhere.
-- **Dual-write `master_url` and `dap_manager_host_url`.** The two
-  are parallel names for the same value: `master_url` is what the
-  Python backend reads (sync, proxy-stream); `dap_manager_host_url`
-  is what `SuggestScreen.tsx` reads. Until those are unified in a
-  later cleanup, mirroring the URL into both keeps the satellite UI
-  fully functional out of the box. Note for that future cleanup.
+- **Write only canonical `master_url`.** New seeds no longer create the legacy
+  desktop-only `dap_manager_host_url`. ConfigManager migrates old configs, and
+  the desktop host resolver retains a read fallback for those legacy files.
 - **`DAPMANAGER_CONFIG` env var on spawn.** The Rust side computes
   the platform config path once and passes it explicitly to the
   Python child. This kills the timing window where the backend's
@@ -445,18 +439,15 @@ Decisions worth preserving:
 - **Back disabled on step 6.** Once saved, going back to step 5 and
   hitting Next would re-submit. Locking the back button is cheaper
   than making the save endpoint defend against re-submits.
-- **`?token=` in the share URL when one is set.** Browsers can't
-  send Bearer headers from a clicked link, so the share link
-  embeds the token via query string for the Mac-double-click flow.
-  The wizard shows a "treat like a credential" warning so operators
-  know what they're handing out. Open mode (no token) gets a
-  different copy that says it's reachable to anyone on the Tailnet.
-- **QR via CDN, fail-soft.** `qrcode@1.5.3` from jsdelivr is loaded
-  with `defer`; `renderQr` checks for `window.QRCode` and silently
-  hides the QR card if the lib didn't load (offline master, blocked
-  CDN). The link + Copy button always work — QR is the nicety, not
-  the contract. SVG output (`type: 'svg'`) keeps it crisp at any
-  display size and stays inside the page DOM.
+- **A short-lived scoped token in the share URL.** The API bearer entered in
+  step 5 authenticates a call to `/api/satellite-bundle-link`; the resulting
+  one-hour URL can be clicked or encoded as a QR without granting general API
+  access. Open mode gets a bare download URL.
+- **QR is vendored locally.** `web/static/qrcode.min.js` is loaded with
+  `defer`; `renderQr` checks for `window.QRCode` and hides the QR card if the
+  asset fails. The setup/share flow therefore works on an offline master.
+  SVG output (`type: 'svg'`) keeps it crisp at any display size and stays
+  inside the page DOM.
 - **`navigator.clipboard.writeText` with a fallback message.** No
   hidden textarea + execCommand fallback; if clipboard is blocked
   the copy-status text tells the operator to select-and-copy
@@ -476,7 +467,7 @@ the UI.
 
 ---
 
-## Acceptance for "Onboarding stage done"
+## Shipped acceptance checklist
 
 - Fresh master, fresh satellite, both on the same Tailnet.
 - Master operator runs the master, walks the wizard, lands on step
@@ -488,23 +479,14 @@ the UI.
 - Token mode (master has `api_token` set) and open mode both work
   with the same flow.
 
-When all of that is true, this doc gets a *Shipped* marker per
-sub-stage like `desktop-rewrite.md`, and Stage 9 (Musicat polish)
-becomes the next focus.
+This checklist defined the stage exit; every sub-stage now carries its shipped
+marker above.
 
 ---
 
 ## Onboarding stage exit
 
-All six sub-stages shipped. Real-world acceptance test still wants
-a fresh master + fresh satellite on the same Tailnet to walk the
-end-to-end flow once; until that happens the on-disk pieces work
-in isolation but the loop is unverified. Carryover for the next
-session:
-
-- **`DESKTOP_RELEASE_TAG` bump after first CI release.** The
-  constant in `src/satellite_bundle.py` is `desktop-v0.1.0` —
-  needs to match whatever tag the 9b workflow attaches its first
-  zip to before /download/mac will resolve.
-
-Stage 9 (Musicat-inspired polish) is the next focus.
+All six sub-stages shipped. The bundle fetch currently pins
+`desktop-v0.2.0`, matching the published desktop release. Future desktop
+releases must update `DESKTOP_RELEASE_TAG` when their tagged Mac asset is
+published.

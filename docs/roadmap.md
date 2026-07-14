@@ -1,20 +1,16 @@
-# DAPManager Roadmap: Post-Sync-Design Work
+# DAPManager Delivered Roadmap: Post-Sync-Design Work
 
-Context: the multi-device sync design (see `memory/project_sync_model.md`)
-is now fully implemented — delta catalog + playlist sync, opt-in inventory,
-fleet view, soft-delete with orphan surfacing, and a settings card. This
-document scopes the next tranche of features that build on that foundation.
+Status: **all items in this tranche shipped**. This is now a delivery record,
+not an active backlog. The original gaps and design notes remain below to
+preserve intent; each item records its delivered state.
 
-Items are ordered by bang-for-buck: each "high-value" item is cheap relative
-to its payoff; "meaningful polish" items take more work but close obvious
-gaps in the current experience.
+The work built on the completed multi-device sync foundation: delta catalog +
+playlist sync, inventory, fleet view, soft-delete/orphan recovery, and runtime
+settings.
 
-A parallel track — the **Tauri desktop rewrite** (`desktop/`) — is not
-scoped here. It is replacing the PySide6 app stage by stage (see the
-`feat(desktop)` commits); feature parity with the PySide6 UI is tracked
-in the `desktop/` README and the musicat reference memory. Items in
-this document describe *library / sync* capabilities and apply to both
-UIs where relevant.
+The parallel **Tauri desktop rewrite** is also complete: it replaced the
+PySide6 client and subsequently closed contribution and suggestion parity.
+Its staged delivery record lives in [`desktop-rewrite.md`](desktop-rewrite.md).
 
 ---
 
@@ -22,14 +18,13 @@ UIs where relevant.
 
 ### 1. "Sync All" button + sync status widget
 
-**Problem.** Satellites need four manual clicks to fully reconcile with the
-master (pull catalog, pull playlists, push playlists, report inventory),
-and there's no visible "when did I last sync?" signal. The sync-cursor
-timestamps live in `sync_state` but aren't surfaced.
+**Original gap.** Satellites required several manual operations to reconcile
+with the master, and sync-cursor timestamps were not surfaced.
 
 **Surface.**
 - Web: a single "Sync All" button in the Multi-Device Sync card. Runs the
-  four operations sequentially in a background thread.
+  applicable catalog, artist-tag, playlist, lyrics, inventory and contribution
+  operations sequentially in a background thread.
 - Web: a small widget next to each existing button showing
   "Last: <relative time>" read from `sync_state`.
 - Desktop: one "Sync All" toolbar action; status bar shows the currently
@@ -37,28 +32,31 @@ timestamps live in `sync_state` but aren't surfaced.
 
 **API.**
 - `POST /api/sync/all` — runs the full sequence as one `TaskManager` task.
-  Fails fast if any sub-step errors; reports which sub-step failed.
-- `GET /api/sync/state` — returns `{last_catalog_sync, last_playlist_sync,
-  last_playlist_push, last_inventory_report}` as ISO strings.
+  A failed sub-step is reported without preventing later steps from running.
+- `GET /api/sync/state` — returns the catalog, artist-tag, playlist pull/push,
+  lyrics, inventory and contribution cursors as ISO strings.
 
 **Schema.** None. `sync_state` already has the keys; just expose them.
 
-**Open questions.**
+**Delivery decisions.**
 - Sequencing: pull-catalog must finish before pull-playlists (playlist
-  membership FKs expect the tracks to exist). Push playlists and report
-  inventory can run in parallel or serial — serial is simpler and sync
-  isn't bandwidth-bound.
-- If one sub-step fails, should we still attempt the rest? Default yes,
-  with per-step success/error reported in the response.
+  membership FKs expect the tracks to exist). The remaining applicable steps
+  run serially because sync is not bandwidth-bound.
+- One failed sub-step does not stop the rest; each step records its own
+  success, skip or error result.
 
 **Effort.** ~1–2 hours. No new machinery, just orchestration and a
 `sync_state` read endpoint.
+
+**Shipped (backend + web + desktop).** Sync All and background task progress
+are available in both user interfaces; per-action cursor timestamps appear
+where a manual control exists.
 
 ---
 
 ### 2. Scheduled background sync
 
-**Problem.** Even with "Sync All", users have to remember to click. For
+**Original gap.** Even with "Sync All", users had to remember to click. For
 the "set it and forget it" case the loop should run on its own.
 
 **Surface.**
@@ -79,12 +77,10 @@ the "set it and forget it" case the loop should run on its own.
 
 **Schema.** None.
 
-**Open questions.**
-- Should the master also auto-sync (inventory-only, to keep
-  `device_inventory` fresh for itself)? Default yes — the fleet view
-  should reflect the master's current state without manual prompting.
-- Backoff on repeated failures — probably skip for v1; log is enough.
-  Revisit only if users report spam.
+**Delivery decisions.**
+- The master may run the same scheduler; non-applicable remote pulls are
+  skipped while its own inventory remains fresh.
+- Repeated failures are logged without a separate backoff layer.
 
 **Effort.** ~2–3 hours. Includes settings wiring and a basic integration
 test that the thread starts, runs, and stops cleanly.
@@ -92,11 +88,15 @@ test that the thread starts, runs, and stops cleanly.
 **Depends on** #1 ("Sync All") landing first so the scheduler has a
 single callable.
 
+**Shipped.** `SyncScheduler` supports interval and startup runs, skips
+overlapping TaskManager work, and is configured through
+`sync_interval_seconds` / `sync_on_startup`.
+
 ---
 
 ### 3. Orphan cleanup page
 
-**Problem.** Soft-delete stamps `deleted_at` but nothing ever clears it.
+**Original gap.** Soft-delete stamped `deleted_at` but nothing cleared it.
 Over time the tables accumulate tombstones. Users also need a way to
 *undo* an accidental soft-delete and to hard-delete orphan files that
 still sit on disk locally.
@@ -143,20 +143,21 @@ still sit on disk locally.
 
 **Depends on** the soft-delete work already landed.
 
-**Shipped (backend + web).** DB methods: `purge_track`, `purge_playlist`,
+**Shipped (backend + web + desktop).** DB methods: `purge_track`, `purge_playlist`,
 `get_orphan_tracks`, `get_orphan_playlists`. API routes: `GET
 /api/orphans/{tracks,playlists}`, `POST /api/tracks/<mbid>/restore`,
 `POST /api/playlists/<id>/restore`, `?purge=true` on the existing
 DELETE endpoints, `DELETE /api/tracks/<mbid>/file` (409s on live
 rows, idempotent on already-missing files). Web: `/orphans` page with
-two tabs and confirm-gated destructive actions. Desktop wiring
-deferred until the Tauri app reaches its Library stage.
+two tabs and confirm-gated destructive actions. The Tauri Orphans screen
+provides the same restore, file-delete and purge
+operations.
 
 ---
 
 ### 4. Auto-link local files to catalog rows
 
-**Problem.** After `Pull Catalog`, a satellite has rows it may already
+**Original gap.** After `Pull Catalog`, a satellite had rows it might already
 have on disk from a previous pre-sync life (e.g. the user's existing
 music library predates DAPManager). Those rows stay `local_path=NULL`
 and get filtered out of the default view, so the user thinks they're
@@ -194,20 +195,21 @@ missing.
 **Effort.** ~3–5 hours including walking the library, tag-reading, and
 dry-run/apply modes for tests.
 
-**Shipped (backend + web).** New module `src/catalog_linker.py` with
+**Shipped (backend + web + desktop).** New module `src/catalog_linker.py` with
 `main_run_catalog_linker`. API: `POST /api/catalog/link-local` runs
 as a TaskManager task and returns a `{scanned, linked, ambiguous,
 skipped, errors, linked_by_mbid/isrc/name}` summary via the progress
 channel. Web: "Link Local Files" button in the Multi-Device Sync
 card. Match order: embedded MBID → ISRC → (artist, title)
-case-insensitive → album-disambiguated. Fuzzy matching deferred as
-noted.
+case-insensitive → album-disambiguated. The desktop Sync screen exposes the
+same operation. Fuzzy matching remains deliberately unsupported because a
+false link is worse than an explicit unresolved row.
 
 ---
 
 ### 10. Playback availability tiers + master proxy streaming
 
-**Problem.** Satellites that hold a catalog row but no on-disk file
+**Original gap.** Satellites that held a catalog row but no on-disk file
 could not play that track at all — the Songs / album views filtered
 those rows out, and `/api/stream` only knew how to serve a local path.
 This defeats the point of catalog sync for anyone who wants the master
@@ -249,8 +251,8 @@ without another query.
 
 ### 5. Download-from-catalog action
 
-**Problem.** With `Show catalog-only` on, users see rows they know they
-want locally but have to use the download flow manually (search, queue,
+**Original gap.** With `Show catalog-only` on, users saw rows they wanted
+locally but had to use the download flow manually (search, queue,
 etc.). The catalog view should *be* the wishlist.
 
 **Surface.**
@@ -278,20 +280,20 @@ when #6 lands.
 
 **Depends on** no other new features; independently shippable.
 
-**Shipped (API only).** `POST /api/catalog/queue-download` with body
+**Shipped (API + desktop).** `POST /api/catalog/queue-download` with body
 `{"mbids": [...]}` returns `{queued, queued_mbids, skipped_linked,
 skipped_queued, not_found}`. Dedupe via `db.is_download_queued`
 (normalized search_query). `mbid_guess` populated so the downloader's
-MusicBrainz verification uses the correct identity. UI (desktop +
-web) deferred until the Tauri Library stage and the web track
-browser (#6) land.
+MusicBrainz verification uses the correct identity. It is wired into the
+Tauri Songs context menu; the web library retains its existing download
+actions.
 
 ---
 
 ### 6. Web track browser
 
-**Problem.** The web dashboard has sync buttons and a search box, but no
-actual library table. Desktop has a full iTunes-style layout. To use the
+**Original gap.** The web dashboard had sync buttons and a search box, but no
+actual library table. Desktop had a full iTunes-style layout. To use the
 web UI as a real remote control this gap has to close.
 
 **Surface.**
@@ -332,14 +334,14 @@ catalog-only" / "Show orphans" mirror the desktop semantics. API:
 `/api/playlists` route), and `GET /api/library/tracks` now accepts
 `playlist_id`, `local_only`, `include_orphans` without breaking its
 default (no-param) behavior. Pagination and playlist rename/delete
-context menus deferred to #7.
+context menus landed with #7.
 
 ---
 
 ### 7. Playlist editor (web + desktop)
 
-**Problem.** Playlists can currently only be created via Spotify import.
-No UI for creating a playlist from scratch, adding/removing tracks, or
+**Original gap.** Playlists could only be created via Spotify import. There was
+no UI for creating a playlist from scratch, adding/removing tracks, or
 renaming.
 
 **Surface.**
@@ -379,7 +381,7 @@ fix). Membership mutation is `link_track_to_playlist` +
 **Depends on** #6 for the web surface, but the desktop and API portions
 are standalone.
 
-**Shipped (API + web).** DB: `create_playlist`, `rename_playlist`,
+**Shipped (API + web + desktop).** DB: `create_playlist`, `rename_playlist`,
 `unlink_track_from_playlist`, `replace_playlist_membership`,
 `get_playlist`. API: `POST /api/library/playlists` (201 with generated
 uuid4 hex id), `PUT /api/library/playlists/<id>` (partial rename +/or
@@ -390,14 +392,15 @@ surfaced via `landed` vs `requested`), `DELETE
 (forwards `?purge=true`). Web: New Playlist toolbar button, sidebar
 context menu (Rename / Delete) on playlist entries, track-row context
 menu with "Add to playlist" submenu that merges the existing
-membership client-side and PUTs the full list. Desktop (PySide6)
-portion deferred — will be built directly in the Tauri rewrite.
+membership client-side and PUTs the full list. The Tauri sidebar and Songs
+context menu cover creation, rename, delete, smart-rule editing and track
+membership.
 
 ---
 
 ### 8. API auth tokens
 
-**Problem.** All `/api/*` routes are currently unauthenticated. On a
+**Original gap.** All `/api/*` routes were unauthenticated. On a
 purely local LAN this may be fine; on Tailscale or any forwarded setup
 it's a risk — anyone on the tailnet can soft-delete tracks, wipe
 inventory, push arbitrary playlists, etc.
@@ -405,12 +408,11 @@ inventory, push arbitrary playlists, etc.
 **Surface.**
 - Config: `api_token` (optional string). If absent, the server runs in
   open mode (current behavior) with a warning log on startup.
-- When present: all `/api/*` routes require `Authorization: Bearer <token>`
-  except `/api/status` (useful for health checks).
-- The satellite HTTP client in `src/catalog_sync.py` and
-  `src/inventory_sync.py` adds the header when `api_token` is set in
-  config. Two separate token names are avoided — master and satellites
-  share the same token for simplicity.
+- When present: `/api/*` routes require `Authorization: Bearer <token>` except
+  `/api/status`, `/api/healthz`, and `/api/openapi.json`.
+- Outbound satellite clients add the header when `api_token` is set. Two
+  separate token names are avoided — master and satellites share the same
+  token for simplicity.
 - Settings card: field to set the token; masked like other secret fields.
 
 **Implementation.**
@@ -430,16 +432,20 @@ inventory, push arbitrary playlists, etc.
 **Effort.** ~2–3 hours. Most of it is wiring the header into the two
 sync clients and the settings UI.
 
-**Depends on** Settings card (#done) — the UI for editing the token
-already exists, just needs the new key added to
-`CONFIG_EDITABLE_KEYS` / `CONFIG_SECRET_KEYS` in `web_server.py`.
+**Delivered on** the existing Settings infrastructure; `api_token` is included
+in the editable and secret-key sets.
+
+**Shipped.** The Flask auth gate uses constant-time comparison, all satellite
+sync/contribution clients forward the shared token, and Settings treats it as
+a redacted secret. `/docs` and the OpenAPI spec remain available for setup and
+diagnostics.
 
 ---
 
 ### 9. Picard-style identify & tag
 
-**Problem.** Existing `auto_tagger` runs post-download only, writes FLAC
-tags only, and never surfaces match confidence. Users can't select
+**Original gap.** The existing `auto_tagger` ran post-download only, wrote FLAC
+tags only, and never surfaced match confidence. Users could not select
 library rows and say "identify these" the way Picard lets you.
 
 **Surface.**
@@ -479,19 +485,16 @@ context menu + review dialog + 20 tests.
 5. **#10 Playback availability tiers + master proxy streaming** —
    shipped out-of-band; makes catalog-only rows playable via the
    master. _Done._
-6. **#3 Orphan cleanup page** — closes the soft-delete loop. _Done
-   (backend + web); desktop deferred to the Tauri Library stage._
+6. **#3 Orphan cleanup page** — closes the soft-delete loop. _Done across
+   backend, web and desktop._
 7. **#4 Auto-link local files** — bridges pre-DAPManager libraries
-   with pulled catalogs. _Done (backend + web); desktop deferred._
-8. **#5 Download-from-catalog** — wishlist queue via MBIDs. _API
-   shipped; UI deferred to #6 / Tauri Library stage._
+   with pulled catalogs. _Done across backend, web and desktop._
+8. **#5 Download-from-catalog** — wishlist queue via MBIDs. _Done in the
+   API and desktop library._
 9. **#6 Web track browser** — sidebar + track table on `/library`.
-   _Done. Desktop parity (context menus, column sorting) still lives
-   in PySide6 and will be re-built in the Tauri rewrite._
+   _Done, with desktop browsing/filtering/context-menu parity._
 10. **#7 Playlist editor** — create / rename / delete / add-to.
-    _Done (API + web); desktop deferred to the Tauri rewrite._
+    _Done across API, web and desktop._
 
-All items in this tranche are now shipped or explicitly deferred to
-the Tauri desktop rewrite. Further library/sync features belong in a
-new roadmap doc; Tauri parity is tracked in `desktop/` and the
-`feat(desktop)` commit series.
+All items in this tranche are shipped. Further product ideas should go in a
+new roadmap rather than being recorded as unfinished parity work here.

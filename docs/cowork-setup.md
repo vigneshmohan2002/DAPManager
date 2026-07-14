@@ -1,8 +1,8 @@
 # Setting up DAPManager from a browser (Claude Cowork runbook)
 
 DAPManager can be configured end-to-end from a single Chrome tab — no terminal
-needed. This page is the quick runbook; the **interactive API reference is at
-`/docs`** (Swagger UI), backed by the machine-readable spec at
+needed. This page is the quick runbook; the **offline interactive API reference
+is at `/docs`**, backed by the machine-readable spec at
 `/api/openapi.json`. Both are reachable *before* the app is configured.
 
 ## TL;DR for an agent
@@ -11,12 +11,16 @@ needed. This page is the quick runbook; the **interactive API reference is at
 2. `GET /api/setup/status` → if `{"needs_setup": true}`, configure it; else skip to step 4.
 3. `POST /api/save_config` with a role + paths (see below). Writes `config.json`.
 4. `GET /api/config` → read back config + editable-field metadata.
-5. Satellite only: `POST /api/sync/all` (pulls catalog, contributes local tracks)
-   or `POST /api/contribute` (contribute only).
+5. Satellite only: `POST /api/sync/all` pulls catalog, artist tags, playlists
+   and lyrics; pushes playlist edits; reports inventory; and contributes local
+   tracks when enabled. Use `POST /api/contribute` for contribution only.
 
 When `api_token` is set in config, send `Authorization: Bearer <token>` on every
 `/api/*` call except `/api/healthz`, `/api/status`, and `/api/openapi.json`. In
 open mode (no token) the API is unauthenticated — keep it on LAN/Tailscale only.
+The human web UI redirects to `/auth` and stores a same-site HttpOnly cookie;
+the token is never embedded in page HTML. Authenticated bundle-sharing screens
+mint a one-hour, download-only URL rather than putting the API bearer in the QR.
 
 ## In the browser (human or computer-use)
 

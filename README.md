@@ -8,8 +8,8 @@ back up to it.
 - Master deployment is a **Docker container on a Windows host**, with Tailscale
   on the host (not the container). See `docs/onboarding.md`.
 - Backend: Flask (`web_server.py`) + SQLite (`src/db_manager.py`).
-- Web UI: server-rendered templates in `web/templates`. There's also a Tauri
-  desktop app under `desktop/` (separate track).
+- Web UI: server-rendered templates in `web/templates`.
+- Desktop UI: the shipped Tauri + React app under `desktop/`.
 
 ---
 
@@ -70,7 +70,7 @@ shape.
 Open **http://localhost:5001/** — a fresh install redirects to **`/setup`**.
 Pick a role (Master / Satellite / Standalone), fill the paths, and (satellite)
 the Master URL. After saving you land on the Dashboard, where the **Settings**
-card edits any config key.
+card edits the supported runtime settings.
 
 > **Windows path note:** paths in the wizard are on the host running
 > DAPManager. Use the `config.example.win.json` template style
@@ -80,7 +80,7 @@ card edits any config key.
 
 ### 2. API docs (for humans and for a Claude/Cowork instance)
 
-- **Swagger UI:** http://localhost:5001/docs
+- **Offline interactive API explorer:** http://localhost:5001/docs
 - **Machine-readable spec:** http://localhost:5001/api/openapi.json (no external
   deps; an agent can parse this directly)
 - **Runbook:** `docs/cowork-setup.md` — step-by-step browser setup for an agent.
@@ -92,15 +92,13 @@ from a fresh install.
 ### 3. Run the tests
 
 ```powershell
-python -m pytest -q
+python -m pytest tests --ignore=tests/e2e -q
 ```
 
-> Note: a block of `tests/test_web_routes.py` tests are environment/ordering
-> sensitive (they depend on a config file existing) and can show as failures in
-> isolation — this is **pre-existing**, not from the contribution feature. The
-> contribution suites (`test_audio_quality`, `test_file_ingest`,
-> `test_contributions`, `test_contribution_sync`, `test_openapi`) are
-> self-contained and should all pass.
+The non-E2E suite is isolated from the user's real config and can be collected
+in one invocation. CI runs this exact command, plus a TypeScript/Vite desktop
+build. The Docker master/satellite tests remain a separate local gate because
+they need Docker and sample music files.
 
 ### End-to-end suite (real master + satellite containers, with coverage)
 
@@ -218,18 +216,26 @@ destructive), and how to verify results.
 
 ---
 
-## Known limitations / next steps
+## Operational notes
 
-- **MBID mismatch:** if the master's auto-tagger resolves a *different* MBID than
-  the satellite's guess, the "did we get it?" check can miss and ask for an
-  upload unnecessarily. The attempt-timeout
-  (`contribution_attempt_timeout_seconds`, default 1h) bounds the worst case to
-  an eventual upload rather than a stall. Tightening this is a good follow-up.
-- **Swagger UI loads from a CDN (unpkg).** `/api/openapi.json` has no
-  dependencies, but the interactive `/docs` page needs internet. Vendor
-  swagger-ui into `web/static` if you need fully offline docs.
-- **Tauri desktop surface** for the contribution flow isn't built yet (the web
-  UI is complete).
+- Contribution matching tolerates taggers choosing different recording MBIDs:
+  it falls back to ISRC, then exact album metadata, and only accepts an
+  artist/title-only match when it is unambiguous. It never fuzzy-matches audio.
+- `/docs` is a self-contained interactive OpenAPI explorer served entirely from
+  `web/static`; it works on an offline master and supports JSON and file-upload
+  requests.
+- Contributions are available in both the web UI and the Tauri desktop app,
+  including per-track and contribute-all actions.
+- The Tauri backend is loopback-only for Satellite and Standalone roles. A
+  Desktop Master requires a non-empty API token; saving that role/token safely
+  restarts the owned backend and exposes it on LAN/Tailscale interfaces.
+- MusicBrainz artist lookup runs only on the master, but its authoritative tag
+  snapshots pull to satellites during Sync All. Master-side library maintenance
+  defaults to a weekly tag refresh followed by Daily Mix regeneration; set
+  `library_maintenance_interval_seconds` to `0` to disable it.
+- Live Soulseek, Lidarr, Jellyfin, MusicBrainz and physical-DAP behaviour still
+  depends on those external services/devices; the isolated suite mocks those
+  boundaries and the Docker E2E suite covers the master/satellite HTTP flow.
 
 ---
 

@@ -1,13 +1,13 @@
 # Desktop Rewrite Plan — PySide6 → Tauri
 
-Context: the PySide6 `desktop_app.py` is 1,595 LOC and covers the full
-library + sync + audit surface. It's being replaced stage by stage by a
-Tauri + React + TypeScript app in `desktop/`. The Python Flask backend
-(`web_server.py`) is kept unchanged and runs as a sidecar process; the
-frontend talks to it over HTTP.
+Context: the former PySide6 desktop client has been replaced by the Tauri +
+React + TypeScript app in `desktop/`. The Python Flask backend
+(`web_server.py`) runs as its bundled sidecar process and the frontend talks
+to it over HTTP. This document preserves the staged decisions and tracks the
+few cross-cutting additions made after parity was reached.
 
-This document is the stage plan — what's shipped, what's next, and why
-that ordering. It complements the commit-series view (each stage is a
+This document is the delivered stage plan — what shipped and why that
+ordering was chosen. It complements the commit-series view (each stage is a
 `feat(desktop): ... (Stage N)` commit) with the *scope* and *rationale*
 that don't fit in a commit message.
 
@@ -34,11 +34,13 @@ that don't fit in a commit message.
 | 8a | `24cd34f` | Audit screen replacing the placeholder, paired with Complete-Albums trigger. Auto-loads `/api/audit/results` on mount; renders an album-cover grid with a per-card "N missing" badge + have/total counts. "Complete Albums" button POSTs `/api/albums/complete` with an optional "Also run downloader & rescan" checkbox; running-state strip + results refresh reuse SyncScreen's `/api/status` edge-trigger pattern. |
 | 8b | `4223c36` | Orphans screen replacing the web `/orphans` page. Tabbed Tracks / Playlists tables from `/api/orphans/{tracks,playlists}`; row actions are Restore / Delete file (tracks, when `local_path` is set) / Purge with confirms before destructive ones. Playlist mutations bump `playlistsVersion` so the sidebar's live-list refetch covers both restore (re-appears) and purge (no-op visually but cheap to bump). |
 | 8c | `35de8fd` | Resolve Duplicates screen replacing the PySide6 modal. Lists groups from `/api/duplicates` with per-group radios + "Skip this group"; recommended candidate (highest score) seeds the default. Single "Resolve N (M files)" CTA loops `/api/duplicates/resolve` per group and surfaces a deleted + errors summary toast. Groups with one candidate or skipped state are filtered from the plan. |
-| 8d | `1c13ad8` | Suggest screen replacing the PySide6 "Suggest to Jellyfin" dialog. Reads `dap_manager_host_url` from `/api/config`; missing host routes through the focus-key Settings flow. Textarea parses `Artist - Title` lines client-side (mirrors `parse_manual_suggestions`) and POSTs `<host>/api/suggestions`. Selection-based suggest from SongsScreen is deferred — manual paste covers the workflow at a fraction of the integration cost. |
+| 8d | `1c13ad8` | Suggest screen replacing the PySide6 "Suggest to Jellyfin" dialog. Reads the configured master host, routes missing config through the focus-key Settings flow, parses `Artist - Title` lines and posts through the local `/api/suggestions/forward` proxy. Direct Songs context-menu suggestion was subsequently completed in Stage 15. |
+| 15 | current | Contribution parity and final action closers. Contributions screen supports role-aware contribute-all, live status/quality tables and refresh polling; local Song rows expose per-track contribution. Songs also has direct Suggest-to-Jellyfin, sharing host resolution with the manual Suggest screen. |
 
-Sidebar currently has **Albums / Artists / Songs / Playlists / Audit /
-Duplicates / Downloads / New Releases / Orphans / Sync / Fleet / Suggest
-/ Settings** wired to real screens. No `<Placeholder>` stubs remain.
+Sidebar currently has **Home / Albums / Artists / Songs / Playlists /
+Listening / Downloads / New Releases / Audit / Duplicates / Orphans / Fleet /
+Contributions / Sync / Suggest / Settings** wired to real screens. No
+`<Placeholder>` stubs remain.
 
 ---
 
@@ -280,26 +282,25 @@ Decisions worth preserving:
 
 Decisions worth preserving:
 
-- **Manual-paste only, no SongsScreen integration.** The PySide6
+- **Initial Stage 8 scope was manual-paste only.** The PySide6
   flow has both — paste *and* suggest-from-selection. Selection
   would mean adding a multi-select model to SongsScreen + a context-
   menu entry + a wiring path from there into the Suggest flow.
-  Manual paste covers the actual workflow (user types a few lines)
-  at maybe 10% of the cost. Selection-based can land in a later
-  stage if the user actually misses it.
+  Manual paste covered the workflow at a fraction of the cost. Direct
+  Songs-screen suggestion subsequently shipped in Stage 15.
 - **Fetch host from `/api/config`, not a prop.** The host can change
   via the Settings screen mid-session; reading config on mount keeps
   the screen self-contained. The Settings save flow already reloads
   the in-process config server-side, so a re-mount of Suggest picks
   up the new value.
 - **Reuse Stage 7a's focus-key router.** Missing
-  `dap_manager_host_url` calls `onOpenSettings("dap_manager_host_url")`
+  `master_url` calls `onOpenSettings("master_url")`
   which scrolls + flashes the field. Same plumbing as the
   acoustid_api_key path from Stage 7b.
-- **Direct `fetch` to the host URL works** because Tauri's CSP is
-  `null` and webview HTTP is unrestricted. If a future hardening
-  turns CSP on, this will need to move to `@tauri-apps/plugin-http`
-  with an allowlist — calling out as a known fragile point.
+- **Suggestions use the local backend as a proxy.** React posts to
+  `/api/suggestions/forward`; Python reads `master_url`, attaches the configured
+  bearer token, and calls the master. This avoids cross-origin preflight/CSP
+  coupling in the webview and keeps remote credentials in the backend.
 - **`parseManualSuggestions` lives in `lib/api.ts`** alongside the
   POST helper. It's a pure function but the symmetry with the Python
   side (`parse_manual_suggestions`) is the documentation: both ends
@@ -313,17 +314,16 @@ app now covers every toolbar/menu action `desktop_app.py` exposed.
 PySide6 was retired in a single follow-up commit that deleted
 `desktop_app.py` (1,595 LOC), `tests/test_desktop_app.py`, and the
 `PySide6>=6.6.0` line from `requirements.txt`. `src/first_run.py`
-stayed — its pure `build_initial_config` helper is reusable for a
-future Tauri first-run wizard, and its tests don't touch Qt.
+stayed — its pure `build_initial_config` helper was subsequently reused by the
+Tauri first-run wizard, and its tests don't touch Qt.
 
 ---
 
 ## Stage 9 — Musicat-inspired polish
 
-Onboarding shipped (see [`docs/onboarding.md`](onboarding.md)), so
-Stage 9 is now active. Pool of ideas in
-`memory/reference_design_musicat.md`; landing as small sub-stages,
-ranked by value/work the same way Stage 8 was.
+Onboarding shipped first (see [`docs/onboarding.md`](onboarding.md)); Stage 9
+then landed as the small sub-stages below, ranked by value/work in the same way
+as Stage 8.
 
 ### 9 / mini-player — _Shipped (`0e579cb` + test `3f5e10a`)_
 
@@ -458,10 +458,10 @@ Decisions worth preserving:
   Manually adding a track to a smart playlist would store a row the
   read path ignores. `SongsScreen` filters smart playlists out of
   the submenu so the user can't "succeed" at a no-op.
-- **No vitest yet.** `lib/smartRules.ts` is pure and small enough
-  that the server-side test coverage (`tests/test_smart_playlist.py`,
-  same whitelist) is doing double duty for now. Worth wiring vitest
-  when a second pure-helper module appears in the desktop tree.
+- **Vitest + Testing Library gate desktop interactions.** `npm test`
+  runs in CI alongside the production build. Component regressions such
+  as album single/double-click arbitration, keyboard activation, and the
+  playable-track count are covered in the same environment as React.
 
 ### 9 / listening stats — _Shipped (`58391dc` + `dae4671`)_
 
@@ -517,7 +517,7 @@ Decisions worth preserving:
   ("how much did I listen on the desktop vs. the web client")
   become a backend-only change when a second client lands.
 
-### Remaining picks (not yet started)
+### Optional future idea
 
 - Discography timeline with release years (release-year column +
   MB release-group browse, gated on artist infoscreen having
@@ -775,11 +775,10 @@ because on legacy DBs the column doesn't exist when
 fail with "no such column".
 
 **Reuse.** `is_liked` rides the existing catalog-sync delta (it's
-a user preference, not a device-local file fact). `apply_catalog_row`'s
-on-conflict overwrite matches the existing master-authoritative
-model — v1 ships without satellite→master like proxying, so likes
-set on a satellite are clobbered by the master's view on next
-sync. Acceptable for v1; documented here for future revisit.
+a user preference, not a device-local file fact). At the initial 11a delivery,
+`apply_catalog_row`'s overwrite made likes master-authoritative and satellite
+likes could be clobbered on the next sync. Stage 11f later added write-through
+proxying to the master while preserving that authority model.
 
 **Effort.** ~3 hours: column + migration, two endpoints, one
 auto-playlist seed, rule-schema extension, web-route + db tests.
@@ -1155,14 +1154,13 @@ Decisions worth preserving:
   Wrapped screen footnote — both surfaces speak the same truth
   so users don't bounce between conflicting headlines.
 
-### 12d/12e — Scrobble bridges (deferred)
+### Optional integrations — scrobble bridges
 
-The Last.fm outbound bridge and ListenBrainz history import were
-scoped to Stage 12 but deferred behind Stage 13 lyrics on
-value/work grounds: lyrics has universal user value and a single
-no-auth API; the scrobble bridges require per-user credentials
-and have value gated on whether the user already maintains an
-external scrobble history. Picked up later in the roadmap.
+The Last.fm outbound bridge and ListenBrainz history import remain optional
+future work. They were deferred behind Stage 13 lyrics on value/work grounds:
+lyrics has universal user value and a single no-auth API; the scrobble bridges
+require per-user credentials and matter mainly to users who already maintain
+an external scrobble history.
 
 ---
 
@@ -1254,7 +1252,7 @@ Decisions worth preserving:
   `apply_pushed_playlist_row`. New `pull_lyrics` step runs last
   in `sync_all` so it never blocks the catalog/playlists pulls
   it's paired with.
-- **Karaoke / translation overlays** — not yet started. LRCLIB
+- **Karaoke / translation overlays** — optional enhancement. LRCLIB
   supports translations but the v1 panel doesn't surface them.
 
 ---
@@ -1298,8 +1296,9 @@ pass; display queries filter via `WHERE tag != ''`.
 **14a.3 — endpoint + Settings UI** (`63797b8`). POST
 `/api/library/tags/backfill` rides the existing TaskManager so
 the job streams progress through `/api/status` the same way Audit
-and Sync do. Master-only — satellites would shred MB's rate-limit
-budget if each device hammered it independently. Settings grows
+and Sync do. MusicBrainz fetching is master-only — satellites would shred MB's
+rate-limit budget if each device hammered it independently — while the resulting
+authoritative tag snapshots pull to satellites during Sync All. Settings grows
 a "Library tools" card with a Backfill button and a 1.5s-while-
 running / 5s-while-idle poll cadence so the in-progress artist
 name shows live.
@@ -1444,22 +1443,20 @@ Decisions worth preserving:
   nothing else uses. The parser is symmetric with what
   `_format_mix_name` writes.
 
-### Stage 14 follow-ups (not yet started)
+### Stage 14 follow-ups
 
-- **`artist_tags` catalog-sync delta.** Currently master-only;
-  satellites won't show genre filters / Daily Mixes until they
-  pull the master's tag data. Same shape as Stage 13's
-  `pull_lyrics` — one new endpoint + cursor + apply method.
-- **Periodic regen via sync_scheduler.** The plan called for a
-  weekly tick that re-runs the backfill + daily-mix regen. v1
-  ships with manual buttons in Settings; the scheduler
-  integration is a thin wrapper around the existing entry
-  points.
-- **Artist-image source for Top Artists + Daily Mix tiles.**
-  Initial-in-a-circle placeholder works but is visually thin
-  next to Spotify's portrait grid. Wikidata's P18 (image) on
-  MB-linked artists is a candidate — needs caching and content-
-  type sniffing.
+- **`artist_tags` catalog-sync delta — shipped.** `/api/artist-tags` returns
+  authoritative grouped snapshots; Sync All pulls them with an independent
+  `last_artist_tags_sync` cursor and replacement/stale-write protection.
+- **Periodic regeneration — shipped.** A master-only maintenance tick refreshes
+  stale MusicBrainz tags and then rebuilds Daily Mixes. It defaults to weekly
+  (`library_maintenance_interval_seconds = 604800`), uses the shared TaskManager
+  plus an internal lock to avoid overlap, and is disabled by interval `0`;
+  `library_maintenance_on_startup` is opt-in.
+- **Artist portraits on Home tiles — optional visual enhancement.** Artist
+  detail already uses cached Wikipedia thumbnails; the compact Home/Daily Mix
+  tiles intentionally retain their local gradient/initial treatment so Home
+  does not fan out into several third-party image requests.
 
 ---
 
