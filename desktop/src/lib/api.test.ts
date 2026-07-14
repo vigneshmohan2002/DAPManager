@@ -2,15 +2,98 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 type ApiModule = typeof import("./api");
 
+const EXPECTED_RUNTIME_EXPORTS = [
+  "SUGGESTION_HOST_KEY",
+  "addTrackToPlaylist",
+  "albumCoverUrl",
+  "apiFetch",
+  "applyTrackTags",
+  "backendUrl",
+  "clearCompletedDownloads",
+  "contributeAllLocalTracks",
+  "contributeTrack",
+  "createPlaylist",
+  "deleteDownload",
+  "deletePlaylist",
+  "deleteTrackFile",
+  "detectPublicUrl",
+  "fetchAlbumTracks",
+  "fetchAlbums",
+  "fetchAllTracks",
+  "fetchArtistInfo",
+  "fetchArtistRadio",
+  "fetchArtists",
+  "fetchAuditResults",
+  "fetchConfig",
+  "fetchContributions",
+  "fetchDownloads",
+  "fetchDuplicates",
+  "fetchFleetSummary",
+  "fetchHome",
+  "fetchLyrics",
+  "fetchOrphanPlaylists",
+  "fetchOrphanTracks",
+  "fetchOutgoingContributions",
+  "fetchPlayStats",
+  "fetchPlaylists",
+  "fetchSatelliteBundleLink",
+  "fetchSetupStatus",
+  "fetchStatus",
+  "fetchSyncState",
+  "fetchWantedReleases",
+  "fetchWrapped",
+  "identifyTrack",
+  "parseManualSuggestions",
+  "postAction",
+  "postSuggestions",
+  "purgePlaylist",
+  "purgeTrack",
+  "queueCatalogDownload",
+  "queueWantedRelease",
+  "recordPlay",
+  "regenerateDailyMixes",
+  "renamePlaylist",
+  "resolveDuplicate",
+  "restartBackend",
+  "restorePlaylist",
+  "restoreTrack",
+  "retryDownload",
+  "runCompleteAlbums",
+  "saveConfig",
+  "saveLyrics",
+  "saveSetupConfig",
+  "searchFleet",
+  "searchTracks",
+  "setTrackLiked",
+  "softDeleteTrack",
+  "startTagBackfill",
+  "streamUrl",
+  "suggestionHostFromConfig",
+  "updatePlaylistSmartRules",
+  "validatePath",
+  "waitForBackend",
+] as const;
+
 async function loadApi(options: {
   token?: string;
   backend?: string;
+  restartResult?: import("./api").BackendRestartResult;
 } = {}): Promise<{ api: ApiModule; invoke: ReturnType<typeof vi.fn> }> {
   vi.resetModules();
   const invoke = vi.fn(async (command: string) => {
     if (command === "api_token") return options.token ?? "";
     if (command === "backend_url") return options.backend ?? "http://localhost:5001";
     if (command === "backend_startup_error") return null;
+    if (command === "restart_backend") {
+      return (
+        options.restartResult ?? {
+          success: false,
+          message: "not running",
+          bind_host: "127.0.0.1",
+          backend_running: false,
+        }
+      );
+    }
     throw new Error(`Unexpected command: ${command}`);
   });
   vi.doMock("@tauri-apps/api/core", () => ({ invoke }));
@@ -23,28 +106,14 @@ afterEach(() => {
 });
 
 describe("desktop API compatibility surface", () => {
-  it("keeps the established runtime exports available", async () => {
+  it("keeps exactly the established runtime exports available", async () => {
     const { api } = await loadApi();
 
-    expect(api).toEqual(
-      expect.objectContaining({
-        apiFetch: expect.any(Function),
-        backendUrl: expect.any(Function),
-        waitForBackend: expect.any(Function),
-        restartBackend: expect.any(Function),
-        fetchSetupStatus: expect.any(Function),
-        saveSetupConfig: expect.any(Function),
-        fetchAllTracks: expect.any(Function),
-        fetchAlbumTracks: expect.any(Function),
-        fetchPlaylists: expect.any(Function),
-        createPlaylist: expect.any(Function),
-        fetchSyncState: expect.any(Function),
-        fetchContributions: expect.any(Function),
-        fetchDownloads: expect.any(Function),
-        streamUrl: expect.any(Function),
-        albumCoverUrl: expect.any(Function),
-      }),
-    );
+    expect(Object.keys(api).sort()).toEqual([...EXPECTED_RUNTIME_EXPORTS].sort());
+    for (const name of EXPECTED_RUNTIME_EXPORTS) {
+      if (name === "SUGGESTION_HOST_KEY") continue;
+      expect(api[name]).toEqual(expect.any(Function));
+    }
   });
 });
 
@@ -107,6 +176,19 @@ describe("apiFetch authentication", () => {
     );
     expect(invoke.mock.calls.filter(([command]) => command === "api_token")).toHaveLength(1);
   });
+
+  it("preserves the restart command name and serialized result shape", async () => {
+    const restartResult = {
+      success: false,
+      message: "bind failed; restored loopback",
+      bind_host: "127.0.0.1",
+      backend_running: false,
+    };
+    const { api, invoke } = await loadApi({ restartResult });
+
+    await expect(api.restartBackend()).resolves.toEqual(restartResult);
+    expect(invoke).toHaveBeenCalledWith("restart_backend");
+  });
 });
 
 describe("API error contracts", () => {
@@ -137,5 +219,71 @@ describe("API error contracts", () => {
 
     await expect(api.recordPlay("track-1", "desktop", 1_234)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith("recordPlay failed", expect.any(Error));
+  });
+
+  it("rejects a non-object JSON collection response at the boundary", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const { api } = await loadApi();
+
+    await expect(api.fetchAlbums()).rejects.toThrow(
+      "Expected the API response to be a JSON object",
+    );
+  });
+
+  it("invalidates the warmed media token only after a successful token save", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true, changed: ["api_token"] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    const { api, invoke } = await loadApi({ token: "secret" });
+
+    await api.backendUrl();
+    await api.saveConfig({ api_token: "replacement" });
+    await api.apiFetch("http://master/api/status");
+
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "api_token"),
+    ).toHaveLength(2);
+  });
+
+  it("invalidates the warmed media token after setup saves a seeded token", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    const { api, invoke } = await loadApi({ token: "seed-token" });
+
+    await api.backendUrl();
+    await api.saveSetupConfig({
+      role: "satellite",
+      music_library_path: "",
+      downloads_path: "",
+      api_token: "seed-token",
+    });
+    await api.apiFetch("http://master/api/status");
+
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "api_token"),
+    ).toHaveLength(2);
   });
 });
