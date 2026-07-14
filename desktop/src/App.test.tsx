@@ -28,20 +28,149 @@ vi.mock("./components/Sidebar", () => ({
     <nav data-testid="sidebar" data-active-id={activeId}>
       <button onClick={() => onSelect("playlist:road/trip?2026")}>Playlist</button>
       <button onClick={() => onSelect("songs")}>All songs</button>
+      <button onClick={() => onSelect("artists")}>Artists</button>
+      <button onClick={() => onSelect("settings")}>Settings</button>
+      <button onClick={() => onSelect("future-screen")}>Future screen</button>
     </nav>
   ),
 }));
 
 vi.mock("./screens/HomeScreen", () => ({
-  default: () => <div data-testid="home-screen">Home</div>,
+  default: ({
+    onOpenAlbum,
+    onOpenArtist,
+  }: {
+    onOpenAlbum: (album: {
+      id: string;
+      title: string;
+      artist: string;
+      track_count: number;
+    }) => void;
+    onOpenArtist: (artist: {
+      name: string;
+      album_count: number;
+      track_count: number;
+    }) => void;
+  }) => (
+    <div data-testid="home-screen">
+      Home
+      <button
+        onClick={() =>
+          onOpenAlbum({
+            id: "release-1",
+            title: "First Album",
+            artist: "Example Artist",
+            track_count: 9,
+          })
+        }
+      >
+        Open album
+      </button>
+      <button
+        onClick={() =>
+          onOpenArtist({
+            name: "Example Artist",
+            album_count: 2,
+            track_count: 18,
+          })
+        }
+      >
+        Open artist
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("./screens/SongsScreen", () => ({
-  default: ({ playlistId }: { playlistId?: string | null }) => (
+  default: ({
+    playlistId,
+    onOpenSettings,
+  }: {
+    playlistId?: string | null;
+    onOpenSettings: (focusKey?: string) => void;
+  }) => (
     <div data-testid="songs-screen" data-playlist-id={playlistId ?? "none"}>
       Songs
+      <button onClick={() => onOpenSettings("acoustid_api_key")}>
+        Configure tagging
+      </button>
     </div>
   ),
+}));
+
+vi.mock("./screens/ArtistsScreen", () => ({
+  default: () => <div data-testid="artists-screen">Artist list</div>,
+}));
+
+vi.mock("./screens/ArtistDetailScreen", () => ({
+  default: ({
+    artist,
+    onBack,
+    onOpenAlbum,
+  }: {
+    artist: { name: string };
+    onBack: () => void;
+    onOpenAlbum: (album: {
+      id: string;
+      title: string;
+      artist: string;
+      track_count: number;
+    }) => void;
+  }) => (
+    <div data-testid="artist-detail" data-artist={artist.name}>
+      <button onClick={onBack}>Back to artists</button>
+      <button
+        onClick={() =>
+          onOpenAlbum({
+            id: "release-2",
+            title: "Second Album",
+            artist: artist.name,
+            track_count: 11,
+          })
+        }
+      >
+        Open artist album
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock("./screens/AlbumDetailScreen", () => ({
+  default: ({
+    album,
+    onBack,
+  }: {
+    album: { id: string; title: string };
+    onBack: () => void;
+  }) => (
+    <div data-testid="album-detail" data-album-id={album.id}>
+      {album.title}
+      <button onClick={onBack}>Back from album</button>
+    </div>
+  ),
+}));
+
+vi.mock("./screens/SettingsScreen", () => ({
+  default: ({
+    focusKey,
+    onConsumedFocusKey,
+  }: {
+    focusKey: string | null;
+    onConsumedFocusKey: () => void;
+  }) => (
+    <div data-testid="settings-screen" data-focus-key={focusKey ?? "none"}>
+      Settings
+      <button onClick={onConsumedFocusKey}>Consume focus</button>
+    </div>
+  ),
+}));
+
+vi.mock("./screens/SetupScreen", () => ({
+  default: () => <div data-testid="setup-screen">Setup</div>,
+}));
+
+vi.mock("./components/MiniPlayer", () => ({
+  default: () => <div data-testid="mini-player">Mini player</div>,
 }));
 
 vi.mock("./components/PlayerBar", () => ({ default: () => null }));
@@ -94,5 +223,107 @@ describe("App navigation contract", () => {
       "data-active-id",
       "songs",
     );
+  });
+
+  it("returns from an album to the screen that opened it", async () => {
+    render(<App />);
+    await screen.findByTestId("home-screen");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open album" }));
+    expect(screen.getByTestId("album-detail")).toHaveAttribute(
+      "data-album-id",
+      "release-1",
+    );
+    expect(screen.getByTestId("sidebar")).toHaveAttribute(
+      "data-active-id",
+      "home",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Back from album" }));
+    expect(screen.getByTestId("home-screen")).toBeInTheDocument();
+  });
+
+  it("returns from an artist album to the same artist detail", async () => {
+    render(<App />);
+    await screen.findByTestId("home-screen");
+    fireEvent.click(screen.getByRole("button", { name: "Open artist" }));
+
+    expect(screen.getByTestId("artist-detail")).toHaveAttribute(
+      "data-artist",
+      "Example Artist",
+    );
+    expect(screen.getByTestId("sidebar")).toHaveAttribute(
+      "data-active-id",
+      "artists",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open artist album" }));
+    expect(screen.getByTestId("album-detail")).toHaveAttribute(
+      "data-album-id",
+      "release-2",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Back from album" }));
+
+    expect(screen.getByTestId("artist-detail")).toHaveAttribute(
+      "data-artist",
+      "Example Artist",
+    );
+  });
+
+  it("keeps settings focus attached to the settings route until consumed", async () => {
+    render(<App />);
+    await screen.findByTestId("home-screen");
+    fireEvent.click(screen.getByRole("button", { name: "All songs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure tagging" }));
+
+    expect(screen.getByTestId("settings-screen")).toHaveAttribute(
+      "data-focus-key",
+      "acoustid_api_key",
+    );
+    expect(screen.getByTestId("sidebar")).toHaveAttribute(
+      "data-active-id",
+      "settings",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Consume focus" }));
+    expect(screen.getByTestId("settings-screen")).toHaveAttribute(
+      "data-focus-key",
+      "none",
+    );
+  });
+
+  it("retains the unknown-screen fallback for unrecognised sidebar ids", async () => {
+    render(<App />);
+    await screen.findByTestId("home-screen");
+
+    fireEvent.click(screen.getByRole("button", { name: "Future screen" }));
+
+    expect(screen.getByRole("heading", { name: "future-screen" })).toBeInTheDocument();
+    expect(screen.getByText("Unknown screen")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar")).toHaveAttribute(
+      "data-active-id",
+      "future-screen",
+    );
+  });
+
+  it("shows setup instead of mini-player on a fresh small-window launch", async () => {
+    apiMocks.fetchSetupStatus.mockResolvedValue({ needs_setup: true });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 200 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 200 });
+
+    render(<App />);
+
+    expect(await screen.findByTestId("setup-screen")).toBeInTheDocument();
+    expect(screen.queryByTestId("mini-player")).not.toBeInTheDocument();
+  });
+
+  it("shows the mini-player after a successful small-window launch", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 200 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 200 });
+
+    render(<App />);
+
+    expect(await screen.findByTestId("mini-player")).toBeInTheDocument();
+    expect(screen.queryByTestId("sidebar")).not.toBeInTheDocument();
   });
 });
