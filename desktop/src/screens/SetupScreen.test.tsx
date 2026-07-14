@@ -104,4 +104,58 @@ describe("SetupScreen payload contract", () => {
 
     await waitFor(() => expect(next).toBeEnabled());
   });
+
+  it("retries a stopped backend before re-saving the retained setup form", async () => {
+    const user = userEvent.setup();
+    apiMocks.restartBackend
+      .mockResolvedValueOnce({
+        success: false,
+        message: "Restart failed",
+        bind_host: "127.0.0.1",
+        backend_running: false,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        message: "Recovered",
+        bind_host: "127.0.0.1",
+        backend_running: true,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        message: "Restarted",
+        bind_host: "127.0.0.1",
+        backend_running: true,
+      });
+
+    render(<SetupScreen onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByPlaceholderText("/Users/you/Music"), "/music");
+    await user.type(
+      screen.getByPlaceholderText("/Users/you/Downloads/Music"),
+      "/downloads",
+    );
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(
+      screen.getByPlaceholderText("generate or enter a strong token"),
+      "master-token",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+    expect(await screen.findByText("Restart failed")).toBeInTheDocument();
+    expect(apiMocks.saveSetupConfig).toHaveBeenCalledTimes(1);
+    expect(apiMocks.restartBackend).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+    expect(await screen.findByText("DAPManager is ready")).toBeInTheDocument();
+    expect(apiMocks.saveSetupConfig).toHaveBeenCalledTimes(2);
+    expect(apiMocks.restartBackend).toHaveBeenCalledTimes(3);
+    expect(apiMocks.restartBackend.mock.invocationCallOrder[1]).toBeLessThan(
+      apiMocks.saveSetupConfig.mock.invocationCallOrder[1],
+    );
+    expect(apiMocks.saveSetupConfig.mock.invocationCallOrder[1]).toBeLessThan(
+      apiMocks.restartBackend.mock.invocationCallOrder[2],
+    );
+  });
 });

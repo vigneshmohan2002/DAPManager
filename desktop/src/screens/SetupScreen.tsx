@@ -1,19 +1,14 @@
-import { useEffect, useRef, useState } from "react";
 import {
-  detectPublicUrl,
-  fetchSatelliteBundleLink,
-  restartBackend,
-  saveSetupConfig,
-  validatePath,
-} from "../lib/api";
-import {
-  buildSetupPayload,
   canAdvanceSetupStep,
-  DEFAULT_SETUP_FORM,
   type SetupForm as Form,
   type SetupFormSetter,
   type SetupRole as Role,
 } from "../lib/setupForm";
+import {
+  useSetupWizard,
+  type SetupPathKey,
+  type SetupPathValidity,
+} from "./setup/useSetupWizard";
 
 const STEPS = ["Role", "Paths", "Connection", "Integrations", "Auth", "Done"];
 
@@ -85,127 +80,25 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 // ── SetupScreen ──────────────────────────────────────────────────────────────
 
 export default function SetupScreen({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState(0);
-  const [form, setForm] = useState<Form>(DEFAULT_SETUP_FORM);
-  const [pathValidity, setPathValidity] = useState<
-    Partial<Record<string, boolean | null>>
-  >({});
-  const [detecting, setDetecting] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [copyLabel, setCopyLabel] = useState("Copy link");
-  const [downloadLink, setDownloadLink] = useState<string | null>(null);
-  const [bundleLinkError, setBundleLinkError] = useState<string | null>(null);
-  // If a restart leaves no backend running, the config is already on disk and
-  // the next click must retry the Tauri restart directly (there is no HTTP
-  // server available to accept a duplicate save first).
-  const [restartOnly, setRestartOnly] = useState(false);
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const set: SetupFormSetter = (key, value) =>
-    setForm((f) => ({ ...f, [key]: value }));
-
-  const validateField = async (key: string, value: string) => {
-    if (!value.trim()) {
-      setPathValidity((p) => ({ ...p, [key]: null }));
-      return;
-    }
-    const { ok } = await validatePath(value.trim());
-    setPathValidity((p) => ({ ...p, [key]: ok }));
-  };
-
-  const handleAutoDetect = async () => {
-    setDetecting(true);
-    try {
-      const result = await detectPublicUrl();
-      if (result.url) {
-        set("public_master_url", result.url);
-      }
-    } finally {
-      setDetecting(false);
-    }
-  };
-
-  const generateToken = () => {
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    set(
-      "api_token",
-      Array.from(bytes)
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join(""),
-    );
-  };
-
-  const handleNext = async () => {
-    if (step === 4) {
-      // Save before showing Done
-      setSaving(true);
-      setSaveError(null);
-      try {
-        if (restartOnly) {
-          const recovered = await restartBackend();
-          if (!recovered.success) {
-            setRestartOnly(!recovered.backend_running);
-            setSaveError(recovered.message);
-            return;
-          }
-          setRestartOnly(false);
-        }
-
-        const payload = buildSetupPayload(form);
-        const result = await saveSetupConfig(payload);
-        if (!result.success) {
-          setSaveError(result.message ?? "Save failed");
-          return;
-        }
-
-        const restarted = await restartBackend();
-        if (!restarted.success) {
-          setRestartOnly(!restarted.backend_running);
-          setSaveError(restarted.message);
-          return;
-        }
-        setRestartOnly(false);
-
-        if (form.role === "master" && form.public_master_url.trim()) {
-          try {
-            const bundle = await fetchSatelliteBundleLink();
-            setDownloadLink(bundle.url);
-            setBundleLinkError(null);
-          } catch (e) {
-            setDownloadLink(null);
-            setBundleLinkError(String(e));
-            // Config and secure binding are complete; the share link can be
-            // repaired later by updating public_master_url in Settings.
-          }
-        }
-      } catch (e) {
-        setSaveError(`Setup failed: ${String(e)}`);
-        return;
-      } finally {
-        setSaving(false);
-      }
-      setStep((s) => s + 1);
-      return;
-    }
-    setStep((s) => s + 1);
-  };
-
-  const handleCopy = () => {
-    if (!downloadLink) return;
-    navigator.clipboard.writeText(downloadLink).then(() => {
-      setCopyLabel("Copied!");
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = setTimeout(() => setCopyLabel("Copy link"), 2000);
-    });
-  };
-
-  useEffect(() => {
-    return () => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    };
-  }, []);
+  const wizard = useSetupWizard();
+  const {
+    step,
+    form,
+    pathValidity,
+    detecting,
+    saving,
+    saveError,
+    copyLabel,
+    downloadLink,
+    bundleLinkError,
+    setField: set,
+    validateField,
+    autoDetect: handleAutoDetect,
+    generateToken,
+    next: handleNext,
+    back,
+    copyDownloadLink: handleCopy,
+  } = wizard;
 
   // ── Step renderers ─────────────────────────────────────────────────────────
 
@@ -307,7 +200,7 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
             <div className="flex items-center justify-between mt-4">
               <button
                 className="px-4 py-2 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-30"
-                onClick={() => setStep((s) => s - 1)}
+                onClick={back}
                 disabled={step === 0}
               >
                 Back
@@ -405,8 +298,8 @@ function StepPaths({
 }: {
   form: Form;
   set: SetupFormSetter;
-  pathValidity: Partial<Record<string, boolean | null>>;
-  validateField: (key: string, value: string) => void;
+  pathValidity: SetupPathValidity;
+  validateField: (key: SetupPathKey, value: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
