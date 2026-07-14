@@ -69,7 +69,12 @@ export type SmartField =
   | "album"
   | "title"
   | "tag_tier"
-  | "tag_score";
+  | "tag_score"
+  // Existing web-created rules can contain these server-supported fields.
+  // The desktop editor does not offer them yet, but the API boundary must
+  // retain them so it does not drop an otherwise valid smart playlist.
+  | "genre"
+  | "is_liked";
 
 export type SmartOp =
   | "contains"
@@ -82,7 +87,7 @@ export type SmartOp =
 export type SmartRule = {
   field: SmartField;
   op: SmartOp;
-  value: string | number;
+  value: string | number | boolean;
 };
 
 export type SmartRuleset = {

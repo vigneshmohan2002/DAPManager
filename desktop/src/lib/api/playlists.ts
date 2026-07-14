@@ -26,7 +26,9 @@ function isSmartField(value: unknown): value is SmartField {
     value === "album" ||
     value === "title" ||
     value === "tag_tier" ||
-    value === "tag_score"
+    value === "tag_score" ||
+    value === "genre" ||
+    value === "is_liked"
   );
 }
 
@@ -46,7 +48,9 @@ function isSmartRule(value: unknown): value is SmartRule {
   return (
     isSmartField(value.field) &&
     isSmartOperator(value.op) &&
-    (isString(value.value) || isNumber(value.value))
+    (isString(value.value) ||
+      isNumber(value.value) ||
+      typeof value.value === "boolean")
   );
 }
 

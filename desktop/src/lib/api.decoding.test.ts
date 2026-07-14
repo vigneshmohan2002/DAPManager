@@ -122,6 +122,44 @@ describe("desktop API runtime decoding", () => {
     await expect(api.detectPublicUrl()).resolves.toEqual({ source: "none" });
   });
 
+  it("retains server-supported smart rules that the editor does not expose", async () => {
+    const api = await loadApiWithResponses(
+      jsonResponse({
+        playlists: [
+          {
+            playlist_id: "web-smart-list",
+            name: "Web smart list",
+            track_count: 4,
+            updated_at: "2026-07-15 10:00:00",
+            smart_rules: {
+              match: "all",
+              rules: [
+                { field: "genre", op: "contains", value: "jazz" },
+                { field: "is_liked", op: "equals", value: true },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+
+    await expect(api.fetchPlaylists()).resolves.toEqual([
+      {
+        playlist_id: "web-smart-list",
+        name: "Web smart list",
+        track_count: 4,
+        updated_at: "2026-07-15 10:00:00",
+        smart_rules: {
+          match: "all",
+          rules: [
+            { field: "genre", op: "contains", value: "jazz" },
+            { field: "is_liked", op: "equals", value: true },
+          ],
+        },
+      },
+    ]);
+  });
+
   it("returns null for malformed artist information", async () => {
     const api = await loadApiWithResponses(
       jsonResponse({
