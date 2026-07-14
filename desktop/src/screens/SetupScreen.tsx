@@ -5,56 +5,17 @@ import {
   restartBackend,
   saveSetupConfig,
   validatePath,
-  type SetupPayload,
 } from "../lib/api";
-
-type Role = "master" | "satellite" | "standalone";
+import {
+  buildSetupPayload,
+  canAdvanceSetupStep,
+  DEFAULT_SETUP_FORM,
+  type SetupForm as Form,
+  type SetupFormSetter,
+  type SetupRole as Role,
+} from "../lib/setupForm";
 
 const STEPS = ["Role", "Paths", "Connection", "Integrations", "Auth", "Done"];
-
-// ── Form state ───────────────────────────────────────────────────────────────
-
-type Form = {
-  role: Role;
-  music_library_path: string;
-  downloads_path: string;
-  dap_mount_point: string;
-  master_url: string;
-  public_master_url: string;
-  device_name: string;
-  slsk_username: string;
-  slsk_password: string;
-  jellyfin_url: string;
-  jellyfin_api_key: string;
-  jellyfin_user_id: string;
-  lidarr_url: string;
-  lidarr_api_key: string;
-  lidarr_enabled: boolean;
-  acoustid_api_key: string;
-  contact_email: string;
-  api_token: string;
-};
-
-const DEFAULT_FORM: Form = {
-  role: "master",
-  music_library_path: "",
-  downloads_path: "",
-  dap_mount_point: "",
-  master_url: "",
-  public_master_url: "",
-  device_name: "",
-  slsk_username: "",
-  slsk_password: "",
-  jellyfin_url: "",
-  jellyfin_api_key: "",
-  jellyfin_user_id: "",
-  lidarr_url: "",
-  lidarr_api_key: "",
-  lidarr_enabled: false,
-  acoustid_api_key: "",
-  contact_email: "",
-  api_token: "",
-};
 
 // ── Shared input primitives ──────────────────────────────────────────────────
 
@@ -125,7 +86,7 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 
 export default function SetupScreen({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState<Form>(DEFAULT_FORM);
+  const [form, setForm] = useState<Form>(DEFAULT_SETUP_FORM);
   const [pathValidity, setPathValidity] = useState<
     Partial<Record<string, boolean | null>>
   >({});
@@ -141,7 +102,7 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
   const [restartOnly, setRestartOnly] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const set = (key: keyof Form, value: string | boolean) =>
+  const set: SetupFormSetter = (key, value) =>
     setForm((f) => ({ ...f, [key]: value }));
 
   const validateField = async (key: string, value: string) => {
@@ -176,22 +137,6 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
     );
   };
 
-  const canAdvance = (): boolean => {
-    if (step === 1) {
-      return (
-        form.music_library_path.trim().length > 0 &&
-        form.downloads_path.trim().length > 0
-      );
-    }
-    if (step === 2 && form.role === "satellite") {
-      return form.master_url.trim().length > 0;
-    }
-    if (step === 4 && form.role === "master") {
-      return form.api_token.trim().length > 0;
-    }
-    return true;
-  };
-
   const handleNext = async () => {
     if (step === 4) {
       // Save before showing Done
@@ -208,40 +153,7 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
           setRestartOnly(false);
         }
 
-        const payload: SetupPayload = {
-          role: form.role,
-          music_library_path: form.music_library_path.trim(),
-          downloads_path: form.downloads_path.trim(),
-          ...(form.dap_mount_point.trim() && {
-            dap_mount_point: form.dap_mount_point.trim(),
-          }),
-          ...(form.master_url.trim() && { master_url: form.master_url.trim() }),
-          ...(form.public_master_url.trim() && {
-            public_master_url: form.public_master_url.trim(),
-          }),
-          ...(form.device_name.trim() && { device_name: form.device_name.trim() }),
-          ...(form.slsk_username.trim() && {
-            slsk_username: form.slsk_username.trim(),
-            slsk_password: form.slsk_password.trim(),
-          }),
-          ...(form.jellyfin_url.trim() && {
-            jellyfin_url: form.jellyfin_url.trim(),
-            jellyfin_api_key: form.jellyfin_api_key.trim(),
-            jellyfin_user_id: form.jellyfin_user_id.trim(),
-          }),
-          ...(form.lidarr_url.trim() && {
-            lidarr_url: form.lidarr_url.trim(),
-            lidarr_api_key: form.lidarr_api_key.trim(),
-            lidarr_enabled: true,
-          }),
-          ...(form.acoustid_api_key.trim() && {
-            acoustid_api_key: form.acoustid_api_key.trim(),
-          }),
-          ...(form.contact_email.trim() && {
-            contact_email: form.contact_email.trim(),
-          }),
-          ...(form.api_token.trim() && { api_token: form.api_token.trim() }),
-        };
+        const payload = buildSetupPayload(form);
         const result = await saveSetupConfig(payload);
         if (!result.success) {
           setSaveError(result.message ?? "Save failed");
@@ -403,7 +315,7 @@ export default function SetupScreen({ onDone }: { onDone: () => void }) {
               <button
                 className="px-5 py-2 text-sm font-medium rounded-lg bg-[var(--color-accent)] text-white disabled:opacity-40 hover:opacity-90 transition-opacity flex items-center gap-2"
                 onClick={handleNext}
-                disabled={!canAdvance() || saving}
+                disabled={!canAdvanceSetupStep(step, form) || saving}
               >
                 {saving ? (
                   <>
@@ -431,7 +343,7 @@ function StepRole({
   set,
 }: {
   form: Form;
-  set: (k: keyof Form, v: string | boolean) => void;
+  set: SetupFormSetter;
 }) {
   const roles: { value: Role; label: string; description: string }[] = [
     {
@@ -492,7 +404,7 @@ function StepPaths({
   validateField,
 }: {
   form: Form;
-  set: (k: keyof Form, v: string | boolean) => void;
+  set: SetupFormSetter;
   pathValidity: Partial<Record<string, boolean | null>>;
   validateField: (key: string, value: string) => void;
 }) {
@@ -546,7 +458,7 @@ function StepConnection({
   onAutoDetect,
 }: {
   form: Form;
-  set: (k: keyof Form, v: string | boolean) => void;
+  set: SetupFormSetter;
   detecting: boolean;
   onAutoDetect: () => void;
 }) {
@@ -633,7 +545,7 @@ function StepIntegrations({
   set,
 }: {
   form: Form;
-  set: (k: keyof Form, v: string | boolean) => void;
+  set: SetupFormSetter;
 }) {
   const showDownloader = form.role !== "satellite";
   const showJellyfin = form.role !== "satellite";
@@ -746,7 +658,7 @@ function StepAuth({
   saveError,
 }: {
   form: Form;
-  set: (k: keyof Form, v: string | boolean) => void;
+  set: SetupFormSetter;
   onGenerate: () => void;
   saveError: string | null;
 }) {

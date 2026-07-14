@@ -12,6 +12,7 @@ import {
   type ConfigPayload,
   type ConfigValue,
 } from "../lib/api";
+import { buildConfigPatch } from "../lib/configDraft";
 
 type Props = {
   ready: boolean;
@@ -21,21 +22,6 @@ type Props = {
   focusKey?: string | null;
   onConsumedFocusKey?: () => void;
 };
-
-// Coerce a form string back to the type the config currently stores.
-// If the value we loaded was a number, submit as a number so the
-// backend's "!=" check doesn't see a pure type flip as a change.
-// Leaves strings alone; booleans are handled separately as checkboxes.
-function coerceOnSave(
-  input: string,
-  original: ConfigValue | undefined,
-): ConfigValue {
-  if (typeof original === "number" && input.trim() !== "") {
-    const n = Number(input);
-    if (!isNaN(n)) return n;
-  }
-  return input;
-}
 
 export default function SettingsScreen({
   ready,
@@ -102,14 +88,7 @@ export default function SettingsScreen({
     // Build patch: coerce numeric-typed values back to numbers; leave
     // blanks in secret fields as '' so the backend treats them as
     // "don't change".
-    const patch: Record<string, ConfigValue> = {};
-    for (const [key, raw] of Object.entries(draft)) {
-      if (boolSet.has(key) || typeof raw !== "string") {
-        patch[key] = raw;
-      } else {
-        patch[key] = coerceOnSave(raw, payload.config[key]);
-      }
-    }
+    const patch = buildConfigPatch(draft, payload.config, boolSet);
     try {
       if (restartOnly) {
         const recovered = await restartBackend();

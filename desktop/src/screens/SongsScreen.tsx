@@ -25,9 +25,13 @@ import {
   type Playlist,
   type TagMeta,
 } from "../lib/api";
+import {
+  createPlayableQueue,
+  filterAndSortTracks,
+  type SongSortDirection,
+  type SongSortKey,
+} from "../lib/songList";
 import { usePlayer } from "../player/PlayerContext";
-
-type SortKey = "title" | "artist" | "album";
 
 type Props = {
   ready: boolean;
@@ -71,8 +75,8 @@ export default function SongsScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortKey>("artist");
-  const [dir, setDir] = useState<"asc" | "desc">("asc");
+  const [sort, setSort] = useState<SongSortKey>("artist");
+  const [dir, setDir] = useState<SongSortDirection>("asc");
   const [playlistName, setPlaylistName] = useState<string | null>(null);
   const [allPlaylists, setAllPlaylists] = useState<Playlist[]>([]);
   const [menu, setMenu] = useState<{
@@ -183,45 +187,17 @@ export default function SongsScreen({
     setPlaylistName(match?.name ?? null);
   }, [playlistId, allPlaylists]);
 
-  const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const filtered = q
-      ? rows.filter(
-          (r) =>
-            r.title.toLowerCase().includes(q) ||
-            r.artist.toLowerCase().includes(q) ||
-            (r.album ?? "").toLowerCase().includes(q),
-        )
-      : rows;
-    const mul = dir === "asc" ? 1 : -1;
-    const pick = (r: LibraryTrack): string =>
-      (sort === "title"
-        ? r.title
-        : sort === "album"
-          ? r.album ?? ""
-          : r.artist
-      ).toLowerCase();
-    return [...filtered].sort((a, b) => {
-      const av = pick(a);
-      const bv = pick(b);
-      if (av < bv) return -1 * mul;
-      if (av > bv) return 1 * mul;
-      return 0;
-    });
-  }, [rows, search, sort, dir]);
+  const visible = useMemo(
+    () => filterAndSortTracks(rows, search, sort, dir),
+    [rows, search, sort, dir],
+  );
 
   const playFrom = (startIndex: number) => {
     // Strip unavailable rows from the queue so next/prev can't land
     // on a dead end. startIndex is into `visible`; remap it to the
     // same track's position in the filtered queue.
-    const queue: Array<LibraryTrack & { albumId: string | null }> = [];
-    let adjusted = 0;
-    visible.forEach((t, i) => {
-      if (t.availability === "unavailable") return;
-      if (i === startIndex) adjusted = queue.length;
-      queue.push({ ...t, albumId: t.album_id });
-    });
-    if (queue.length) play(queue, adjusted);
+    const selection = createPlayableQueue(visible, startIndex);
+    if (selection.queue.length) play(selection.queue, selection.startIndex);
   };
 
   const handleLikeToggle = async (track: LibraryTrack) => {
@@ -249,7 +225,7 @@ export default function SongsScreen({
     if (nextLiked) onPlaylistsChanged();
   };
 
-  const clickHeader = (key: SortKey) => {
+  const clickHeader = (key: SongSortKey) => {
     if (key === sort) setDir(dir === "asc" ? "desc" : "asc");
     else {
       setSort(key);
@@ -257,7 +233,7 @@ export default function SongsScreen({
     }
   };
 
-  const arrow = (key: SortKey) =>
+  const arrow = (key: SongSortKey) =>
     sort === key ? (dir === "asc" ? " ↑" : " ↓") : "";
 
   const reloadTable = () => setTableVersion((v) => v + 1);
