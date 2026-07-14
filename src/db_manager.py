@@ -578,31 +578,10 @@ class DatabaseManager:
         its id. Auto-called on the first heart-toggle so users who never
         like a track don't get an empty playlist cluttering their sidebar.
         """
-        from .smart_playlist import serialize
-
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT playlist_id FROM playlists WHERE playlist_id = ?",
-            (self.LIKED_SONGS_PLAYLIST_ID,),
+        return self._playlist_repository.ensure_liked_songs_playlist(
+            self.LIKED_SONGS_PLAYLIST_ID,
+            self.LIKED_SONGS_PLAYLIST_NAME,
         )
-        row = cursor.fetchone()
-        if row is not None:
-            cursor.close()
-            return self.LIKED_SONGS_PLAYLIST_ID
-
-        rules = serialize({
-            "match": "all",
-            "rules": [{"field": "is_liked", "op": "equals", "value": True}],
-        })
-        cursor.execute(
-            "INSERT INTO playlists "
-            "(playlist_id, name, spotify_url, updated_at, smart_rules) "
-            "VALUES (?, ?, '', CURRENT_TIMESTAMP, ?)",
-            (self.LIKED_SONGS_PLAYLIST_ID, self.LIKED_SONGS_PLAYLIST_NAME, rules),
-        )
-        self.conn.commit()
-        cursor.close()
-        return self.LIKED_SONGS_PLAYLIST_ID
 
     def get_track_sources(self, mbid: str) -> Optional[dict]:
         """Return both candidate on-disk paths for a track, or None if
@@ -773,14 +752,7 @@ class DatabaseManager:
         re-queuing the same album on every tick."""
         if not mbid:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM download_queue WHERE mbid_guess = ? LIMIT 1",
-            (mbid,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return row is not None
+        return self._download_repository.has_queued_mbid(mbid)
 
     def get_active_download_id(
         self, mbid: Optional[str], search_query: str
@@ -789,52 +761,19 @@ class DatabaseManager:
         ``None``. Matches on ``mbid_guess`` first, then a normalized
         ``search_query``. Lets a contribution attach to an in-flight download
         instead of double-queuing (and being mistaken for a failed attempt)."""
-        cursor = self.conn.cursor()
-        try:
-            if mbid:
-                cursor.execute(
-                    "SELECT id FROM download_queue WHERE mbid_guess = ? "
-                    "AND status IN ('pending', 'failed') ORDER BY id LIMIT 1",
-                    (mbid,),
-                )
-                row = cursor.fetchone()
-                if row:
-                    return row["id"]
-            target = self._normalize_query(search_query)
-            if not target:
-                return None
-            cursor.execute(
-                "SELECT id, search_query FROM download_queue "
-                "WHERE status IN ('pending', 'failed')"
-            )
-            for row in cursor.fetchall():
-                if self._normalize_query(row["search_query"]) == target:
-                    return row["id"]
-            return None
-        except sqlite3.Error:
-            return None
-        finally:
-            cursor.close()
+        return self._download_repository.get_active_download_id(
+            mbid,
+            search_query,
+            self._normalize_query,
+        )
 
     def is_download_queued(self, search_query: str) -> bool:
         """Return True if a normalized form of ``search_query`` is already
         pending or failed in the queue."""
-        target = self._normalize_query(search_query)
-        if not target:
-            return False
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT search_query FROM download_queue WHERE status IN ('pending', 'failed')"
-            )
-            for row in cursor.fetchall():
-                if self._normalize_query(row["search_query"]) == target:
-                    cursor.close()
-                    return True
-            cursor.close()
-            return False
-        except sqlite3.Error:
-            return False
+        return self._download_repository.is_queued(
+            search_query,
+            self._normalize_query,
+        )
 
     # --- Contributions (master side) ---
     def create_contribution(
@@ -956,27 +895,14 @@ class DatabaseManager:
         # ON CONFLICT DO UPDATE (not INSERT OR REPLACE) so the row's identity
         # is preserved — REPLACE would delete + reinsert and cascade-wipe
         # playlist_tracks rows.
-        sql = """
-        INSERT INTO playlists (playlist_id, name, spotify_url, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(playlist_id) DO UPDATE SET
-            name = excluded.name,
-            spotify_url = excluded.spotify_url,
-            updated_at = CURRENT_TIMESTAMP
-        """
-        cursor = self.conn.cursor()
-        cursor.execute(sql, (playlist.playlist_id, playlist.name, playlist.spotify_url))
-        self.conn.commit()
-        cursor.close()
+        self._playlist_repository.add_or_update(
+            playlist.playlist_id,
+            playlist.name,
+            playlist.spotify_url,
+        )
 
     def _bump_playlist_updated_at(self, playlist_id: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE playlists SET updated_at = CURRENT_TIMESTAMP WHERE playlist_id = ?",
-            (playlist_id,),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._playlist_repository.bump_updated_at(playlist_id)
 
     def create_playlist(self, name: str, smart_rules: Optional[str] = None) -> str:
         """Insert a new playlist with a generated UUID and return it.
@@ -989,15 +915,7 @@ class DatabaseManager:
         if not name or not name.strip():
             raise ValueError("playlist name is required")
         pid = uuid.uuid4().hex
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO playlists "
-            "(playlist_id, name, spotify_url, updated_at, smart_rules) "
-            "VALUES (?, ?, '', CURRENT_TIMESTAMP, ?)",
-            (pid, name.strip(), smart_rules),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._playlist_repository.create(pid, name.strip(), smart_rules)
         return pid
 
     def update_playlist_smart_rules(
@@ -1009,16 +927,10 @@ class DatabaseManager:
         """
         if not playlist_id:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE playlists SET smart_rules = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE playlist_id = ?",
-            (smart_rules, playlist_id),
+        return self._playlist_repository.update_smart_rules(
+            playlist_id,
+            smart_rules,
         )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
 
     def unlink_track_from_playlist(self, playlist_id: str, track_mbid: str) -> bool:
         """Remove a track from a playlist's membership.
@@ -1029,18 +941,11 @@ class DatabaseManager:
         """
         if not playlist_id or not track_mbid:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "DELETE FROM playlist_tracks "
-            "WHERE playlist_id = ? AND track_mbid = ?",
-            (playlist_id, track_mbid),
+        return self._playlist_repository.unlink_track(
+            playlist_id,
+            track_mbid,
+            lambda value: self._bump_playlist_updated_at(value),
         )
-        removed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        if removed:
-            self._bump_playlist_updated_at(playlist_id)
-        return removed
 
     def replace_playlist_membership(
         self, playlist_id: str, track_mbids: List[str]
@@ -1058,39 +963,10 @@ class DatabaseManager:
         """
         if not playlist_id:
             return 0
-        known = {m.strip() for m in (track_mbids or []) if m and m.strip()}
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(
-                "SELECT mbid FROM tracks WHERE mbid IN ({})".format(
-                    ",".join("?" for _ in known)
-                ),
-                tuple(known),
-            ) if known else cursor.execute("SELECT mbid FROM tracks WHERE 0")
-            existing = {r["mbid"] for r in cursor.fetchall()}
-            valid_ordered = [
-                m.strip() for m in (track_mbids or [])
-                if m and m.strip() and m.strip() in existing
-            ]
-            cursor.execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?",
-                (playlist_id,),
-            )
-            for order, mbid in enumerate(valid_ordered):
-                cursor.execute(
-                    "INSERT INTO playlist_tracks "
-                    "(playlist_id, track_mbid, track_order) VALUES (?, ?, ?)",
-                    (playlist_id, mbid, order),
-                )
-            cursor.execute(
-                "UPDATE playlists SET updated_at = CURRENT_TIMESTAMP "
-                "WHERE playlist_id = ?",
-                (playlist_id,),
-            )
-            self.conn.commit()
-        finally:
-            cursor.close()
-        return len(valid_ordered)
+        return self._playlist_repository.replace_membership(
+            playlist_id,
+            track_mbids or [],
+        )
 
     def get_playlist(self, playlist_id: str) -> Optional[Playlist]:
         """Fetch one playlist by id, excluding soft-deleted rows."""
@@ -1105,16 +981,7 @@ class DatabaseManager:
         """
         if not playlist_id or not name or not name.strip():
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE playlist_id = ? AND deleted_at IS NULL",
-            (name.strip(), playlist_id),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._playlist_repository.rename(playlist_id, name.strip())
 
     def queue_download(self, item: DownloadItem) -> int:
         return self._download_repository.queue(
@@ -1145,13 +1012,7 @@ class DatabaseManager:
         return self._download_repository.active_count()
 
     def mark_track_synced(self, mbid: str, dap_path: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET synced_to_dap = 1, dap_path = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
-            (dap_path, mbid),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._sync_repository.mark_track_synced(mbid, dap_path)
 
     def get_all_tracks(self, local_only: bool = False, include_orphans: bool = False):
         sql = "SELECT * FROM tracks"
@@ -1208,32 +1069,12 @@ class DatabaseManager:
     def soft_delete_playlist(self, playlist_id: str) -> bool:
         if not playlist_id:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, "
-            "updated_at = CURRENT_TIMESTAMP "
-            "WHERE playlist_id = ? AND deleted_at IS NULL",
-            (playlist_id,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._playlist_repository.soft_delete(playlist_id)
 
     def restore_playlist(self, playlist_id: str) -> bool:
         if not playlist_id:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE playlists SET deleted_at = NULL, "
-            "updated_at = CURRENT_TIMESTAMP "
-            "WHERE playlist_id = ? AND deleted_at IS NOT NULL",
-            (playlist_id,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._playlist_repository.restore(playlist_id)
 
     def purge_track(self, mbid: str) -> bool:
         """Hard-delete a track row. Only permitted on already-soft-deleted
@@ -1260,16 +1101,7 @@ class DatabaseManager:
         Only permitted on already-soft-deleted rows."""
         if not playlist_id:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "DELETE FROM playlists "
-            "WHERE playlist_id = ? AND deleted_at IS NOT NULL",
-            (playlist_id,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._playlist_repository.purge(playlist_id)
 
     def get_orphan_tracks(self) -> List[dict]:
         """Soft-deleted tracks, for the orphan cleanup UI.
@@ -1295,19 +1127,7 @@ class DatabaseManager:
         — useful because purging the playlist will cascade them away, so
         the UI can warn when the count is non-zero.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT p.playlist_id, p.name, p.deleted_at, "
-            "       COUNT(pt.track_mbid) AS track_count "
-            "FROM playlists p "
-            "LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id "
-            "WHERE p.deleted_at IS NOT NULL "
-            "GROUP BY p.playlist_id "
-            "ORDER BY p.deleted_at DESC"
-        )
-        rows = [dict(row) for row in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._playlist_repository.get_orphans()
 
     def get_catalog_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Return catalog-shape rows (device-agnostic fields + updated_at).
@@ -1319,21 +1139,7 @@ class DatabaseManager:
         device-local file fact — likes set on the master should appear on
         every satellite after the next sync tick.
         """
-        sql = (
-            "SELECT mbid, title, artist, album, isrc, release_mbid, "
-            "track_number, disc_number, is_liked, updated_at, deleted_at "
-            "FROM tracks"
-        )
-        params: tuple = ()
-        if since_iso:
-            sql += " WHERE updated_at > ?"
-            params = (since_iso,)
-        sql += " ORDER BY updated_at ASC"
-        cursor = self.conn.cursor()
-        cursor.execute(sql, params)
-        rows = [dict(row) for row in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._sync_repository.get_catalog_since(since_iso)
 
     def apply_catalog_row(self, row: dict) -> str:
         """Upsert a catalog row pulled from the master, preserving device-local
@@ -1345,47 +1151,7 @@ class DatabaseManager:
         mbid = (row or {}).get("mbid")
         if not mbid:
             return "skipped"
-
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT 1 FROM tracks WHERE mbid = ?", (mbid,))
-        existed = cursor.fetchone() is not None
-
-        sql = """
-        INSERT INTO tracks
-            (mbid, title, artist, album, isrc, release_mbid,
-             track_number, disc_number, is_liked, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
-        ON CONFLICT(mbid) DO UPDATE SET
-            title = excluded.title,
-            artist = excluded.artist,
-            album = excluded.album,
-            isrc = excluded.isrc,
-            release_mbid = excluded.release_mbid,
-            track_number = excluded.track_number,
-            disc_number = excluded.disc_number,
-            is_liked = excluded.is_liked,
-            updated_at = excluded.updated_at,
-            deleted_at = excluded.deleted_at
-        """
-        cursor.execute(
-            sql,
-            (
-                mbid,
-                row.get("title") or "Unknown Title",
-                row.get("artist") or "Unknown Artist",
-                row.get("album"),
-                row.get("isrc"),
-                row.get("release_mbid"),
-                row.get("track_number") or 0,
-                row.get("disc_number") or 1,
-                1 if row.get("is_liked") else 0,
-                row.get("updated_at"),
-                row.get("deleted_at"),
-            ),
-        )
-        self.conn.commit()
-        cursor.close()
-        return "updated" if existed else "inserted"
+        return self._sync_repository.apply_catalog_row(row)
 
     def apply_playlist_row(self, row: dict) -> str:
         """Upsert a playlist (with its membership) pulled from the master.
@@ -1400,52 +1166,7 @@ class DatabaseManager:
         pid = (row or {}).get("playlist_id")
         if not pid:
             return "skipped"
-
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT 1 FROM playlists WHERE playlist_id = ?", (pid,))
-        existed = cursor.fetchone() is not None
-
-        cursor.execute(
-            """
-            INSERT INTO playlists
-                (playlist_id, name, spotify_url, updated_at, deleted_at, smart_rules)
-            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?)
-            ON CONFLICT(playlist_id) DO UPDATE SET
-                name = excluded.name,
-                spotify_url = excluded.spotify_url,
-                updated_at = excluded.updated_at,
-                deleted_at = excluded.deleted_at,
-                smart_rules = excluded.smart_rules
-            """,
-            (
-                pid,
-                row.get("name") or "Untitled Playlist",
-                row.get("spotify_url") or "",
-                row.get("updated_at"),
-                row.get("deleted_at"),
-                row.get("smart_rules"),
-            ),
-        )
-
-        # Replace membership atomically. Tracks the satellite hasn't synced
-        # yet are silently dropped — WHERE EXISTS guards the FK so we don't
-        # raise on rows referencing unknown MBIDs. They'll appear on a
-        # subsequent playlist sync once the track delta has caught up.
-        cursor.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (pid,))
-        for entry in row.get("tracks") or []:
-            mbid = entry.get("track_mbid") if isinstance(entry, dict) else None
-            if not mbid:
-                continue
-            order = entry.get("track_order", 0) if isinstance(entry, dict) else 0
-            cursor.execute(
-                "INSERT OR IGNORE INTO playlist_tracks "
-                "(playlist_id, track_mbid, track_order) "
-                "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM tracks WHERE mbid = ?)",
-                (pid, mbid, order, mbid),
-            )
-        self.conn.commit()
-        cursor.close()
-        return "updated" if existed else "inserted"
+        return self._playlist_repository.apply_row(row)
 
     def replace_device_inventory(self, device_id: str, items: List[dict]) -> int:
         """Replace the recorded inventory for ``device_id`` in one transaction.
@@ -1613,35 +1334,7 @@ class DatabaseManager:
         (NULLs if the track row is gone). The UI treats those as
         "(unknown)" rather than dropping them silently.
         """
-        cursor = self.conn.cursor()
-        params: tuple
-        if since_iso:
-            sql = (
-                "SELECT pe.track_mbid AS mbid, t.title, t.artist, t.album, "
-                "       COUNT(*) AS plays "
-                "FROM play_events pe "
-                "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
-                "WHERE pe.played_at >= ? "
-                "GROUP BY pe.track_mbid "
-                "ORDER BY plays DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE "
-                "LIMIT ?"
-            )
-            params = (since_iso, int(limit))
-        else:
-            sql = (
-                "SELECT pe.track_mbid AS mbid, t.title, t.artist, t.album, "
-                "       COUNT(*) AS plays "
-                "FROM play_events pe "
-                "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
-                "GROUP BY pe.track_mbid "
-                "ORDER BY plays DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE "
-                "LIMIT ?"
-            )
-            params = (int(limit),)
-        cursor.execute(sql, params)
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._listening_repository.top_tracks_since(since_iso, limit)
 
     def top_artists_since(
         self, since_iso: Optional[str] = None, limit: int = 20
@@ -1655,35 +1348,7 @@ class DatabaseManager:
         purged drop out of this view (the artist is unknown); they still
         count toward the global ``play_count_since`` total.
         """
-        cursor = self.conn.cursor()
-        params: tuple
-        if since_iso:
-            sql = (
-                "SELECT t.artist, COUNT(*) AS plays, "
-                "       COUNT(DISTINCT pe.track_mbid) AS distinct_tracks "
-                "FROM play_events pe "
-                "JOIN tracks t ON t.mbid = pe.track_mbid "
-                "WHERE pe.played_at >= ? "
-                "GROUP BY t.artist "
-                "ORDER BY plays DESC, t.artist COLLATE NOCASE "
-                "LIMIT ?"
-            )
-            params = (since_iso, int(limit))
-        else:
-            sql = (
-                "SELECT t.artist, COUNT(*) AS plays, "
-                "       COUNT(DISTINCT pe.track_mbid) AS distinct_tracks "
-                "FROM play_events pe "
-                "JOIN tracks t ON t.mbid = pe.track_mbid "
-                "GROUP BY t.artist "
-                "ORDER BY plays DESC, t.artist COLLATE NOCASE "
-                "LIMIT ?"
-            )
-            params = (int(limit),)
-        cursor.execute(sql, params)
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._listening_repository.top_artists_since(since_iso, limit)
 
     def wrapped_summary(self, year: int) -> dict:
         """Year-in-review aggregations powering the Wrapped screen.
@@ -1701,128 +1366,11 @@ class DatabaseManager:
             raise ValueError(f"unreasonable year: {year!r}")
         since = f"{year}-01-01 00:00:00"
         until = f"{year}-12-31 23:59:59"
-
-        c = self.conn.cursor()
-
-        # Plays + listening time across the same window. SUM coalesces
-        # to 0 when every row is NULL; the count of NULL rows feeds the
-        # has_legacy_rows flag below.
-        c.execute(
-            "SELECT COUNT(*) AS total, "
-            "       COALESCE(SUM(listened_ms), 0) AS total_ms, "
-            "       SUM(CASE WHEN listened_ms IS NULL THEN 1 ELSE 0 END) "
-            "         AS legacy_rows "
-            "FROM play_events WHERE played_at BETWEEN ? AND ?",
-            (since, until),
+        return self._listening_repository.wrapped_summary(
+            year,
+            since,
+            until,
         )
-        head = c.fetchone()
-        total_plays = int(head["total"] or 0)
-        total_ms = int(head["total_ms"] or 0)
-        has_legacy_rows = bool(head["legacy_rows"] or 0)
-
-        # Top track / artist / album — one row each, joined to tracks
-        # so the UI doesn't need a second hop for display copy.
-        c.execute(
-            "SELECT t.mbid, t.title, t.artist, t.album, COUNT(*) AS plays "
-            "FROM play_events pe LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
-            "WHERE pe.played_at BETWEEN ? AND ? "
-            "GROUP BY pe.track_mbid ORDER BY plays DESC LIMIT 1",
-            (since, until),
-        )
-        top_track_row = c.fetchone()
-        top_track = dict(top_track_row) if top_track_row else None
-
-        c.execute(
-            "SELECT t.artist, COUNT(*) AS plays, "
-            "       COUNT(DISTINCT pe.track_mbid) AS distinct_tracks "
-            "FROM play_events pe LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
-            "WHERE pe.played_at BETWEEN ? AND ? AND t.artist IS NOT NULL "
-            "GROUP BY t.artist ORDER BY plays DESC LIMIT 1",
-            (since, until),
-        )
-        top_artist_row = c.fetchone()
-        top_artist = dict(top_artist_row) if top_artist_row else None
-
-        c.execute(
-            "SELECT "
-            "  COALESCE(NULLIF(t.release_mbid, ''), "
-            "           t.album || '|' || t.artist) AS album_id, "
-            "  MAX(t.album) AS album, "
-            "  MAX(t.artist) AS artist, "
-            "  COUNT(*) AS plays "
-            "FROM play_events pe JOIN tracks t ON t.mbid = pe.track_mbid "
-            "WHERE pe.played_at BETWEEN ? AND ? AND t.album IS NOT NULL "
-            "GROUP BY album_id ORDER BY plays DESC LIMIT 1",
-            (since, until),
-        )
-        top_album_row = c.fetchone()
-        top_album = dict(top_album_row) if top_album_row else None
-
-        # Busiest day, top hour, first play. Each is a single-row pick.
-        c.execute(
-            "SELECT date(played_at) AS date, COUNT(*) AS plays "
-            "FROM play_events WHERE played_at BETWEEN ? AND ? "
-            "GROUP BY date ORDER BY plays DESC, date LIMIT 1",
-            (since, until),
-        )
-        busiest_row = c.fetchone()
-        busiest_day = dict(busiest_row) if busiest_row else None
-
-        c.execute(
-            "SELECT CAST(strftime('%H', played_at) AS INTEGER) AS hour, "
-            "       COUNT(*) AS plays "
-            "FROM play_events WHERE played_at BETWEEN ? AND ? "
-            "GROUP BY hour ORDER BY plays DESC, hour LIMIT 1",
-            (since, until),
-        )
-        hour_row = c.fetchone()
-        top_hour = int(hour_row["hour"]) if hour_row else None
-
-        c.execute(
-            "SELECT pe.played_at, t.title, t.artist "
-            "FROM play_events pe LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
-            "WHERE pe.played_at BETWEEN ? AND ? "
-            "ORDER BY pe.played_at ASC, pe.id ASC LIMIT 1",
-            (since, until),
-        )
-        first_row = c.fetchone()
-        first_play = dict(first_row) if first_row else None
-
-        # Longest consecutive-day streak in the window. Classic
-        # gaps-and-islands trick: distinct days minus their
-        # row-number-by-date gives a constant per consecutive run;
-        # group by that constant and take the longest. Window funcs
-        # need SQLite 3.25+ which has been default on macOS / Linux
-        # for years and is bundled with Python's sqlite3.
-        c.execute(
-            "WITH days AS ( "
-            "  SELECT DISTINCT date(played_at) AS d FROM play_events "
-            "  WHERE played_at BETWEEN ? AND ? "
-            "), runs AS ( "
-            "  SELECT d, "
-            "         julianday(d) - ROW_NUMBER() OVER (ORDER BY d) AS grp "
-            "  FROM days "
-            ") SELECT COUNT(*) AS streak FROM runs "
-            "GROUP BY grp ORDER BY streak DESC LIMIT 1",
-            (since, until),
-        )
-        streak_row = c.fetchone()
-        longest_streak_days = int(streak_row["streak"]) if streak_row else 0
-
-        c.close()
-        return {
-            "year": year,
-            "total_plays": total_plays,
-            "total_listening_time_ms": total_ms,
-            "has_legacy_rows": has_legacy_rows,
-            "top_track": top_track,
-            "top_artist": top_artist,
-            "top_album": top_album,
-            "busiest_day": busiest_day,
-            "top_hour": top_hour,
-            "first_play": first_play,
-            "longest_streak_days": longest_streak_days,
-        }
 
     def recent_plays(self, limit: int = 20) -> List[dict]:
         """Reverse-chronological feed of recent play events. Joined to
@@ -1833,21 +1381,7 @@ class DatabaseManager:
         Home screen's "Jump back in" row can deep-link to the album
         detail without a second lookup.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT pe.id, pe.track_mbid AS mbid, pe.played_at, pe.source, "
-            "       t.title, t.artist, t.album, "
-            "       COALESCE(NULLIF(t.release_mbid, ''), "
-            "                t.album || '|' || t.artist) AS album_id "
-            "FROM play_events pe "
-            "LEFT JOIN tracks t ON t.mbid = pe.track_mbid "
-            "ORDER BY pe.played_at DESC, pe.id DESC "
-            "LIMIT ?",
-            (int(limit),),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._listening_repository.recent_plays(limit)
 
     # --- Lyrics (Stage 13) -------------------------------------------------
 
@@ -1890,36 +1424,7 @@ class DatabaseManager:
         mbid = (row or {}).get("track_mbid")
         if not mbid:
             return "skipped"
-        incoming_ts = row.get("fetched_at")
-        if incoming_ts:
-            cur = self.conn.execute(
-                "SELECT fetched_at FROM lyrics WHERE track_mbid = ?",
-                (mbid,),
-            ).fetchone()
-            if cur and cur["fetched_at"] and cur["fetched_at"] >= incoming_ts:
-                return "stale"
-
-        existed = self.conn.execute(
-            "SELECT 1 FROM lyrics WHERE track_mbid = ?", (mbid,)
-        ).fetchone() is not None
-        self.conn.execute(
-            "INSERT INTO lyrics (track_mbid, lrc, synced, source, fetched_at) "
-            "VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP)) "
-            "ON CONFLICT(track_mbid) DO UPDATE SET "
-            "  lrc = excluded.lrc, "
-            "  synced = excluded.synced, "
-            "  source = excluded.source, "
-            "  fetched_at = excluded.fetched_at",
-            (
-                mbid,
-                row.get("lrc"),
-                1 if row.get("synced") else 0,
-                row.get("source") or "lrclib",
-                incoming_ts,
-            ),
-        )
-        self.conn.commit()
-        return "updated" if existed else "inserted"
+        return self._metadata_repository.apply_lyrics_row(row)
 
     def upsert_lyrics(
         self,
@@ -1938,17 +1443,12 @@ class DatabaseManager:
             raise ValueError("track_mbid is required")
         if source not in ("lrclib", "manual"):
             raise ValueError(f"unknown lyrics source: {source!r}")
-        self.conn.execute(
-            "INSERT INTO lyrics (track_mbid, lrc, synced, source, fetched_at) "
-            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(track_mbid) DO UPDATE SET "
-            "  lrc = excluded.lrc, "
-            "  synced = excluded.synced, "
-            "  source = excluded.source, "
-            "  fetched_at = CURRENT_TIMESTAMP",
-            (track_mbid, lrc, 1 if synced else 0, source),
+        self._metadata_repository.upsert_lyrics(
+            track_mbid,
+            lrc,
+            synced,
+            source,
         )
-        self.conn.commit()
 
     # --- Artist tags (Stage 14a) ------------------------------------------
 
@@ -1977,23 +1477,9 @@ class DatabaseManager:
         ``max_age_days``. Lets a resumed backfill skip the artists
         we've already covered.
         """
-        cur = self.conn.execute(
-            """
-            SELECT DISTINCT t.artist FROM tracks t
-            WHERE t.deleted_at IS NULL
-              AND t.artist IS NOT NULL AND t.artist != ''
-              AND NOT EXISTS (
-                  SELECT 1 FROM artist_tags at
-                  WHERE at.artist_name = t.artist
-                    AND at.fetched_at > datetime('now', ?)
-              )
-            ORDER BY t.artist COLLATE NOCASE
-            """,
-            (f"-{int(max_age_days)} days",),
+        return self._metadata_repository.get_artists_needing_tags(
+            max_age_days
         )
-        rows = [r["artist"] for r in cur.fetchall()]
-        cur.close()
-        return rows
 
     def record_artist_tags(
         self,
@@ -2015,56 +1501,13 @@ class DatabaseManager:
         """
         if not artist_name or not str(artist_name).strip():
             return 0
-        # Sort by weight desc, drop noise, then truncate.
-        cleaned: List[tuple] = []
-        seen_tags: set = set()
-        for entry in sorted(
-            tags or [],
-            key=lambda t: -int(t.get("weight") or 0),
-        ):
-            tag = (entry.get("tag") or "").strip()
-            if not tag:
-                continue
-            tag_lower = tag.lower()
-            if tag_lower in self._MB_NOISE_TAGS:
-                continue
-            if tag_lower in seen_tags:
-                continue  # MB occasionally returns case-variant dupes
-            seen_tags.add(tag_lower)
-            weight = int(entry.get("weight") or 1)
-            cleaned.append((tag, weight))
-            if len(cleaned) >= top_n:
-                break
-
-        cur = self.conn.cursor()
-        try:
-            cur.execute(
-                "DELETE FROM artist_tags WHERE artist_name = ?",
-                (artist_name,),
-            )
-            for tag, weight in cleaned:
-                cur.execute(
-                    "INSERT INTO artist_tags "
-                    "(artist_name, mbid, tag, weight, fetched_at) "
-                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (artist_name, mbid, tag, weight),
-                )
-            if not cleaned:
-                # Sentinel row records "we tried this name and got
-                # nothing useful" so the incremental backfill can
-                # skip it next pass. tag='' is filtered out of the
-                # display queries below — only the freshness check
-                # sees it.
-                cur.execute(
-                    "INSERT INTO artist_tags "
-                    "(artist_name, mbid, tag, weight, fetched_at) "
-                    "VALUES (?, ?, '', 0, CURRENT_TIMESTAMP)",
-                    (artist_name, mbid),
-                )
-            self.conn.commit()
-        finally:
-            cur.close()
-        return len(cleaned)
+        return self._metadata_repository.record_artist_tags(
+            artist_name,
+            mbid,
+            tags,
+            top_n,
+            self._MB_NOISE_TAGS,
+        )
 
     def get_artist_tags_since(
         self, since_iso: Optional[str] = None,
@@ -2085,60 +1528,7 @@ class DatabaseManager:
         request closes that race; ``apply_artist_tags_row`` makes the replay
         idempotent by comparing equal-timestamp snapshot content.
         """
-        sql = (
-            "SELECT artist_name, mbid, tag, weight, fetched_at "
-            "FROM artist_tags"
-        )
-        params: tuple = ()
-        if since_iso:
-            sql += (
-                " WHERE artist_name IN ("
-                "   SELECT artist_name FROM artist_tags "
-                "   GROUP BY artist_name HAVING MAX(fetched_at) >= ?"
-                " )"
-            )
-            params = (since_iso,)
-        sql += (
-            " ORDER BY artist_name COLLATE NOCASE, "
-            "fetched_at DESC, weight DESC, tag COLLATE NOCASE"
-        )
-
-        cur = self.conn.execute(sql, params)
-        raw_rows = [dict(row) for row in cur.fetchall()]
-        cur.close()
-
-        grouped: dict = {}
-        order: List[str] = []
-        for row in raw_rows:
-            # The table's PK is case-insensitive for artist_name. Preserve
-            # the stored spelling while grouping on the same semantics.
-            key = (row.get("artist_name") or "").casefold()
-            if not key:
-                continue
-            if key not in grouped:
-                order.append(key)
-                grouped[key] = {
-                    "artist_name": row["artist_name"],
-                    "mbid": row.get("mbid"),
-                    "fetched_at": row.get("fetched_at"),
-                    "tags": [],
-                }
-            snapshot = grouped[key]
-            if not snapshot.get("mbid") and row.get("mbid"):
-                snapshot["mbid"] = row["mbid"]
-            fetched_at = row.get("fetched_at")
-            if fetched_at and (
-                not snapshot.get("fetched_at")
-                or fetched_at > snapshot["fetched_at"]
-            ):
-                snapshot["fetched_at"] = fetched_at
-            tag = (row.get("tag") or "").strip()
-            if tag:
-                snapshot["tags"].append({
-                    "tag": tag,
-                    "weight": int(row.get("weight") or 0),
-                })
-        return [grouped[key] for key in order]
+        return self._metadata_repository.get_artist_tags_since(since_iso)
 
     def apply_artist_tags_row(self, row: dict) -> str:
         """Apply one authoritative artist-tag snapshot from the master.
@@ -2150,80 +1540,7 @@ class DatabaseManager:
         artist_name = ((row or {}).get("artist_name") or "").strip()
         if not artist_name:
             return "skipped"
-
-        cleaned: List[tuple] = []
-        seen_tags = set()
-        for entry in row.get("tags") or []:
-            if not isinstance(entry, dict):
-                continue
-            tag = (entry.get("tag") or "").strip()
-            key = tag.casefold()
-            if not tag or key in seen_tags:
-                continue
-            seen_tags.add(key)
-            try:
-                weight = int(entry.get("weight") or 1)
-            except (TypeError, ValueError):
-                weight = 1
-            cleaned.append((tag, weight))
-
-        incoming_ts = row.get("fetched_at")
-        incoming_rows = cleaned or [("", 0)]
-        current_rows = self.conn.execute(
-            "SELECT mbid, tag, weight, fetched_at FROM artist_tags "
-            "WHERE artist_name = ? COLLATE NOCASE",
-            (artist_name,),
-        ).fetchall()
-        existed = bool(current_rows)
-        if incoming_ts and existed:
-            current_ts = max(
-                current["fetched_at"] or "" for current in current_rows
-            )
-            if current_ts > incoming_ts:
-                return "stale"
-            if current_ts == incoming_ts:
-                current_content = sorted(
-                    (current["tag"], int(current["weight"] or 0))
-                    for current in current_rows
-                )
-                incoming_content = sorted(incoming_rows)
-                current_mbid = current_rows[0]["mbid"]
-                if (
-                    current_content == incoming_content
-                    and current_mbid == row.get("mbid")
-                ):
-                    # Inclusive cursor overlap replays the exact boundary.
-                    # Identical content is a harmless idempotent no-op, while
-                    # a different snapshot with the same second must replace
-                    # it (it may have committed just after the prior query).
-                    return "stale"
-
-        cur = self.conn.cursor()
-        try:
-            cur.execute(
-                "DELETE FROM artist_tags WHERE artist_name = ? COLLATE NOCASE",
-                (artist_name,),
-            )
-            for tag, weight in incoming_rows:
-                cur.execute(
-                    "INSERT INTO artist_tags "
-                    "(artist_name, mbid, tag, weight, fetched_at) "
-                    "VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
-                    (
-                        artist_name,
-                        row.get("mbid"),
-                        tag,
-                        weight,
-                        incoming_ts,
-                    ),
-                )
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-        finally:
-            cur.close()
-        return "updated" if existed else "inserted"
+        return self._metadata_repository.apply_artist_tags_row(row)
 
     def get_top_tags_for_artist(
         self, artist_name: str, limit: int = 5,
@@ -2235,15 +1552,10 @@ class DatabaseManager:
         check, not the display."""
         if not artist_name:
             return []
-        cur = self.conn.execute(
-            "SELECT tag, weight FROM artist_tags "
-            "WHERE artist_name = ? COLLATE NOCASE AND tag != '' "
-            "ORDER BY weight DESC, tag COLLATE NOCASE LIMIT ?",
-            (artist_name, int(limit)),
+        return self._metadata_repository.get_top_tags_for_artist(
+            artist_name,
+            limit,
         )
-        rows = [dict(r) for r in cur.fetchall()]
-        cur.close()
-        return rows
 
     def get_artists_by_tag(
         self, tag: str, limit: int = 50,
@@ -2252,15 +1564,7 @@ class DatabaseManager:
         Powers "more like this" / Daily Mix clustering lookups."""
         if not tag:
             return []
-        cur = self.conn.execute(
-            "SELECT artist_name, weight FROM artist_tags "
-            "WHERE tag = ? COLLATE NOCASE AND tag != '' "
-            "ORDER BY weight DESC, artist_name COLLATE NOCASE LIMIT ?",
-            (tag, int(limit)),
-        )
-        rows = [dict(r) for r in cur.fetchall()]
-        cur.close()
-        return rows
+        return self._metadata_repository.get_artists_by_tag(tag, limit)
 
     # Columns used by the playable-row serializer (web_server's
     # _public_track_row). Centralized so the radio + daily-mix queries
@@ -2288,17 +1592,11 @@ class DatabaseManager:
         names = [n for n in artist_names if n]
         if not names:
             return []
-        placeholders = ",".join("?" for _ in names)
-        cur = self.conn.execute(
-            f"SELECT {self._PLAYABLE_TRACK_COLS} FROM tracks "
-            f"WHERE artist IN ({placeholders}) COLLATE NOCASE "
-            "  AND deleted_at IS NULL "
-            "ORDER BY RANDOM() LIMIT ?",
-            (*names, int(limit)),
+        return self._metadata_repository.get_random_tracks_for_artists(
+            names,
+            limit,
+            self._PLAYABLE_TRACK_COLS,
         )
-        rows = [dict(r) for r in cur.fetchall()]
-        cur.close()
-        return rows
 
     def ensure_system_playlist(
         self,
@@ -2313,18 +1611,10 @@ class DatabaseManager:
         on conflict so a re-generated Daily Mix can shift its display
         copy without churning a separate UPDATE.
         """
-        self.conn.execute(
-            "INSERT INTO playlists "
-            "(playlist_id, name, spotify_url, updated_at, smart_rules) "
-            "VALUES (?, ?, '', CURRENT_TIMESTAMP, NULL) "
-            "ON CONFLICT(playlist_id) DO UPDATE SET "
-            "  name = excluded.name, "
-            "  updated_at = CURRENT_TIMESTAMP, "
-            "  deleted_at = NULL",
-            (playlist_id, name),
+        return self._playlist_repository.ensure_system_playlist(
+            playlist_id,
+            name,
         )
-        self.conn.commit()
-        return playlist_id
 
     def build_artist_radio(
         self,
@@ -2351,55 +1641,20 @@ class DatabaseManager:
         "seed_count": int, "related_count": int}``. The breakdown
         feeds the UI's "Why am I hearing this?" tooltip.
         """
-        import random
         if not artist_name:
             return {
                 "tracks": [], "top_tag": None,
                 "seed_count": 0, "related_count": 0,
             }
-        limit = max(1, min(int(limit), 200))
-        seed_slots = max(1, limit // 3)
-        related_slots = limit - seed_slots
-
-        top_tags = self.get_top_tags_for_artist(artist_name, limit=1)
-        top_tag = top_tags[0]["tag"] if top_tags else None
-
-        cur = self.conn.cursor()
-        try:
-            cur.execute(
-                f"SELECT {self._PLAYABLE_TRACK_COLS} FROM tracks "
-                "WHERE artist = ? COLLATE NOCASE "
-                "  AND deleted_at IS NULL "
-                "ORDER BY RANDOM() LIMIT ?",
-                (artist_name, seed_slots),
-            )
-            seed_rows = [dict(r) for r in cur.fetchall()]
-
-            related_rows: List[dict] = []
-            if top_tag and related_slots > 0:
-                cur.execute(
-                    f"SELECT {self._PLAYABLE_TRACK_COLS} FROM tracks t "
-                    "WHERE deleted_at IS NULL "
-                    "  AND artist != ? COLLATE NOCASE "
-                    "  AND artist IN ( "
-                    "    SELECT artist_name FROM artist_tags "
-                    "    WHERE tag = ? COLLATE NOCASE AND tag != '' "
-                    "  ) "
-                    "ORDER BY RANDOM() LIMIT ?",
-                    (artist_name, top_tag, related_slots),
-                )
-                related_rows = [dict(r) for r in cur.fetchall()]
-        finally:
-            cur.close()
-
-        combined = seed_rows + related_rows
-        random.shuffle(combined)
-        return {
-            "tracks": combined,
-            "top_tag": top_tag,
-            "seed_count": len(seed_rows),
-            "related_count": len(related_rows),
-        }
+        return self._metadata_repository.build_artist_radio(
+            artist_name,
+            limit,
+            self._PLAYABLE_TRACK_COLS,
+            lambda value, limit=5: self.get_top_tags_for_artist(
+                value,
+                limit=limit,
+            ),
+        )
 
     def apply_pushed_playlist_row(self, row: dict) -> str:
         """Apply a playlist pushed from a satellite, using last-writer-wins
@@ -2418,14 +1673,10 @@ class DatabaseManager:
         pid = (row or {}).get("playlist_id")
         if not pid:
             return "skipped"
-        incoming_ts = row.get("updated_at")
-        if incoming_ts:
-            cur = self.conn.execute(
-                "SELECT updated_at FROM playlists WHERE playlist_id = ?", (pid,)
-            ).fetchone()
-            if cur and cur["updated_at"] and cur["updated_at"] >= incoming_ts:
-                return "stale"
-        return self.apply_playlist_row(row)
+        return self._playlist_repository.apply_pushed_row(
+            row,
+            lambda value: self.apply_playlist_row(value),
+        )
 
     def get_sync_state(self, key: str) -> Optional[str]:
         return self._sync_repository.get_state(key)
@@ -2452,36 +1703,9 @@ class DatabaseManager:
         that would require running the rules query per playlist on every
         sidebar render.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT p.playlist_id, p.name, p.updated_at, p.smart_rules,
-                   COUNT(pt.track_mbid) AS track_count
-            FROM playlists p
-            LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id
-            WHERE p.deleted_at IS NULL
-            GROUP BY p.playlist_id
-            ORDER BY p.name COLLATE NOCASE
-            """
+        return self._playlist_repository.list_with_counts(
+            self.LIKED_SONGS_PLAYLIST_ID
         )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        # Liked Songs is the one smart playlist where the always-zero
-        # manual-membership count is a confusing lie — users see "0
-        # tracks" the moment after liking five. The partial index on
-        # is_liked keeps this COUNT fast even on a 50k-track library.
-        # Other smart playlists still report manual-membership 0 (the
-        # existing N-query trade-off documented in the docstring above).
-        for r in rows:
-            if r.get("playlist_id") == self.LIKED_SONGS_PLAYLIST_ID:
-                cur2 = self.conn.cursor()
-                cur2.execute(
-                    "SELECT COUNT(*) FROM tracks "
-                    "WHERE is_liked = 1 AND deleted_at IS NULL"
-                )
-                r["track_count"] = cur2.fetchone()[0]
-                cur2.close()
-        return rows
 
     def list_tracks_filtered(
         self,
@@ -2499,72 +1723,11 @@ class DatabaseManager:
         exists, so rows fall back to the standard library sort. Without a
         playlist_id, the full live library is returned.
         """
-        from .smart_playlist import build_where, parse_stored
-
-        params: tuple
-        clauses = []
-        if local_only:
-            clauses.append("t.local_path IS NOT NULL")
-        if not include_orphans:
-            clauses.append("t.deleted_at IS NULL")
-
-        base_cols = (
-            "t.mbid, t.title, t.artist, t.album, t.track_number, t.disc_number, "
-            "t.local_path, t.dap_path, t.deleted_at, t.is_liked, "
-            "COALESCE(NULLIF(t.release_mbid, ''), t.album || '|' || t.artist) AS album_id"
+        return self._playlist_repository.list_tracks_filtered(
+            playlist_id,
+            local_only,
+            include_orphans,
         )
-
-        library_order = (
-            " ORDER BY t.artist COLLATE NOCASE, "
-            "t.album COLLATE NOCASE, "
-            "COALESCE(t.disc_number, 1), "
-            "COALESCE(t.track_number, 9999), "
-            "t.title COLLATE NOCASE"
-        )
-
-        cursor = self.conn.cursor()
-        try:
-            if playlist_id:
-                cursor.execute(
-                    "SELECT smart_rules FROM playlists WHERE playlist_id = ?",
-                    (playlist_id,),
-                )
-                row = cursor.fetchone()
-                if row is None:
-                    # Unknown playlist — return empty rather than the full
-                    # library so a stale UI link doesn't dump 50k rows.
-                    return []
-                smart = parse_stored(row["smart_rules"])
-
-                if smart is not None:
-                    where, smart_params = build_where(smart)
-                    sql = f"SELECT {base_cols} FROM tracks t WHERE {where}"
-                    if clauses:
-                        sql += " AND " + " AND ".join(clauses)
-                    sql += library_order
-                    params = tuple(smart_params)
-                else:
-                    sql = (
-                        f"SELECT {base_cols} FROM tracks t "
-                        "JOIN playlist_tracks pt ON pt.track_mbid = t.mbid "
-                        "WHERE pt.playlist_id = ?"
-                    )
-                    if clauses:
-                        sql += " AND " + " AND ".join(clauses)
-                    sql += " ORDER BY pt.track_order"
-                    params = (playlist_id,)
-            else:
-                sql = f"SELECT {base_cols} FROM tracks t"
-                if clauses:
-                    sql += " WHERE " + " AND ".join(clauses)
-                sql += library_order
-                params = ()
-
-            cursor.execute(sql, params)
-            rows = [dict(r) for r in cursor.fetchall()]
-        finally:
-            cursor.close()
-        return rows
 
     def get_playlists_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Return playlists changed since ``since_iso`` with their full
@@ -2575,30 +1738,7 @@ class DatabaseManager:
         complete current list — satellites replace, not diff, to handle
         track removals correctly.
         """
-        cursor = self.conn.cursor()
-        if since_iso:
-            cursor.execute(
-                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at, "
-                "smart_rules FROM playlists WHERE updated_at > ? "
-                "ORDER BY updated_at ASC",
-                (since_iso,),
-            )
-        else:
-            cursor.execute(
-                "SELECT playlist_id, name, spotify_url, updated_at, deleted_at, "
-                "smart_rules FROM playlists ORDER BY updated_at ASC"
-            )
-        playlists = [dict(row) for row in cursor.fetchall()]
-
-        for pl in playlists:
-            cursor.execute(
-                "SELECT track_mbid, track_order FROM playlist_tracks "
-                "WHERE playlist_id = ? ORDER BY track_order ASC",
-                (pl["playlist_id"],),
-            )
-            pl["tracks"] = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return playlists
+        return self._playlist_repository.get_since(since_iso)
 
     def get_playlist_tracks(
         self,
@@ -2626,19 +1766,12 @@ class DatabaseManager:
         )
 
     def link_track_to_playlist(self, playlist_id: str, track_mbid: str, order: int):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_mbid, track_order) VALUES (?, ?, ?)",
-            (playlist_id, track_mbid, order),
+        self._playlist_repository.link_track(
+            playlist_id,
+            track_mbid,
+            order,
+            lambda value: self._bump_playlist_updated_at(value),
         )
-        inserted = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        if inserted:
-            # Membership changes are an edit to the playlist from a sync
-            # standpoint; bump the parent's updated_at so the delta feed
-            # picks it up.
-            self._bump_playlist_updated_at(playlist_id)
 
     def get_mbid_to_track_path_map(self):
         cursor = self.conn.cursor()
@@ -2982,27 +2115,12 @@ class DatabaseManager:
         # being chased" not "did the last attempt succeed". The watcher's
         # has_queued_mbid uses the same regardless-of-status semantics
         # for the same reason.
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT DISTINCT mbid_guess FROM download_queue "
-            "WHERE mbid_guess IS NOT NULL AND mbid_guess != ''"
-        )
-        result = {row["mbid_guess"] for row in cursor.fetchall()}
-        cursor.close()
-        return result
+        return self._download_repository.get_queued_release_mbids()
 
     def get_existing_release_mbids(self) -> set:
         # Live tracks only (deleted_at IS NULL) — soft-deleted rows
         # shouldn't make a wanted album look "downloaded".
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT DISTINCT release_mbid FROM tracks "
-            "WHERE release_mbid IS NOT NULL AND release_mbid != '' "
-            "AND deleted_at IS NULL"
-        )
-        result = {row["release_mbid"] for row in cursor.fetchall()}
-        cursor.close()
-        return result
+        return self._download_repository.get_existing_release_mbids()
 
     def delete_succeeded_downloads(self) -> int:
         # 'success' is the schema's terminal-success state (see the
