@@ -1,221 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
-import {
-  contributeAllLocalTracks,
-  fetchConfig,
-  fetchContributions,
-  fetchOutgoingContributions,
-  fetchStatus,
-  type AudioQuality,
-  type BackendStatus,
-  type Contribution,
-} from "../lib/api";
 import { relativeTime } from "../lib/time";
+import {
+  audioQualityLabel,
+  contributionStatusMeta,
+} from "./contributions/model";
+import { useContributionsController } from "./contributions/useContributionsController";
 
 type Props = {
   ready: boolean;
   onOpenSettings: (focusKey?: string) => void;
 };
 
-type DeviceContext = {
-  role: string;
-  masterUrl: string | null;
-  automatic: boolean;
-};
-
-const STATUS_META: Record<
-  string,
-  { label: string; className: string; terminal: boolean }
-> = {
-  attempting: {
-    label: "Master downloading",
-    className: "bg-sky-900/40 text-sky-300",
-    terminal: false,
-  },
-  have_better: {
-    label: "Already matched",
-    className: "bg-violet-900/40 text-violet-300",
-    terminal: true,
-  },
-  satisfied: {
-    label: "Downloaded",
-    className: "bg-emerald-900/40 text-emerald-300",
-    terminal: true,
-  },
-  needs_upload: {
-    label: "Upload requested",
-    className: "bg-amber-900/40 text-amber-300",
-    terminal: false,
-  },
-  ingested: {
-    label: "Ingested",
-    className: "bg-emerald-900/40 text-emerald-300",
-    terminal: true,
-  },
-};
-
-function qualityLabel(quality: AudioQuality | null): string {
-  if (!quality) return "—";
-  const parts: string[] = [];
-  if (quality.ext) parts.push(quality.ext.toUpperCase());
-  parts.push(quality.lossless ? "Lossless" : "Lossy");
-  if (quality.bits_per_sample) parts.push(`${quality.bits_per_sample}-bit`);
-  if (quality.sample_rate) {
-    const khz = quality.sample_rate / 1000;
-    parts.push(`${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`);
-  }
-  if (quality.bitrate) {
-    parts.push(`${Math.round(quality.bitrate / 1000)} kbps`);
-  }
-  return parts.join(" · ");
-}
-
-function statusMeta(status: string) {
-  return (
-    STATUS_META[status] ?? {
-      label: status || "Unknown",
-      className: "bg-neutral-800 text-neutral-300",
-      terminal: false,
-    }
-  );
-}
-
 export default function ContributionsScreen({
   ready,
   onOpenSettings,
 }: Props) {
-  const [items, setItems] = useState<Contribution[] | null>(null);
-  const [outgoingItems, setOutgoingItems] = useState<Contribution[] | null>(null);
-  const [context, setContext] = useState<DeviceContext | null>(null);
-  const [status, setStatus] = useState<BackendStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [configError, setConfigError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const wasRunning = useRef(false);
   const toast = useToast();
-
-  const loadContributions = useCallback(async (showActivity = false) => {
-    if (showActivity) setRefreshing(true);
-    try {
-      const [incoming, outgoing] = await Promise.all([
-        fetchContributions(),
-        fetchOutgoingContributions(),
-      ]);
-      setItems(incoming);
-      setOutgoingItems(outgoing);
-      setError(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      if (showActivity) setRefreshing(false);
-    }
-  }, []);
-
-  const loadContext = useCallback(async () => {
-    try {
-      const payload = await fetchConfig();
-      const rawRole = payload.config.device_role;
-      const rawMasterUrl = payload.config.master_url;
-      const rawAutomatic = payload.config.contribute_to_host;
-      setContext({
-        role:
-          typeof rawRole === "string" && rawRole.trim()
-            ? rawRole.trim()
-            : "satellite",
-        masterUrl:
-          typeof rawMasterUrl === "string" && rawMasterUrl.trim()
-            ? rawMasterUrl.trim()
-            : null,
-        automatic:
-          typeof rawAutomatic === "boolean"
-            ? rawAutomatic
-            : Boolean(rawMasterUrl),
-      });
-      setConfigError(null);
-    } catch (e) {
-      setConfigError(String(e));
-    }
-  }, []);
-
-  // Received offers can change while a satellite is polling or uploading.
-  // Refresh them periodically, and also immediately after any background task
-  // crosses from running to idle.
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-
-    const tickStatus = async () => {
-      try {
-        const next = await fetchStatus();
-        if (cancelled) return;
-        setStatus(next);
-        if (wasRunning.current && !next.running) loadContributions();
-        wasRunning.current = next.running;
-      } catch {
-        // Transient backend startup/network errors retry on the next tick.
-      }
-    };
-
-    loadContext();
-    loadContributions();
-    tickStatus();
-    const statusId = window.setInterval(tickStatus, 2000);
-    const listId = window.setInterval(() => loadContributions(), 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(statusId);
-      window.clearInterval(listId);
-    };
-  }, [ready, loadContext, loadContributions]);
-
-  const handleRefresh = async () => {
-    await Promise.all([
-      loadContributions(true),
-      loadContext(),
-      fetchStatus().then(setStatus).catch(() => undefined),
-    ]);
-  };
-
-  const handleContributeAll = async () => {
-    if (starting) return;
-    setStarting(true);
-    try {
-      const result = await contributeAllLocalTracks();
-      if (!result.success) {
-        toast.show(result.message || "Contribution could not start", "err");
-        return;
-      }
-      toast.show(result.message || "Contribution started.");
-      try {
-        setStatus(await fetchStatus());
-      } catch {
-        // The status poll will catch up in at most two seconds.
-      }
-    } catch (e) {
-      toast.show(`Contribution could not start: ${String(e)}`, "err");
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const running = Boolean(status?.running);
-  const isMaster =
-    context?.role === "master" || context?.role === "standalone";
-  const hasMaster = Boolean(context?.masterUrl);
-  const canContribute =
-    ready && !starting && !running && context !== null && !isMaster && hasMaster;
-  const activityItems = isMaster ? items : outgoingItems;
-  const pendingCount =
-    activityItems?.filter((item) => !statusMeta(item.status).terminal).length ?? 0;
-  const completeCount = (activityItems?.length ?? 0) - pendingCount;
-
-  const subtitle = running
-    ? status?.message ?? `${status?.task ?? "Task"} running…`
-    : activityItems === null
-      ? "Loading…"
-      : `${activityItems.length} recent offer${activityItems.length === 1 ? "" : "s"}`;
+  const {
+    context,
+    status,
+    error,
+    configError,
+    refreshing,
+    starting,
+    running,
+    isMaster,
+    hasMaster,
+    canContribute,
+    activityItems,
+    pendingCount,
+    completeCount,
+    subtitle,
+    refresh: handleRefresh,
+    contributeAll: handleContributeAll,
+  } = useContributionsController({ ready, showToast: toast.show });
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -359,7 +178,7 @@ export default function ContributionsScreen({
                 </thead>
                 <tbody>
                   {activityItems.map((item) => {
-                    const meta = statusMeta(item.status);
+                    const meta = contributionStatusMeta(item.status);
                     return (
                       <tr
                         key={item.id}
@@ -393,10 +212,10 @@ export default function ContributionsScreen({
                         {isMaster ? (
                           <>
                             <td className="px-4 py-3 text-xs text-[var(--color-text-muted)] whitespace-nowrap">
-                              {qualityLabel(item.target_quality)}
+                              {audioQualityLabel(item.target_quality)}
                             </td>
                             <td className="px-4 py-3 text-xs text-[var(--color-text-muted)] whitespace-nowrap">
-                              {qualityLabel(item.acquired_quality)}
+                              {audioQualityLabel(item.acquired_quality)}
                             </td>
                           </>
                         ) : null}
