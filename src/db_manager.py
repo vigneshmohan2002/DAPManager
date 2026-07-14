@@ -8,14 +8,15 @@ import os
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple, TypedDict, cast
-from collections import defaultdict
+from typing import List, Optional, Set, Tuple, TypedDict
 from datetime import datetime
 
 from src.db_schema import create_tables, migrate_schema
 from src.db_repositories import (
+    AlbumMaintenanceRepository,
     ContributionRepository,
     DownloadRepository,
+    InventoryRepository,
     LibraryRepository,
     ListeningRepository,
     MetadataRepository,
@@ -166,6 +167,10 @@ class DatabaseManager:
         self._listening_repository = ListeningRepository(self.conn)
         self._metadata_repository = MetadataRepository(self.conn)
         self._download_repository = DownloadRepository(self.conn)
+        self._inventory_repository = InventoryRepository(self.conn)
+        self._album_maintenance_repository = AlbumMaintenanceRepository(
+            self.conn
+        )
 
     def _create_tables(self):
         if not self.conn:
@@ -180,57 +185,7 @@ class DatabaseManager:
         # Normalize path to ensure consistency (force forward slashes)
         if track.local_path:
             track.local_path = os.path.normpath(track.local_path).replace("\\", "/")
-
-        # UPSERT (not REPLACE) so we can preserve tag_tier/tag_score when the
-        # caller doesn't know them — e.g. a library re-scan shouldn't wipe
-        # the tier recorded by the downloader.
-        sql = """
-        INSERT INTO tracks
-        (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap,
-         release_mbid, track_number, disc_number, tag_tier, tag_score, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(mbid) DO UPDATE SET
-            title = excluded.title,
-            artist = excluded.artist,
-            album = excluded.album,
-            isrc = excluded.isrc,
-            local_path = excluded.local_path,
-            dap_path = excluded.dap_path,
-            synced_to_dap = excluded.synced_to_dap,
-            release_mbid = excluded.release_mbid,
-            track_number = excluded.track_number,
-            disc_number = excluded.disc_number,
-            tag_tier = COALESCE(excluded.tag_tier, tag_tier),
-            tag_score = COALESCE(excluded.tag_score, tag_score),
-            updated_at = CURRENT_TIMESTAMP
-        """
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                sql,
-                (
-                    track.mbid,
-                    track.title,
-                    track.artist,
-                    track.album,
-                    track.isrc,
-                    track.local_path,
-                    track.dap_path,
-                    int(track.synced_to_dap),
-                    track.release_mbid,
-                    track.track_number,
-                    track.disc_number,
-                    track.tag_tier,
-                    track.tag_score,
-                ),
-            )
-            self.conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"Error adding track: {e}")
-            self.conn.rollback()
-        finally:
-            if cursor:
-                cursor.close()
+        self._library_repository.add_or_update_track(track, logger)
 
     def set_track_tag_tier(
         self, mbid: str, tier: Optional[str], score: Optional[float]
@@ -243,33 +198,20 @@ class DatabaseManager:
         """
         if not mbid:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET tag_tier = ?, tag_score = ?, "
-            "updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
-            (tier, score, mbid),
+        return self._library_repository.set_track_tag_tier(
+            mbid,
+            tier,
+            score,
         )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
 
     def get_tracks_needing_tag_review(self) -> List[Track]:
         """Tracks whose last auto-tag was yellow or red — user must review.
 
         Excludes soft-deleted rows and tracks with no local file.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM tracks "
-            "WHERE tag_tier IN ('yellow', 'red') "
-            "AND local_path IS NOT NULL "
-            "AND deleted_at IS NULL "
-            "ORDER BY artist, album, track_number"
+        return self._library_repository.get_tracks_needing_tag_review(
+            lambda row: self._row_to_track(row)
         )
-        tracks = [self._row_to_track(row) for row in cursor.fetchall()]
-        cursor.close()
-        return tracks
 
     def get_track_by_mbid(self, mbid: str) -> Optional[Track]:
         try:
@@ -295,15 +237,7 @@ class DatabaseManager:
         """
         if not isrc:
             return []
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT mbid FROM tracks "
-            "WHERE isrc = ? AND local_path IS NULL AND deleted_at IS NULL",
-            (isrc,),
-        )
-        rows = [row["mbid"] for row in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._library_repository.find_unlinked_tracks_by_isrc(isrc)
 
     def find_unlinked_tracks_by_artist_title(
         self, artist: str, title: str
@@ -313,17 +247,10 @@ class DatabaseManager:
         available on the file's tags."""
         if not artist or not title:
             return []
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT mbid FROM tracks "
-            "WHERE artist = ? COLLATE NOCASE "
-            "  AND title = ? COLLATE NOCASE "
-            "  AND local_path IS NULL AND deleted_at IS NULL",
-            (artist, title),
+        return self._library_repository.find_unlinked_tracks_by_artist_title(
+            artist,
+            title,
         )
-        rows = [row["mbid"] for row in cursor.fetchall()]
-        cursor.close()
-        return rows
 
     def find_unlinked_tracks_by_artist_title_album(
         self, artist: str, title: str, album: str
@@ -332,107 +259,39 @@ class DatabaseManager:
         alone returned multiple candidates."""
         if not artist or not title or not album:
             return []
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT mbid FROM tracks "
-            "WHERE artist = ? COLLATE NOCASE "
-            "  AND title = ? COLLATE NOCASE "
-            "  AND album = ? COLLATE NOCASE "
-            "  AND local_path IS NULL AND deleted_at IS NULL",
-            (artist, title, album),
+        return (
+            self._library_repository
+            .find_unlinked_tracks_by_artist_title_album(
+                artist,
+                title,
+                album,
+            )
         )
-        rows = [row["mbid"] for row in cursor.fetchall()]
-        cursor.close()
-        return rows
 
     def is_track_unlinked_and_live(self, mbid: str) -> bool:
         """Return whether a catalog row may safely claim a local file."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM tracks "
-            "WHERE mbid = ? AND local_path IS NULL AND deleted_at IS NULL",
-            (mbid,),
-        )
-        eligible = cursor.fetchone() is not None
-        cursor.close()
-        return eligible
+        return self._library_repository.is_track_unlinked_and_live(mbid)
 
     # --- Album Methods ---
     def update_album_metadata(
         self, release_mbid: str, album_title: str, total_tracks: int
     ):
-        sql = """
-        INSERT INTO albums (release_mbid, album_title, total_tracks)
-        VALUES (?, ?, ?)
-        ON CONFLICT(release_mbid) DO UPDATE SET
-            total_tracks = MAX(total_tracks, excluded.total_tracks),
-            album_title = excluded.album_title
-        """
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql, (release_mbid, album_title, total_tracks))
-            self.conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"Error updating album metadata: {e}")
-        finally:
-            if cursor:
-                cursor.close()
+        self._library_repository.update_album_metadata(
+            release_mbid,
+            album_title,
+            total_tracks,
+            logger,
+        )
 
     def get_incomplete_albums(self) -> List[dict]:
-        sql = """
-        SELECT 
-            t.artist,
-            a.album_title,
-            a.release_mbid,
-            COUNT(DISTINCT t.track_number) as local_count,
-            a.total_tracks
-        FROM tracks t
-        JOIN albums a ON t.release_mbid = a.release_mbid
-        WHERE t.local_path IS NOT NULL
-        GROUP BY t.release_mbid
-        HAVING local_count < a.total_tracks
-        ORDER BY t.artist, a.album_title
-        """
-        results = []
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql)
-            for row in cursor.fetchall():
-                results.append(
-                    {
-                        "artist": row["artist"],
-                        "album": row["album_title"],
-                        "mbid": row["release_mbid"],
-                        "have": row["local_count"],
-                        "total": row["total_tracks"],
-                        "missing": row["total_tracks"] - row["local_count"],
-                    }
-                )
-            return results
-        except sqlite3.Error:
-            return []
-        finally:
-            if cursor:
-                cursor.close()
+        return self._library_repository.get_incomplete_albums()
 
     def get_tracks_missing_album_info(self) -> List[Track]:
         """Find tracks that have a recording MBID but no release_mbid or no album entry."""
-        sql = """
-            SELECT t.* FROM tracks t
-            LEFT JOIN albums a ON t.release_mbid = a.release_mbid
-            WHERE t.local_path IS NOT NULL
-              AND (t.release_mbid IS NULL OR a.release_mbid IS NULL)
-        """
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql)
-            return [self._row_to_track(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            logger.error(f"Error getting orphan tracks: {e}")
-            return []
-        finally:
-            if cursor:
-                cursor.close()
+        return self._library_repository.get_tracks_missing_album_info(
+            lambda row: self._row_to_track(row),
+            logger,
+        )
 
     def get_local_album_snapshot(
         self, release_mbid: str
@@ -442,79 +301,18 @@ class DatabaseManager:
         This deliberately mirrors the album completer's historic two-query
         read, including its treatment of soft-deleted rows.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT artist, album FROM tracks "
-            "WHERE release_mbid = ? AND local_path IS NOT NULL LIMIT 1",
-            (release_mbid,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        if not row:
-            return None
-
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT disc_number, track_number FROM tracks "
-            "WHERE release_mbid = ? AND local_path IS NOT NULL",
-            (release_mbid,),
-        )
-        positions = {(item[0], item[1]) for item in cursor.fetchall()}
-        cursor.close()
-        return {
-            "artist": row[0],
-            "album": row[1],
-            "positions": positions,
-        }
+        return self._library_repository.get_local_album_snapshot(release_mbid)
 
     def update_track_release_mbid(self, mbid: str, release_mbid: str) -> int:
         """Assign one track to a release and preserve the legacy commit point."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET release_mbid = ?, "
-            "updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
-            (release_mbid, mbid),
-        )
-        changed = cursor.rowcount
-        self.conn.commit()
-        cursor.close()
-        return changed
+        repository = getattr(self, "_library_repository", None)
+        if repository is None:
+            repository = LibraryRepository(self.conn)
+        return repository.update_track_release_mbid(mbid, release_mbid)
 
     def get_album_track_counts(self) -> List[dict]:
         """Get all albums with their local track count vs expected total."""
-        sql = """
-            SELECT
-                a.release_mbid,
-                a.album_title,
-                a.total_tracks,
-                MIN(t.artist) as artist,
-                COUNT(DISTINCT t.track_number) as local_count
-            FROM albums a
-            JOIN tracks t ON t.release_mbid = a.release_mbid
-            WHERE t.local_path IS NOT NULL
-            GROUP BY a.release_mbid
-            ORDER BY t.artist, a.album_title
-        """
-        results = []
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql)
-            for row in cursor.fetchall():
-                results.append({
-                    "release_mbid": row["release_mbid"],
-                    "album": row["album_title"],
-                    "artist": row["artist"],
-                    "total": row["total_tracks"],
-                    "have": row["local_count"],
-                    "missing": row["total_tracks"] - row["local_count"],
-                })
-            return results
-        except sqlite3.Error as e:
-            logger.error(f"Error getting album track counts: {e}")
-            return []
-        finally:
-            if cursor:
-                cursor.close()
+        return self._library_repository.get_album_track_counts(logger)
 
     @staticmethod
     def _normalize_query(s: str) -> str:
@@ -555,16 +353,11 @@ class DatabaseManager:
         """
         if not mbid:
             return None
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET is_liked = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE mbid = ? AND deleted_at IS NULL",
-            (1 if liked else 0, mbid),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return bool(liked) if changed else None
+        return self._library_repository.set_track_liked(mbid, liked)
+
+    def get_liked_tracks_summary(self, limit: int = 6) -> dict:
+        """Return the live liked-track count and recent preview rows."""
+        return self._library_repository.get_liked_tracks_summary(limit)
 
     # The Liked Songs smart playlist uses a reserved, deterministic id so
     # both master and satellite converge on the same row after a sync
@@ -594,6 +387,10 @@ class DatabaseManager:
             return None
         return self._library_repository.get_track_sources(mbid)
 
+    def get_live_track_identity(self, mbid: str) -> Optional[dict]:
+        """Return display metadata for a live track, or None if absent."""
+        return self._library_repository.get_live_track_identity(mbid)
+
     def list_artists(self) -> List[dict]:
         """Distinct artists with album and track counts.
 
@@ -602,24 +399,7 @@ class DatabaseManager:
         loose singles inflating album_count). Sort is case-insensitive
         on the artist name so the UI can render it directly.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                artist AS name,
-                COUNT(DISTINCT COALESCE(NULLIF(release_mbid, ''), album || '|' || artist)) AS album_count,
-                COUNT(*) AS track_count
-            FROM tracks
-            WHERE deleted_at IS NULL
-              AND artist IS NOT NULL AND artist != ''
-              AND album IS NOT NULL AND album != ''
-            GROUP BY artist
-            ORDER BY artist COLLATE NOCASE
-            """
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._library_repository.list_artists()
 
     def get_album_cover_path(self, album_id: str) -> Optional[str]:
         """Return one track file path for an album id — used to extract
@@ -627,19 +407,7 @@ class DatabaseManager:
         returned (a release_mbid or ``album|artist`` synthetic)."""
         if not album_id:
             return None
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT local_path FROM tracks
-            WHERE deleted_at IS NULL
-              AND (release_mbid = ? OR (album || '|' || artist) = ?)
-            LIMIT 1
-            """,
-            (album_id, album_id),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return row["local_path"] if row else None
+        return self._library_repository.get_album_cover_path(album_id)
 
     def list_album_tracks(self, album_id: str) -> List[dict]:
         """Ordered tracks belonging to the album identified by ``album_id``.
@@ -651,23 +419,7 @@ class DatabaseManager:
         """
         if not album_id:
             return []
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT mbid, title, artist, album, track_number, disc_number,
-                   local_path, dap_path, is_liked
-            FROM tracks
-            WHERE deleted_at IS NULL
-              AND (release_mbid = ? OR (album || '|' || artist) = ?)
-            ORDER BY COALESCE(disc_number, 1),
-                     COALESCE(track_number, 9999),
-                     title COLLATE NOCASE
-            """,
-            (album_id, album_id),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._library_repository.list_album_tracks(album_id)
 
     def get_track_local_path(self, mbid: str) -> Optional[str]:
         """Resolve an mbid to its local file path, or None if missing."""
@@ -697,54 +449,13 @@ class DatabaseManager:
         Fuzzy matching is deliberately excluded: asking for an upload is
         preferable to treating a different recording as the same track.
         """
-        candidates: List[dict] = []
-        seen_paths = set()
-
-        def add_rows(sql: str, params: tuple, match: str, *, unique=False):
-            cur = self.conn.execute(sql, params)
-            rows = [dict(row) for row in cur.fetchall()]
-            cur.close()
-            if unique and len(rows) != 1:
-                return
-            for row in rows:
-                path = row.get("local_path")
-                if not path or path in seen_paths:
-                    continue
-                seen_paths.add(path)
-                row["identity_match"] = match
-                candidates.append(row)
-
-        select = (
-            "SELECT mbid, isrc, artist, title, album, local_path FROM tracks "
-            "WHERE deleted_at IS NULL AND local_path IS NOT NULL "
-            "AND local_path != '' AND "
+        return self._contribution_repository.find_local_tracks_by_identity(
+            mbid=mbid,
+            isrc=isrc,
+            artist=artist,
+            title=title,
+            album=album,
         )
-        if mbid:
-            add_rows(select + "mbid = ?", (mbid,), "mbid")
-        if isrc:
-            add_rows(
-                select + "isrc = ? COLLATE NOCASE",
-                (isrc,),
-                "isrc",
-            )
-        if artist and title and album:
-            add_rows(
-                select
-                + "artist = ? COLLATE NOCASE AND title = ? COLLATE NOCASE "
-                  "AND album = ? COLLATE NOCASE",
-                (artist, title, album),
-                "artist_title_album",
-                unique=True,
-            )
-        if artist and title:
-            add_rows(
-                select
-                + "artist = ? COLLATE NOCASE AND title = ? COLLATE NOCASE",
-                (artist, title),
-                "artist_title",
-                unique=True,
-            )
-        return candidates
 
     def has_queued_mbid(self, mbid: str) -> bool:
         """True if any row in download_queue already targets this MBID,
@@ -849,46 +560,19 @@ class DatabaseManager:
         contribution id is intentionally offered again so it cannot strand a
         track forever.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT t.* FROM tracks t "
-            "LEFT JOIN contributed c ON c.mbid = t.mbid "
-            "WHERE t.local_path IS NOT NULL AND t.deleted_at IS NULL "
-            "AND (c.mbid IS NULL OR c.contribution_id IS NULL) "
-            "LIMIT ?",
-            (limit,),
+        return self._contribution_repository.get_contributable_tracks(
+            limit,
+            lambda row: self._row_to_track(row),
         )
-        tracks = [self._row_to_track(row) for row in cursor.fetchall()]
-        cursor.close()
-        return tracks
 
     def merge_albums(self, source_mbid: str, target_mbid: str):
         if not source_mbid or not target_mbid:
             return False
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT album_title FROM albums WHERE release_mbid = ?", (target_mbid,)
-            )
-            row = cursor.fetchone()
-            if not row:
-                return False
-            target_title = row[0]
-
-            cursor.execute(
-                "UPDATE tracks SET release_mbid = ?, album = ?, updated_at = CURRENT_TIMESTAMP WHERE release_mbid = ?",
-                (target_mbid, target_title, source_mbid),
-            )
-            cursor.execute("DELETE FROM albums WHERE release_mbid = ?", (source_mbid,))
-            self.conn.commit()
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"Merge failed: {e}")
-            self.conn.rollback()
-            return False
-        finally:
-            if cursor:
-                cursor.close()
+        return self._library_repository.merge_albums(
+            source_mbid,
+            target_mbid,
+            logger,
+        )
 
     # --- Playlist / Download / Misc Methods (Abbreviated, assumes exist from prior code) ---
     def add_or_update_playlist(self, playlist: Playlist):
@@ -1015,19 +699,11 @@ class DatabaseManager:
         self._sync_repository.mark_track_synced(mbid, dap_path)
 
     def get_all_tracks(self, local_only: bool = False, include_orphans: bool = False):
-        sql = "SELECT * FROM tracks"
-        clauses = []
-        if local_only:
-            clauses.append("local_path IS NOT NULL")
-        if not include_orphans:
-            clauses.append("deleted_at IS NULL")
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        cursor = self.conn.cursor()
-        cursor.execute(sql)
-        tracks = [self._row_to_track(row) for row in cursor.fetchall()]
-        cursor.close()
-        return tracks
+        return self._library_repository.get_all_tracks(
+            local_only,
+            include_orphans,
+            lambda row: self._row_to_track(row),
+        )
 
     def soft_delete_track(self, mbid: str) -> bool:
         """Mark a track as deleted without removing the row.
@@ -1038,33 +714,13 @@ class DatabaseManager:
         """
         if not mbid:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET deleted_at = CURRENT_TIMESTAMP, "
-            "updated_at = CURRENT_TIMESTAMP "
-            "WHERE mbid = ? AND deleted_at IS NULL",
-            (mbid,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._library_repository.soft_delete_track(mbid)
 
     def restore_track(self, mbid: str) -> bool:
         """Un-soft-delete a track: clears deleted_at and bumps updated_at."""
         if not mbid:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE tracks SET deleted_at = NULL, "
-            "updated_at = CURRENT_TIMESTAMP "
-            "WHERE mbid = ? AND deleted_at IS NOT NULL",
-            (mbid,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._library_repository.restore_track(mbid)
 
     def soft_delete_playlist(self, playlist_id: str) -> bool:
         if not playlist_id:
@@ -1086,15 +742,7 @@ class DatabaseManager:
         """
         if not mbid:
             return False
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "DELETE FROM tracks WHERE mbid = ? AND deleted_at IS NOT NULL",
-            (mbid,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._library_repository.purge_track(mbid)
 
     def purge_playlist(self, playlist_id: str) -> bool:
         """Hard-delete a playlist row (and its memberships via FK cascade).
@@ -1110,15 +758,7 @@ class DatabaseManager:
         fields, the deletion timestamp, and ``local_path`` so the UI can
         show a "still on disk" badge and offer the file-delete action.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT mbid, artist, title, album, deleted_at, local_path "
-            "FROM tracks WHERE deleted_at IS NOT NULL "
-            "ORDER BY deleted_at DESC"
-        )
-        rows = [dict(row) for row in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._library_repository.get_orphan_tracks()
 
     def get_orphan_playlists(self) -> List[dict]:
         """Soft-deleted playlists with membership counts.
@@ -1177,70 +817,18 @@ class DatabaseManager:
         """
         if not device_id:
             raise ValueError("device_id is required")
-
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("BEGIN")
-            cursor.execute(
-                "DELETE FROM device_inventory WHERE device_id = ?", (device_id,)
-            )
-            written = 0
-            for item in items or []:
-                if not isinstance(item, dict):
-                    continue
-                mbid = item.get("mbid")
-                if not mbid:
-                    continue
-                cursor.execute(
-                    "INSERT INTO device_inventory "
-                    "(device_id, mbid, local_path, reported_at) "
-                    "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                    (device_id, mbid, item.get("local_path")),
-                )
-                written += 1
-            self.conn.commit()
-            return written
-        except sqlite3.Error:
-            self.conn.rollback()
-            raise
-        finally:
-            cursor.close()
+        return self._inventory_repository.replace(device_id, items)
 
     def get_device_inventory(self, device_id: str) -> List[dict]:
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT mbid, local_path, reported_at FROM device_inventory "
-            "WHERE device_id = ? ORDER BY mbid",
-            (device_id,),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._inventory_repository.get_device(device_id)
 
     def get_fleet_summary(self) -> List[dict]:
         """Per-device inventory summary: device_id, track_count, last_reported_at."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT device_id, COUNT(*) AS track_count, MAX(reported_at) AS last_reported_at "
-            "FROM device_inventory "
-            "GROUP BY device_id "
-            "ORDER BY device_id"
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._inventory_repository.get_fleet_summary()
 
     def get_devices_holding_mbid(self, mbid: str) -> List[dict]:
         """Which devices have reported holding a given track."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT device_id, local_path, reported_at FROM device_inventory "
-            "WHERE mbid = ? ORDER BY device_id",
-            (mbid,),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._inventory_repository.get_devices_holding_mbid(mbid)
 
     def find_tracks_for_fleet_search(self, query: str, limit: int = 50) -> List[dict]:
         """Find tracks matching artist/title/album for fleet lookup.
@@ -1251,20 +839,7 @@ class DatabaseManager:
         """
         if not query:
             return []
-        term = f"%{query}%"
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT t.mbid, t.artist, t.title, t.album, "
-            "       (SELECT COUNT(*) FROM device_inventory d WHERE d.mbid = t.mbid) AS device_count "
-            "FROM tracks t "
-            "WHERE t.title LIKE ? OR t.artist LIKE ? OR t.album LIKE ? "
-            "ORDER BY device_count DESC, t.artist, t.album, t.title "
-            "LIMIT ?",
-            (term, term, term, int(limit)),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._inventory_repository.find_tracks(query, limit)
 
     # --- Play events (listening history) ---
     #
@@ -1397,6 +972,10 @@ class DatabaseManager:
         if not track_mbid:
             return None
         return self._metadata_repository.get_lyrics(track_mbid)
+
+    def delete_lyrics(self, track_mbid: str) -> None:
+        """Delete cached lyrics for a track and commit even when absent."""
+        self._metadata_repository.delete_lyrics(track_mbid)
 
     def get_lyrics_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Lyrics rows whose ``fetched_at`` is newer than the cursor.
@@ -1774,81 +1353,27 @@ class DatabaseManager:
         )
 
     def get_mbid_to_track_path_map(self):
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT mbid, local_path FROM tracks")
-        res = {row[0]: row[1] for row in cursor.fetchall() if row[0] and row[1]}
-        cursor.close()
-        return res
+        return self._library_repository.get_mbid_to_track_path_map()
 
     def log_duplicate(self, mbid: str, file_path: str):
         if file_path:
             file_path = os.path.normpath(file_path).replace("\\", "/")
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR IGNORE INTO duplicates (mbid, file_path) VALUES (?, ?)",
-            (mbid, file_path),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._album_maintenance_repository.log_duplicate(mbid, file_path)
 
     def get_all_duplicates(self):
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT mbid, file_path FROM duplicates")
-        d = defaultdict(list)
-        for row in cursor.fetchall():
-            d[row["mbid"]].append(row["file_path"])
-        cursor.close()
-        return dict(d)
+        return self._album_maintenance_repository.get_all_duplicates()
 
     def clear_duplicate(self, mbid: str):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM duplicates WHERE mbid = ?", (mbid,))
-        self.conn.commit()
-        cursor.close()
+        self._album_maintenance_repository.clear_duplicate(mbid)
 
     # --- Album grouping maintenance ---
     def list_split_album_tracks(self) -> List[SplitAlbumTrackRow]:
         """Rows used by folder/name split-album detection."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                mbid, title, artist, album, track_number, disc_number,
-                local_path, release_mbid,
-                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
-            FROM tracks
-            WHERE deleted_at IS NULL
-              AND album IS NOT NULL AND album != ''
-              AND artist IS NOT NULL AND artist != ''
-            ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE,
-                     COALESCE(disc_number, 1), COALESCE(track_number, 9999)
-            """
-        )
-        rows = cast(List[SplitAlbumTrackRow], [
-            dict(row) for row in cursor.fetchall()
-        ])
-        cursor.close()
-        return rows
+        return self._album_maintenance_repository.list_split_album_tracks()
 
     def list_album_group_tracks(self) -> List[AlbumGroupTrackRow]:
         """Rows used to plan edition consolidation without local paths."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                mbid, title, artist, album, track_number, disc_number, release_mbid,
-                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
-            FROM tracks
-            WHERE deleted_at IS NULL
-              AND album IS NOT NULL AND album != ''
-              AND artist IS NOT NULL AND artist != ''
-            """
-        )
-        rows = cast(List[AlbumGroupTrackRow], [
-            dict(row) for row in cursor.fetchall()
-        ])
-        cursor.close()
-        return rows
+        return self._album_maintenance_repository.list_album_group_tracks()
 
     def reassign_album_group_tracks(
         self,
@@ -1859,95 +1384,34 @@ class DatabaseManager:
         include_local_paths: bool = True,
     ) -> AlbumGroupReassignment:
         """Apply one planned album-group move and commit it once."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT mbid FROM tracks
-            WHERE deleted_at IS NULL
-              AND COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) = ?
-            """,
-            (source_album_id,),
+        repository = getattr(self, "_album_maintenance_repository", None)
+        if repository is None:
+            repository = AlbumMaintenanceRepository(self.conn)
+        return repository.reassign_album_group_tracks(
+            source_album_id,
+            target_album,
+            target_artist,
+            target_release_mbid,
+            include_local_paths,
         )
-        mbids = [row[0] for row in cursor.fetchall()]
-        if not mbids:
-            cursor.close()
-            return {"matched": 0, "moved": 0, "tracks": []}
-
-        placeholders = ",".join("?" * len(mbids))
-        if target_release_mbid:
-            cursor.execute(
-                f"""
-                UPDATE tracks SET album = ?, release_mbid = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE mbid IN ({placeholders})
-                """,
-                [target_album, target_release_mbid] + mbids,
-            )
-        else:
-            cursor.execute(
-                f"""
-                UPDATE tracks SET album = ?, artist = ?, release_mbid = '',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE mbid IN ({placeholders})
-                """,
-                [target_album, target_artist] + mbids,
-            )
-        moved = cursor.rowcount
-        self.conn.commit()
-
-        tracks: List[TrackPathRow] = []
-        if include_local_paths:
-            cursor.execute(
-                f"SELECT mbid, local_path FROM tracks "
-                f"WHERE mbid IN ({placeholders})",
-                mbids,
-            )
-            tracks = cast(
-                List[TrackPathRow], [dict(row) for row in cursor.fetchall()]
-            )
-        cursor.close()
-        return {"matched": len(mbids), "moved": moved, "tracks": tracks}
 
     def list_local_album_tag_rows(self) -> List[AlbumTagRow]:
         """Album-level metadata for tracks backed by a local file."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT mbid, album, artist, release_mbid, local_path FROM tracks
-            WHERE deleted_at IS NULL AND local_path IS NOT NULL AND local_path != ''
-            """
-        )
-        rows = cast(List[AlbumTagRow], [
-            dict(row) for row in cursor.fetchall()
-        ])
-        cursor.close()
-        return rows
+        return self._album_maintenance_repository.list_local_album_tag_rows()
 
     # --- Split-album dismissals ---
     def get_dismissed_split_albums(self) -> set:
         """Return the set of dismissed split-album incident keys."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT incident_key FROM split_album_dismissals")
-        keys = {row[0] for row in cursor.fetchall()}
-        cursor.close()
-        return keys
+        return (
+            self._album_maintenance_repository
+            .get_dismissed_split_albums()
+        )
 
     def dismiss_split_album(self, incident_key: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT OR IGNORE INTO split_album_dismissals (incident_key) VALUES (?)",
-            (incident_key,),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._album_maintenance_repository.dismiss_split_album(incident_key)
 
     def undismiss_split_album(self, incident_key: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "DELETE FROM split_album_dismissals WHERE incident_key = ?",
-            (incident_key,),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._album_maintenance_repository.undismiss_split_album(incident_key)
 
     def clear_missing_local_paths(self, dry_run: bool = True) -> dict:
         """Find (and optionally clear) ``local_path`` for tracks whose file is gone.
@@ -1967,52 +1431,15 @@ class DatabaseManager:
         library). Returns ``{dry_run, scanned, cleared, fraction, sample}``
         where ``cleared`` is the would-clear count in dry-run mode.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT mbid, local_path FROM tracks "
-            "WHERE deleted_at IS NULL AND local_path IS NOT NULL AND local_path != ''"
+        return self._library_repository.clear_missing_local_paths(
+            dry_run,
+            lambda path: os.path.isfile(path),
         )
-        rows = cursor.fetchall()
-        missing = []
-        for r in rows:
-            path = (dict(r).get("local_path") or "").strip()
-            if path and not os.path.isfile(path):
-                missing.append((dict(r)["mbid"], path))
-        if not dry_run:
-            for mbid, _path in missing:
-                cursor.execute(
-                    "UPDATE tracks SET local_path = NULL, updated_at = CURRENT_TIMESTAMP "
-                    "WHERE mbid = ?",
-                    (mbid,),
-                )
-            self.conn.commit()
-        cursor.close()
-        scanned = len(rows)
-        return {
-            "dry_run": dry_run,
-            "scanned": scanned,
-            "cleared": len(missing),
-            "fraction": round(len(missing) / scanned, 3) if scanned else 0.0,
-            "sample": [p for _m, p in missing[:20]],
-        }
 
     def update_track_local_path(self, mbid: str, path: str):
         if path:
             path = os.path.normpath(path).replace("\\", "/")
-        cursor = self.conn.cursor()
-        # Release this path from any other track that currently owns it so the
-        # UNIQUE constraint on local_path doesn't block the reassignment.
-        if path:
-            cursor.execute(
-                "UPDATE tracks SET local_path = NULL WHERE local_path = ? AND mbid != ?",
-                (path, mbid),
-            )
-        cursor.execute(
-            "UPDATE tracks SET local_path = ?, updated_at = CURRENT_TIMESTAMP WHERE mbid = ?",
-            (path, mbid),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._library_repository.update_track_local_path(mbid, path)
 
     def _row_to_track(self, row):
         if not row:
@@ -2045,56 +1472,14 @@ class DatabaseManager:
         )
 
     def get_library_stats(self) -> dict:
-        cursor = self.conn.cursor()
-        stats = {}
-        try:
-            cursor.execute("SELECT COUNT(*) FROM tracks")
-            stats['tracks'] = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
-            stats['artists'] = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(*) FROM albums")
-            stats['albums'] = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(*) FROM playlists")
-            stats['playlists'] = cursor.fetchone()[0]
-
-            # Incomplete Albums count
-            cursor.execute("""
-                SELECT COUNT(*) FROM (
-                    SELECT t.release_mbid
-                    FROM tracks t JOIN albums a ON t.release_mbid = a.release_mbid
-                    WHERE t.local_path IS NOT NULL
-                    GROUP BY t.release_mbid
-                    HAVING COUNT(DISTINCT t.track_number) < a.total_tracks
-                )
-            """)
-            stats['incomplete_albums'] = cursor.fetchone()[0]
-            
-        except sqlite3.Error as e:
-            logger.error(f"Error getting stats: {e}")
-        finally:
-            cursor.close()
-        return stats
+        return self._library_repository.get_library_stats(logger)
 
     def search_tracks(self, query: str) -> List[Track]:
-        cursor = self.conn.cursor()
-        search_term = f"%{query}%"
-        sql = """
-            SELECT * FROM tracks 
-            WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
-            ORDER BY artist, album, track_number
-            LIMIT 100
-        """
-        try:
-            cursor.execute(sql, (search_term, search_term, search_term))
-            return [self._row_to_track(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            logger.error(f"Search failed: {e}")
-            return []
-        finally:
-            cursor.close()
+        return self._library_repository.search_tracks(
+            query,
+            lambda row: self._row_to_track(row),
+            logger,
+        )
 
     def get_all_downloads(self) -> List[DownloadItem]:
         return [

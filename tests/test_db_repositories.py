@@ -2,6 +2,7 @@
 
 import pytest
 
+from src.db_manager import Track
 from src.db_repositories.downloads import DownloadRepository
 
 
@@ -100,3 +101,191 @@ def test_artist_tag_payload_keeps_non_string_tag_failure(db):
         })
 
     assert db.get_top_tags_for_artist("Artist") == []
+
+
+def test_library_facade_identity_liked_summary_and_lyrics_delete(db):
+    db.add_or_update_track(Track(
+        mbid="older-liked",
+        title="Older",
+        artist="Artist",
+        album="Album",
+        local_path="/music/older.flac",
+    ))
+    db.add_or_update_track(Track(
+        mbid="newer-liked",
+        title="Newer",
+        artist="Artist",
+        album="Album",
+        local_path="/music/newer.flac",
+        release_mbid="release-id",
+    ))
+    db.set_track_liked("older-liked", True)
+    db.set_track_liked("newer-liked", True)
+    db.conn.execute(
+        "UPDATE tracks SET updated_at = ? WHERE mbid = ?",
+        ("2026-01-01 00:00:00", "older-liked"),
+    )
+    db.conn.execute(
+        "UPDATE tracks SET updated_at = ? WHERE mbid = ?",
+        ("2026-01-02 00:00:00", "newer-liked"),
+    )
+    db.conn.commit()
+
+    assert db.get_live_track_identity("newer-liked") == {
+        "title": "Newer",
+        "artist": "Artist",
+        "album": "Album",
+    }
+    assert db.get_liked_tracks_summary(limit=1) == {
+        "total": 2,
+        "preview": [{
+            "mbid": "newer-liked",
+            "title": "Newer",
+            "artist": "Artist",
+            "album": "Album",
+            "album_id": "release-id",
+        }],
+    }
+
+    db.upsert_lyrics("newer-liked", "lyrics", False, "manual")
+    db.delete_lyrics("newer-liked")
+    db.delete_lyrics("newer-liked")
+    assert db.get_lyrics("newer-liked") is None
+
+    db.soft_delete_track("newer-liked")
+    assert db.get_live_track_identity("newer-liked") is None
+    assert db.get_liked_tracks_summary()["total"] == 1
+
+
+def test_track_mapper_seams_remain_late_bound(db, monkeypatch):
+    db.add_or_update_track(Track(
+        mbid="mapped-track",
+        title="Mapped",
+        artist="Artist",
+        album="Album",
+        local_path="/music/mapped.flac",
+        tag_tier="yellow",
+    ))
+    mapped_rows = []
+
+    def map_row(row):
+        mapped_rows.append(row["mbid"])
+        return f"mapped:{row['mbid']}"
+
+    monkeypatch.setattr(db, "_row_to_track", map_row)
+
+    assert db.get_all_tracks() == ["mapped:mapped-track"]
+    assert db.get_tracks_needing_tag_review() == ["mapped:mapped-track"]
+    assert db.get_contributable_tracks() == ["mapped:mapped-track"]
+    assert db.search_tracks("Mapped") == ["mapped:mapped-track"]
+    assert mapped_rows == ["mapped-track"] * 4
+
+
+def test_duplicate_repository_round_trip_and_clear(db, tmp_path):
+    first = str(tmp_path / "folder" / ".." / "first.flac")
+    second = str(tmp_path / "second.flac")
+
+    db.log_duplicate("recording", first)
+    db.log_duplicate("recording", first)
+    db.log_duplicate("recording", second)
+
+    duplicates = db.get_all_duplicates()
+    assert duplicates == {
+        "recording": [str(tmp_path / "first.flac"), second]
+    }
+
+    db.clear_duplicate("recording")
+    assert db.get_all_duplicates() == {}
+
+
+def test_missing_path_cleanup_preserves_dry_run_then_applies(db, tmp_path):
+    existing = tmp_path / "existing.flac"
+    existing.write_bytes(b"audio")
+    missing_one = tmp_path / "missing-one.flac"
+    missing_two = tmp_path / "missing-two.flac"
+    for mbid, path in (
+        ("existing", existing),
+        ("missing-one", missing_one),
+        ("missing-two", missing_two),
+    ):
+        db.add_or_update_track(Track(
+            mbid=mbid,
+            title=mbid,
+            artist="Artist",
+            local_path=str(path),
+        ))
+
+    preview = db.clear_missing_local_paths()
+    assert preview == {
+        "dry_run": True,
+        "scanned": 3,
+        "cleared": 2,
+        "fraction": 0.667,
+        "sample": [str(missing_one), str(missing_two)],
+    }
+    assert db.get_track_local_path("missing-one") == str(missing_one)
+
+    applied = db.clear_missing_local_paths(dry_run=False)
+    assert applied["dry_run"] is False
+    assert applied["cleared"] == 2
+    assert db.get_track_local_path("existing") == str(existing)
+    assert db.get_track_local_path("missing-one") is None
+    assert db.get_track_local_path("missing-two") is None
+
+
+def test_update_local_path_releases_previous_owner_and_map_keeps_orphans(
+    db,
+    tmp_path,
+):
+    shared = str(tmp_path / "shared.flac")
+    db.add_or_update_track(Track(
+        mbid="old-owner",
+        title="Old",
+        artist="Artist",
+        local_path=shared,
+    ))
+    db.add_or_update_track(Track(
+        mbid="new-owner",
+        title="New",
+        artist="Artist",
+        local_path=str(tmp_path / "other.flac"),
+    ))
+
+    db.update_track_local_path("new-owner", shared)
+    db.soft_delete_track("new-owner")
+
+    assert db.get_track_by_mbid("old-owner").local_path is None
+    assert db.get_mbid_to_track_path_map() == {"new-owner": shared}
+
+
+def test_album_merge_counts_and_split_dismissal_round_trip(db):
+    db.update_album_metadata("source-release", "Source Album", 2)
+    db.update_album_metadata("target-release", "Target Album", 3)
+    db.add_or_update_track(Track(
+        mbid="source-track",
+        title="Track",
+        artist="Artist",
+        album="Source Album",
+        local_path="/music/source.flac",
+        release_mbid="source-release",
+        track_number=1,
+    ))
+
+    assert db.get_incomplete_albums() == [{
+        "artist": "Artist",
+        "album": "Source Album",
+        "mbid": "source-release",
+        "have": 1,
+        "total": 2,
+        "missing": 1,
+    }]
+    assert db.merge_albums("source-release", "target-release") is True
+    merged = db.get_track_by_mbid("source-track")
+    assert merged.release_mbid == "target-release"
+    assert merged.album == "Target Album"
+
+    db.dismiss_split_album("incident")
+    db.dismiss_split_album("incident")
+    assert db.get_dismissed_split_albums() == {"incident"}
+    db.undismiss_split_album("incident")
+    assert db.get_dismissed_split_albums() == set()

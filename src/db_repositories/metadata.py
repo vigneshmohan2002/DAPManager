@@ -16,6 +16,15 @@ class TopTagsProvider(Protocol):
 
 
 class MetadataRepository(SQLiteRepository):
+    def delete_lyrics(self, track_mbid: str) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM lyrics WHERE track_mbid = ?",
+            (track_mbid,),
+        )
+        self.conn.commit()
+        cursor.close()
+
     def get_lyrics(self, track_mbid: str) -> Optional[Dict[str, object]]:
         cursor = self.conn.execute(
             "SELECT track_mbid, lrc, synced, source, fetched_at "
