@@ -12,6 +12,17 @@ from typing import Dict, List, Optional, Set, Tuple, TypedDict, cast
 from collections import defaultdict
 from datetime import datetime
 
+from src.db_schema import create_tables, migrate_schema
+from src.db_repositories import (
+    ContributionRepository,
+    DownloadRepository,
+    LibraryRepository,
+    ListeningRepository,
+    MetadataRepository,
+    PlaylistRepository,
+    SyncRepository,
+)
+
 logger = logging.getLogger(__name__)
 
 # The default sqlite3 datetime adapter is deprecated in Python 3.12 and
@@ -140,296 +151,29 @@ class DatabaseManager:
             # avoided deliberately — it misbehaves on the Windows Docker
             # bind-mount that backs /data.
             self.conn.execute("PRAGMA busy_timeout = 5000;")
+            self._initialize_repositories()
             logger.info(f"Connected to database at {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"Error connecting to database: {e}")
             raise
 
+    def _initialize_repositories(self) -> None:
+        """Bind internal repositories to the currently active connection."""
+        self._library_repository = LibraryRepository(self.conn)
+        self._playlist_repository = PlaylistRepository(self.conn)
+        self._sync_repository = SyncRepository(self.conn)
+        self._contribution_repository = ContributionRepository(self.conn)
+        self._listening_repository = ListeningRepository(self.conn)
+        self._metadata_repository = MetadataRepository(self.conn)
+        self._download_repository = DownloadRepository(self.conn)
+
     def _create_tables(self):
         if not self.conn:
             self._connect()
-
-        tables = {
-            "tracks": """
-                CREATE TABLE IF NOT EXISTS tracks (
-                    mbid TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    artist TEXT NOT NULL,
-                    album TEXT,
-                    isrc TEXT,
-                    local_path TEXT UNIQUE,
-                    dap_path TEXT,
-                    synced_to_dap INTEGER DEFAULT 0,
-                    release_mbid TEXT,
-                    track_number INTEGER,
-                    disc_number INTEGER,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    deleted_at TIMESTAMP,
-                    tag_tier TEXT,
-                    tag_score REAL,
-                    is_liked INTEGER NOT NULL DEFAULT 0
-                );
-            """,
-            "albums": """
-                CREATE TABLE IF NOT EXISTS albums (
-                    release_mbid TEXT PRIMARY KEY,
-                    album_title TEXT,
-                    total_tracks INTEGER
-                );
-            """,
-            "playlists": """
-                CREATE TABLE IF NOT EXISTS playlists (
-                    playlist_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    spotify_url TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    deleted_at TIMESTAMP
-                );
-            """,
-            "playlist_tracks": """
-                CREATE TABLE IF NOT EXISTS playlist_tracks (
-                    playlist_id TEXT,
-                    track_mbid TEXT,
-                    track_order INTEGER,
-                    PRIMARY KEY (playlist_id, track_mbid),
-                    FOREIGN KEY (playlist_id) REFERENCES playlists (playlist_id) ON DELETE CASCADE,
-                    FOREIGN KEY (track_mbid) REFERENCES tracks (mbid) ON DELETE CASCADE
-                );
-            """,
-            "download_queue": """
-                CREATE TABLE IF NOT EXISTS download_queue (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    search_query TEXT NOT NULL,
-                    playlist_id TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'failed', 'success')),
-                    last_attempt TIMESTAMP,
-                    mbid_guess TEXT NOT NULL
-                );
-            """,
-            "duplicates": """
-                CREATE TABLE IF NOT EXISTS duplicates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mbid TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    UNIQUE(mbid, file_path)
-                );
-            """,
-            "sync_state": """
-                CREATE TABLE IF NOT EXISTS sync_state (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                );
-            """,
-            "device_inventory": """
-                CREATE TABLE IF NOT EXISTS device_inventory (
-                    device_id TEXT NOT NULL,
-                    mbid TEXT NOT NULL,
-                    local_path TEXT,
-                    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (device_id, mbid)
-                );
-            """,
-            "play_events": """
-                CREATE TABLE IF NOT EXISTS play_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    track_mbid TEXT NOT NULL,
-                    played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    source TEXT,
-                    listened_ms INTEGER
-                );
-            """,
-            # Stage 13: cached / manual lyrics keyed by track mbid. lrc
-            # is NULL on a cached miss so we don't hammer LRCLIB every
-            # time the user opens the pane on a track with no match.
-            # synced is 1 when lrc is in LRC time-tag format, 0 for
-            # plain text. source ∈ {'lrclib', 'manual'}.
-            "lyrics": """
-                CREATE TABLE IF NOT EXISTS lyrics (
-                    track_mbid TEXT PRIMARY KEY,
-                    lrc TEXT,
-                    synced INTEGER NOT NULL DEFAULT 0,
-                    source TEXT NOT NULL,
-                    fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-            """,
-            # Stage 14a: per-artist tag weights backfilled from
-            # MusicBrainz. Keyed by artist *name* (case-insensitive,
-            # via the table-level COLLATE NOCASE) because tracks.artist
-            # stores names, not mbids. ``mbid`` is the artist mbid we
-            # resolved at backfill time — kept for traceability and as
-            # the foreign key for any future MB-side updates. weight
-            # is MB's tag vote count, sorted desc to surface dominant
-            # genres first. fetched_at lets a future refresh job skip
-            # recently-backfilled artists.
-            "artist_tags": """
-                CREATE TABLE IF NOT EXISTS artist_tags (
-                    artist_name TEXT NOT NULL COLLATE NOCASE,
-                    mbid TEXT,
-                    tag TEXT NOT NULL,
-                    weight INTEGER NOT NULL DEFAULT 1,
-                    fetched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (artist_name, tag)
-                );
-            """,
-            # Master-side: tracks a satellite's offer to contribute a file.
-            # target_quality/acquired_quality are JSON quality descriptors
-            # (see src.audio_quality). status walks
-            # attempting → (have_better|needs_upload|satisfied) → ingested.
-            # download_id links the CONTRIB row master enqueued to try
-            # acquiring the track itself before asking for an upload.
-            "contributions": """
-                CREATE TABLE IF NOT EXISTS contributions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT,
-                    mbid TEXT,
-                    isrc TEXT,
-                    artist TEXT,
-                    title TEXT,
-                    album TEXT,
-                    target_quality TEXT,
-                    acquired_quality TEXT,
-                    status TEXT NOT NULL DEFAULT 'attempting',
-                    download_id INTEGER,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """,
-            # Satellite-side: dedupe + polling state for tracks this device
-            # has offered to the master. Terminal statuses
-            # (have_better|satisfied|ingested) stop us re-POSTing every sync.
-            "contributed": """
-                CREATE TABLE IF NOT EXISTS contributed (
-                    mbid TEXT PRIMARY KEY,
-                    contribution_id INTEGER,
-                    status TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """,
-            # Split-album incidents the user has dismissed as false positives.
-            # incident_key is a stable hash of the incident's sorted album_ids
-            # (see split_album_detector.incident_key) so the same fragment
-            # combination stays hidden across rescans.
-            "split_album_dismissals": """
-                CREATE TABLE IF NOT EXISTS split_album_dismissals (
-                    incident_key TEXT PRIMARY KEY,
-                    dismissed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """,
-        }
-
-        # Indexes that pay off the common stats queries (group-by-mbid for
-        # top tracks; time-window filter for "since"). Created alongside the
-        # table so a fresh DB has them; existing DBs pick them up via
-        # _migrate_schema's CREATE INDEX IF NOT EXISTS.
-        indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_play_events_played_at "
-            "ON play_events(played_at)",
-            "CREATE INDEX IF NOT EXISTS idx_play_events_track_mbid "
-            "ON play_events(track_mbid)",
-            # "What other artists share this tag?" — the lookup that
-            # backs Daily Mix clustering. Per-tag scan would be O(n)
-            # over the whole table otherwise.
-            "CREATE INDEX IF NOT EXISTS idx_artist_tags_tag "
-            "ON artist_tags(tag)",
-        ]
-
-        try:
-            cursor = self.conn.cursor()
-            for table_name, create_sql in tables.items():
-                cursor.execute(create_sql)
-            for idx_sql in indexes:
-                cursor.execute(idx_sql)
-            self.conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"Error creating tables: {e}")
-            self.conn.rollback()
-            raise
-        finally:
-            if cursor:
-                cursor.close()
+        create_tables(self.conn, logger)
 
     def _migrate_schema(self):
-        # Legacy DBs created before the iPod→DAP rename have columns named
-        # `ipod_path` / `synced_to_ipod`. Rename them in-place (SQLite 3.25+).
-        cursor = self.conn.cursor()
-        try:
-            cols = {row[1] for row in cursor.execute("PRAGMA table_info(tracks)").fetchall()}
-            if "ipod_path" in cols and "dap_path" not in cols:
-                cursor.execute("ALTER TABLE tracks RENAME COLUMN ipod_path TO dap_path")
-                logger.info("Migrated column: ipod_path → dap_path")
-            if "synced_to_ipod" in cols and "synced_to_dap" not in cols:
-                cursor.execute("ALTER TABLE tracks RENAME COLUMN synced_to_ipod TO synced_to_dap")
-                logger.info("Migrated column: synced_to_ipod → synced_to_dap")
-            if "updated_at" not in cols:
-                # ADD COLUMN rejects CURRENT_TIMESTAMP defaults, so add nullable
-                # then backfill existing rows in a single pass.
-                cursor.execute("ALTER TABLE tracks ADD COLUMN updated_at TIMESTAMP")
-                cursor.execute("UPDATE tracks SET updated_at = CURRENT_TIMESTAMP")
-                logger.info("Added column: tracks.updated_at (backfilled)")
-            if "deleted_at" not in cols:
-                cursor.execute("ALTER TABLE tracks ADD COLUMN deleted_at TIMESTAMP")
-                logger.info("Added column: tracks.deleted_at")
-            if "tag_tier" not in cols:
-                cursor.execute("ALTER TABLE tracks ADD COLUMN tag_tier TEXT")
-                logger.info("Added column: tracks.tag_tier")
-            if "tag_score" not in cols:
-                cursor.execute("ALTER TABLE tracks ADD COLUMN tag_score REAL")
-                logger.info("Added column: tracks.tag_score")
-            if "is_liked" not in cols:
-                # SQLite accepts NOT NULL on ADD COLUMN only with a literal
-                # DEFAULT — 0 satisfies that and gives existing rows a sane
-                # initial "not liked" state without a separate backfill pass.
-                cursor.execute(
-                    "ALTER TABLE tracks ADD COLUMN is_liked INTEGER NOT NULL "
-                    "DEFAULT 0"
-                )
-                logger.info("Added column: tracks.is_liked")
-
-            # Stage 12a: per-event listened-ms. Nullable so legacy rows
-            # (recorded before the player started reporting wall-clock
-            # listening time) stay valid but are excluded from the new
-            # listening-time aggregations rather than counting as zeros.
-            pe_cols = {
-                row[1]
-                for row in cursor.execute(
-                    "PRAGMA table_info(play_events)"
-                ).fetchall()
-            }
-            if "listened_ms" not in pe_cols:
-                cursor.execute(
-                    "ALTER TABLE play_events ADD COLUMN listened_ms INTEGER"
-                )
-                logger.info("Added column: play_events.listened_ms")
-            # The is_liked index can't sit in `_create_tables` because that
-            # runs *before* the ADD COLUMN above on legacy DBs and would
-            # fail with "no such column". Create it here so fresh and
-            # migrated databases both end up with the same index.
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tracks_is_liked "
-                "ON tracks(is_liked) WHERE is_liked = 1"
-            )
-
-            pl_cols = {
-                row[1]
-                for row in cursor.execute("PRAGMA table_info(playlists)").fetchall()
-            }
-            if "updated_at" not in pl_cols:
-                cursor.execute("ALTER TABLE playlists ADD COLUMN updated_at TIMESTAMP")
-                cursor.execute("UPDATE playlists SET updated_at = CURRENT_TIMESTAMP")
-                logger.info("Added column: playlists.updated_at (backfilled)")
-            if "deleted_at" not in pl_cols:
-                cursor.execute("ALTER TABLE playlists ADD COLUMN deleted_at TIMESTAMP")
-                logger.info("Added column: playlists.deleted_at")
-            if "smart_rules" not in pl_cols:
-                cursor.execute("ALTER TABLE playlists ADD COLUMN smart_rules TEXT")
-                logger.info("Added column: playlists.smart_rules")
-            self.conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"Schema migration failed: {e}")
-            self.conn.rollback()
-            raise
-        finally:
-            cursor.close()
+        migrate_schema(self.conn, logger)
 
     # --- Track Methods ---
     def add_or_update_track(self, track: Track):
@@ -528,28 +272,20 @@ class DatabaseManager:
         return tracks
 
     def get_track_by_mbid(self, mbid: str) -> Optional[Track]:
-        sql = "SELECT * FROM tracks WHERE mbid = ?"
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql, (mbid,))
-            return self._row_to_track(cursor.fetchone())
+            return self._row_to_track(
+                self._library_repository.fetch_track_by_mbid(mbid)
+            )
         except sqlite3.Error:
             return None
-        finally:
-            if cursor:
-                cursor.close()
 
     def get_track_by_path(self, local_path: str) -> Optional[Track]:
-        sql = "SELECT * FROM tracks WHERE local_path = ?"
         try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql, (local_path,))
-            return self._row_to_track(cursor.fetchone())
+            return self._row_to_track(
+                self._library_repository.fetch_track_by_path(local_path)
+            )
         except sqlite3.Error:
             return None
-        finally:
-            if cursor:
-                cursor.close()
 
     def find_unlinked_tracks_by_isrc(self, isrc: str) -> List[str]:
         """MBIDs of non-deleted tracks with this ISRC and no local file yet.
@@ -796,26 +532,7 @@ class DatabaseManager:
         group correctly. The ``cover_path`` is one of the album's track
         file paths — the web layer uses it to extract embedded art.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS id,
-                COALESCE(album, '') AS title,
-                artist,
-                COUNT(*) AS track_count,
-                MIN(local_path) AS cover_path
-            FROM tracks
-            WHERE deleted_at IS NULL
-              AND album IS NOT NULL AND album != ''
-              AND artist IS NOT NULL AND artist != ''
-            GROUP BY id
-            ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE
-            """
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._library_repository.list_albums()
 
     def list_all_tracks(self) -> List[dict]:
         """Every non-deleted track in the library, flat.
@@ -825,25 +542,7 @@ class DatabaseManager:
         stream). The API layer does the filtering — the DB method stays
         purely about what's recorded.
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                mbid, title, artist, album, track_number, disc_number,
-                local_path, dap_path, is_liked,
-                COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
-            FROM tracks
-            WHERE deleted_at IS NULL
-            ORDER BY artist COLLATE NOCASE,
-                     album COLLATE NOCASE,
-                     COALESCE(disc_number, 1),
-                     COALESCE(track_number, 9999),
-                     title COLLATE NOCASE
-            """
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._library_repository.list_all_tracks()
 
     def set_track_liked(self, mbid: str, liked: bool) -> Optional[bool]:
         """Flip ``tracks.is_liked`` for a single row.
@@ -914,15 +613,7 @@ class DatabaseManager:
         """
         if not mbid:
             return None
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT local_path, dap_path FROM tracks "
-            "WHERE mbid = ? AND deleted_at IS NULL",
-            (mbid,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return dict(row) if row else None
+        return self._library_repository.get_track_sources(mbid)
 
     def list_artists(self) -> List[dict]:
         """Distinct artists with album and track counts.
@@ -1003,14 +694,7 @@ class DatabaseManager:
         """Resolve an mbid to its local file path, or None if missing."""
         if not mbid:
             return None
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT local_path FROM tracks WHERE mbid = ? AND deleted_at IS NULL",
-            (mbid,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return row["local_path"] if row and row["local_path"] else None
+        return self._library_repository.get_track_local_path(mbid)
 
     def find_local_tracks_by_identity(
         self,
@@ -1167,42 +851,25 @@ class DatabaseManager:
         download_id: Optional[int] = None,
         acquired_quality: Optional[str] = None,
     ) -> int:
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO contributions "
-            "(device_id, mbid, isrc, artist, title, album, target_quality, "
-            " acquired_quality, status, download_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                device_id, mbid, isrc, artist, title, album, target_quality,
-                acquired_quality, status, download_id,
-            ),
+        return self._contribution_repository.create(
+            device_id=device_id,
+            mbid=mbid,
+            isrc=isrc,
+            artist=artist,
+            title=title,
+            album=album,
+            target_quality=target_quality,
+            status=status,
+            download_id=download_id,
+            acquired_quality=acquired_quality,
         )
-        self.conn.commit()
-        row_id = cursor.lastrowid
-        cursor.close()
-        return row_id or 0
 
     def get_contribution(self, contribution_id: int) -> Optional[dict]:
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM contributions WHERE id = ?", (contribution_id,)
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return dict(row) if row else None
+        return self._contribution_repository.get(contribution_id)
 
     def list_contributions(self, limit: int = 200) -> List[dict]:
         """Recent contributions, newest first — backs the dashboard view."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM contributions ORDER BY updated_at DESC, id DESC "
-            "LIMIT ?",
-            (limit,),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._contribution_repository.list(limit)
 
     def update_contribution(self, contribution_id: int, **fields):
         """Patch a contribution row. Only known columns are written; always
@@ -1213,64 +880,26 @@ class DatabaseManager:
         sets = {k: v for k, v in fields.items() if k in allowed}
         if not sets:
             return
-        assignments = ", ".join(f"{k} = ?" for k in sets)
-        params = list(sets.values()) + [contribution_id]
-        cursor = self.conn.cursor()
-        cursor.execute(
-            f"UPDATE contributions SET {assignments}, "
-            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            params,
-        )
-        self.conn.commit()
-        cursor.close()
+        self._contribution_repository.update(contribution_id, sets)
 
     # --- Contributed (satellite side) ---
     def upsert_contributed(
         self, mbid: str, contribution_id: Optional[int], status: Optional[str]
     ):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO contributed (mbid, contribution_id, status, updated_at) "
-            "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(mbid) DO UPDATE SET "
-            "contribution_id = excluded.contribution_id, "
-            "status = excluded.status, updated_at = CURRENT_TIMESTAMP",
-            (mbid, contribution_id, status),
+        self._contribution_repository.upsert_contributed(
+            mbid, contribution_id, status
         )
-        self.conn.commit()
-        cursor.close()
 
     def get_contributed(self, mbid: str) -> Optional[dict]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM contributed WHERE mbid = ?", (mbid,))
-        row = cursor.fetchone()
-        cursor.close()
-        return dict(row) if row else None
+        return self._contribution_repository.get_contributed(mbid)
 
     def get_pending_contributed(self) -> List[dict]:
         """Rows in a non-terminal state — still need polling/upload."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM contributed WHERE status IS NULL OR status NOT IN "
-            "('have_better', 'satisfied', 'ingested')"
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._contribution_repository.get_pending_contributed()
 
     def list_contributed(self, limit: int = 200) -> List[dict]:
         """Recent outgoing offers with track labels for the satellite UI."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT c.rowid AS local_id, c.mbid, c.contribution_id, c.status, "
-            "c.updated_at, t.artist, t.title, t.album "
-            "FROM contributed c LEFT JOIN tracks t ON t.mbid = c.mbid "
-            "ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?",
-            (max(1, min(500, int(limit))),),
-        )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._contribution_repository.list_contributed(limit)
 
     def get_contributable_tracks(self, limit: int = 50) -> List[Track]:
         """Local tracks never offered to the master yet, capped at ``limit``.
@@ -1467,13 +1096,7 @@ class DatabaseManager:
         """Fetch one playlist by id, excluding soft-deleted rows."""
         if not playlist_id:
             return None
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM playlists WHERE playlist_id = ? AND deleted_at IS NULL",
-            (playlist_id,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
+        row = self._playlist_repository.fetch_playlist(playlist_id)
         return self._row_to_playlist(row) if row else None
 
     def rename_playlist(self, playlist_id: str, name: str) -> bool:
@@ -1494,57 +1117,32 @@ class DatabaseManager:
         return changed
 
     def queue_download(self, item: DownloadItem) -> int:
-        sql = "INSERT OR IGNORE INTO download_queue (search_query, playlist_id, mbid_guess, status) VALUES (?, ?, ?, ?)"
-        cursor = self.conn.cursor()
-        cursor.execute(
-            sql, (item.search_query, item.playlist_id, item.mbid_guess, item.status)
+        return self._download_repository.queue(
+            item.search_query,
+            item.playlist_id,
+            item.mbid_guess,
+            item.status,
         )
-        self.conn.commit()
-        row_id = cursor.lastrowid
-        cursor.close()
-        return row_id or 0
 
     def get_downloads(self, status: str) -> List[DownloadItem]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM download_queue WHERE status = ?", (status,))
-        items = [self._row_to_download_item(row) for row in cursor.fetchall()]
-        cursor.close()
-        return items
+        return [
+            self._row_to_download_item(row)
+            for row in self._download_repository.fetch_by_status(status)
+        ]
 
     def get_download_status(self, download_id: int) -> Optional[str]:
         """Return the queue row's status, or ``None`` if the row is gone
         (removed on success)."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT status FROM download_queue WHERE id = ?", (download_id,)
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return row["status"] if row else None
+        return self._download_repository.get_status(download_id)
 
     def update_download_status(self, item_id: int, status: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE download_queue SET status = ?, last_attempt = ? WHERE id = ?",
-            (status, datetime.now(), item_id),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._download_repository.update_status(item_id, status)
 
     def remove_from_queue(self, item_id: int):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM download_queue WHERE id = ?", (item_id,))
-        self.conn.commit()
-        cursor.close()
+        self._download_repository.remove(item_id)
 
     def get_download_queue_count(self) -> int:
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM download_queue WHERE status IN ('pending', 'failed')"
-        )
-        count = cursor.fetchone()[0]
-        cursor.close()
-        return count
+        return self._download_repository.active_count()
 
     def mark_track_synced(self, mbid: str, dap_path: str):
         cursor = self.conn.cursor()
@@ -1973,16 +1571,11 @@ class DatabaseManager:
         """
         if not track_mbid or not str(track_mbid).strip():
             raise ValueError("track_mbid is required")
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO play_events (track_mbid, source, listened_ms) "
-            "VALUES (?, ?, ?)",
-            (track_mbid, source, listened_ms),
+        return self._listening_repository.record_event(
+            track_mbid,
+            source,
+            listened_ms,
         )
-        event_id = cursor.lastrowid
-        self.conn.commit()
-        cursor.close()
-        return event_id
 
     def plays_by_hour(self, since_iso: Optional[str] = None) -> List[dict]:
         """Per-hour-of-day play counts in the window.
@@ -1994,25 +1587,7 @@ class DatabaseManager:
         the desktop renders against UTC labels (not local time) so
         the bins stay stable across DST shifts and traveling users.
         """
-        cursor = self.conn.cursor()
-        if since_iso:
-            cursor.execute(
-                "SELECT CAST(strftime('%H', played_at) AS INTEGER) AS hour, "
-                "       COUNT(*) AS plays "
-                "FROM play_events WHERE played_at >= ? "
-                "GROUP BY hour ORDER BY hour",
-                (since_iso,),
-            )
-        else:
-            cursor.execute(
-                "SELECT CAST(strftime('%H', played_at) AS INTEGER) AS hour, "
-                "       COUNT(*) AS plays "
-                "FROM play_events "
-                "GROUP BY hour ORDER BY hour"
-            )
-        rows = [dict(r) for r in cursor.fetchall()]
-        cursor.close()
-        return rows
+        return self._listening_repository.plays_by_hour(since_iso)
 
     def listening_time_since(self, since_iso: Optional[str] = None) -> int:
         """Sum of listened_ms in the window.
@@ -2022,35 +1597,11 @@ class DatabaseManager:
         all rows are NULL — never None — so the API layer doesn't need
         to coalesce.
         """
-        cursor = self.conn.cursor()
-        if since_iso:
-            cursor.execute(
-                "SELECT COALESCE(SUM(listened_ms), 0) FROM play_events "
-                "WHERE listened_ms IS NOT NULL AND played_at >= ?",
-                (since_iso,),
-            )
-        else:
-            cursor.execute(
-                "SELECT COALESCE(SUM(listened_ms), 0) FROM play_events "
-                "WHERE listened_ms IS NOT NULL"
-            )
-        n = cursor.fetchone()[0]
-        cursor.close()
-        return int(n or 0)
+        return self._listening_repository.listening_time_since(since_iso)
 
     def play_count_since(self, since_iso: Optional[str] = None) -> int:
         """Total play events recorded since ``since_iso`` (None = all time)."""
-        cursor = self.conn.cursor()
-        if since_iso:
-            cursor.execute(
-                "SELECT COUNT(*) FROM play_events WHERE played_at >= ?",
-                (since_iso,),
-            )
-        else:
-            cursor.execute("SELECT COUNT(*) FROM play_events")
-        n = cursor.fetchone()[0]
-        cursor.close()
-        return int(n or 0)
+        return self._listening_repository.play_count_since(since_iso)
 
     def top_tracks_since(
         self, since_iso: Optional[str] = None, limit: int = 20
@@ -2311,14 +1862,7 @@ class DatabaseManager:
         """
         if not track_mbid:
             return None
-        cur = self.conn.execute(
-            "SELECT track_mbid, lrc, synced, source, fetched_at "
-            "FROM lyrics WHERE track_mbid = ?",
-            (track_mbid,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        return dict(row) if row else None
+        return self._metadata_repository.get_lyrics(track_mbid)
 
     def get_lyrics_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Lyrics rows whose ``fetched_at`` is newer than the cursor.
@@ -2332,19 +1876,7 @@ class DatabaseManager:
         satellite doesn't re-fetch LRCLIB for tracks the master already
         knows have no lyrics — saves outbound bandwidth across the fleet.
         """
-        sql = (
-            "SELECT track_mbid, lrc, synced, source, fetched_at "
-            "FROM lyrics"
-        )
-        params: tuple = ()
-        if since_iso:
-            sql += " WHERE fetched_at > ?"
-            params = (since_iso,)
-        sql += " ORDER BY fetched_at ASC"
-        cur = self.conn.execute(sql, params)
-        rows = [dict(r) for r in cur.fetchall()]
-        cur.close()
-        return rows
+        return self._metadata_repository.get_lyrics_since(since_iso)
 
     def apply_lyrics_row(self, row: dict) -> str:
         """Upsert a lyrics row pulled from the master.
@@ -2438,15 +1970,7 @@ class DatabaseManager:
         artists that *only* appear on deleted rows would otherwise
         keep showing up in every backfill pass.
         """
-        cur = self.conn.execute(
-            "SELECT DISTINCT artist FROM tracks "
-            "WHERE deleted_at IS NULL "
-            "  AND artist IS NOT NULL AND artist != '' "
-            "ORDER BY artist COLLATE NOCASE"
-        )
-        rows = [r["artist"] for r in cur.fetchall()]
-        cur.close()
-        return rows
+        return self._metadata_repository.get_distinct_artist_names()
 
     def get_artists_needing_tags(self, max_age_days: int = 30) -> List[str]:
         """Artists with no artist_tags row, or rows older than
@@ -2904,31 +2428,18 @@ class DatabaseManager:
         return self.apply_playlist_row(row)
 
     def get_sync_state(self, key: str) -> Optional[str]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT value FROM sync_state WHERE key = ?", (key,))
-        row = cursor.fetchone()
-        cursor.close()
-        return row["value"] if row else None
+        return self._sync_repository.get_state(key)
 
     def set_sync_state(self, key: str, value: str):
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO sync_state (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        self.conn.commit()
-        cursor.close()
+        self._sync_repository.set_state(key, value)
 
     def get_all_playlists(self, include_orphans: bool = False):
-        cursor = self.conn.cursor()
-        if include_orphans:
-            cursor.execute("SELECT * FROM playlists")
-        else:
-            cursor.execute("SELECT * FROM playlists WHERE deleted_at IS NULL")
-        playlists = [self._row_to_playlist(row) for row in cursor.fetchall()]
-        cursor.close()
-        return playlists
+        return [
+            self._row_to_playlist(row)
+            for row in self._playlist_repository.fetch_all_playlists(
+                include_orphans
+            )
+        ]
 
     def list_playlists_with_counts(self) -> List[dict]:
         """Live playlists with membership counts, for the web library sidebar.
@@ -3095,21 +2606,14 @@ class DatabaseManager:
         local_only: bool = False,
         include_orphans: bool = False,
     ):
-        sql = (
-            "SELECT t.* FROM tracks t "
-            "JOIN playlist_tracks pt ON t.mbid = pt.track_mbid "
-            "WHERE pt.playlist_id = ?"
-        )
-        if local_only:
-            sql += " AND t.local_path IS NOT NULL"
-        if not include_orphans:
-            sql += " AND t.deleted_at IS NULL"
-        sql += " ORDER BY pt.track_order"
-        cursor = self.conn.cursor()
-        cursor.execute(sql, (playlist_id,))
-        tracks = [self._row_to_track(row) for row in cursor.fetchall()]
-        cursor.close()
-        return tracks
+        return [
+            self._row_to_track(row)
+            for row in self._playlist_repository.fetch_playlist_tracks(
+                playlist_id,
+                local_only,
+                include_orphans,
+            )
+        ]
 
     def get_tracks_for_playlist(
         self,
@@ -3460,27 +2964,17 @@ class DatabaseManager:
             cursor.close()
 
     def get_all_downloads(self) -> List[DownloadItem]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM download_queue ORDER BY id DESC")
-        items = [self._row_to_download_item(row) for row in cursor.fetchall()]
-        cursor.close()
-        return items
+        return [
+            self._row_to_download_item(row)
+            for row in self._download_repository.fetch_all()
+        ]
 
     def retry_download(self, item_id: int) -> bool:
         # Flip a failed row back to 'pending' so the downloader picks it up
         # on its next run. last_attempt is intentionally left alone — the
         # forensic "last failed at X" stays visible until the actual retry
         # bumps it via update_download_status.
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE download_queue SET status = 'pending' "
-            "WHERE id = ? AND status = 'failed'",
-            (item_id,),
-        )
-        changed = cursor.rowcount > 0
-        self.conn.commit()
-        cursor.close()
-        return changed
+        return self._download_repository.retry(item_id)
 
     def get_queued_release_mbids(self) -> set:
         # Distinct mbid_guess values currently in the queue, regardless of
@@ -3516,14 +3010,7 @@ class DatabaseManager:
         # this column as "Completed" for end users; keep the DB-side
         # name aligned with the column value to avoid translation
         # drift.
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "DELETE FROM download_queue WHERE status = 'success'"
-        )
-        removed = cursor.rowcount
-        self.conn.commit()
-        cursor.close()
-        return removed
+        return self._download_repository.delete_succeeded()
 
     def _row_to_download_item(self, row):
         if not row:
