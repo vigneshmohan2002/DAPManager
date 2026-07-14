@@ -1117,6 +1117,44 @@ def test_library_album_tracks_uses_replica_when_master_offline(client, mock_conf
     assert [row["mbid"] for row in res.get_json()["tracks"]] == ["local"]
 
 
+def test_library_album_tracks_uses_replica_and_closes_on_master_5xx(
+    client, mock_config
+):
+    mock_config._config = {"master_url": "http://master.example"}
+
+    class FailedUpstream:
+        status_code = 503
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self):
+            self.close = MagicMock()
+
+        @property
+        def content(self):
+            raise AssertionError("5xx fallback must not buffer the response body")
+
+    upstream = FailedUpstream()
+    with patch("requests.get", return_value=upstream), \
+         patch("web_server.DatabaseManager") as MockDB:
+        MockDB.return_value.__enter__.return_value.list_album_tracks.return_value = [
+            {
+                "mbid": "local",
+                "title": "Track 1",
+                "artist": "A",
+                "album": "B",
+                "track_number": 1,
+                "disc_number": 1,
+                "local_path": "/m/a.flac",
+                "dap_path": None,
+            },
+        ]
+        res = client.get("/api/library/albums/rmb-1/tracks")
+
+    assert res.status_code == 200
+    assert [row["mbid"] for row in res.get_json()["tracks"]] == ["local"]
+    upstream.close.assert_called_once_with()
+
+
 def test_stream_serves_file_with_audio_mime(client, mock_config, tmp_path):
     f = tmp_path / "track.flac"
     f.write_bytes(b"FLACBYTES")

@@ -17,6 +17,12 @@ from src.services.config_service import (
     read_config_file,
     write_config_file,
 )
+from src.services.media_proxy_service import (
+    guess_audio_mime,
+    request_album_cover,
+    request_album_tracks,
+    request_stream,
+)
 from src.services.task_service import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -1473,63 +1479,27 @@ def _proxy_master_album_cover(master_url: str, album_id: str):
     """Stream a master's album-art response through the local satellite."""
     import requests
     from flask import Response, stream_with_context
-    from urllib.parse import quote
-
-    headers = {}
-    for name in ("Range", "If-Range", "If-None-Match", "If-Modified-Since"):
-        if name in request.headers:
-            headers[name] = request.headers[name]
     token = (config._config.get("api_token") or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    encoded_album_id = quote(album_id, safe="")
-    upstream_url = (
-        f"{master_url}/api/library/albums/{encoded_album_id}/cover"
-    )
     try:
-        upstream = requests.get(
-            upstream_url, headers=headers, stream=True, timeout=(5, 30)
+        result = request_album_cover(
+            master_url,
+            album_id,
+            incoming_headers=request.headers,
+            api_token=token,
         )
     except requests.RequestException:
         logger.exception("master album-cover proxy failed for %s", album_id)
         return ("", 502)
 
-    if upstream.status_code >= 400:
-        status = upstream.status_code
-        upstream.close()
-        return ("", status)
-
-    forward = {}
-    for name in (
-        "Content-Type",
-        "Content-Length",
-        "Content-Range",
-        "Accept-Ranges",
-        "Cache-Control",
-        "ETag",
-        "Last-Modified",
-    ):
-        if name in upstream.headers:
-            forward[name] = upstream.headers[name]
-    forward.setdefault("Cache-Control", "public, max-age=86400")
-
-    if upstream.status_code == 304:
-        upstream.close()
-        return Response(status=304, headers=forward)
-
-    def _iter():
-        try:
-            for chunk in upstream.iter_content(chunk_size=64 * 1024):
-                if chunk:
-                    yield chunk
-        finally:
-            upstream.close()
+    if result.status_code >= 400:
+        return ("", result.status_code)
+    if result.status_code == 304:
+        return Response(status=304, headers=result.headers)
 
     return Response(
-        stream_with_context(_iter()),
-        status=upstream.status_code,
-        headers=forward,
+        stream_with_context(result.chunks),
+        status=result.status_code,
+        headers=result.headers,
     )
 
 
@@ -1573,17 +1543,14 @@ def _proxy_master_album_tracks(master_url: str, album_id: str):
     """Return the master's playable album rows, or None for offline fallback."""
     import requests
     from flask import Response
-    from urllib.parse import quote
 
-    headers = {"Accept": "application/json"}
     token = (config._config.get("api_token") or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    upstream_url = (
-        f"{master_url}/api/library/albums/{quote(album_id, safe='')}/tracks"
-    )
     try:
-        upstream = requests.get(upstream_url, headers=headers, timeout=(5, 30))
+        result = request_album_tracks(
+            master_url,
+            album_id,
+            api_token=token,
+        )
     except requests.RequestException:
         logger.warning(
             "master album-track lookup unavailable for %s; using replica",
@@ -1593,21 +1560,18 @@ def _proxy_master_album_tracks(master_url: str, album_id: str):
         return None
 
     # A transient master failure should not make locally-held tracks unusable.
-    if upstream.status_code >= 500:
+    if result.status_code >= 500:
         logger.warning(
             "master album-track lookup returned %s for %s; using replica",
-            upstream.status_code,
+            result.status_code,
             album_id,
         )
         return None
 
-    content_type = upstream.headers.get("Content-Type", "application/json")
-    body = upstream.content
-    upstream.close()
     return Response(
-        body,
-        status=upstream.status_code,
-        content_type=content_type,
+        result.body,
+        status=result.status_code,
+        content_type=result.content_type,
     )
 
 
@@ -2166,57 +2130,30 @@ def _proxy_master_stream(master_url: str, mbid: str):
     import requests
     from flask import Response, stream_with_context
 
-    headers = {}
-    if "Range" in request.headers:
-        headers["Range"] = request.headers["Range"]
     token = (config._config.get("api_token") or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    upstream_url = f"{master_url}/api/stream/{mbid}"
     try:
-        upstream = requests.get(
-            upstream_url, headers=headers, stream=True, timeout=(5, 30)
+        result = request_stream(
+            master_url,
+            mbid,
+            incoming_headers=request.headers,
+            api_token=token,
         )
     except requests.RequestException:
         logger.exception("master stream proxy failed for %s", mbid)
         return ("", 502)
 
-    if upstream.status_code >= 400:
-        upstream.close()
-        return ("", upstream.status_code)
-
-    forward = {}
-    for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
-        if h in upstream.headers:
-            forward[h] = upstream.headers[h]
-
-    def _iter():
-        try:
-            for chunk in upstream.iter_content(chunk_size=64 * 1024):
-                if chunk:
-                    yield chunk
-        finally:
-            upstream.close()
+    if result.status_code >= 400:
+        return ("", result.status_code)
 
     return Response(
-        stream_with_context(_iter()),
-        status=upstream.status_code,
-        headers=forward,
+        stream_with_context(result.chunks),
+        status=result.status_code,
+        headers=result.headers,
     )
 
 
 def _guess_audio_mime(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return {
-        ".flac": "audio/flac",
-        ".mp3": "audio/mpeg",
-        ".m4a": "audio/mp4",
-        ".mp4": "audio/mp4",
-        ".ogg": "audio/ogg",
-        ".opus": "audio/ogg",
-        ".wav": "audio/wav",
-        ".aac": "audio/aac",
-    }.get(ext, "application/octet-stream")
+    return guess_audio_mime(path)
 
 
 @app.route("/api/healthz")

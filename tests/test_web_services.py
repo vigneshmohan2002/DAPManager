@@ -6,6 +6,10 @@ from src.services.library_service import (
     is_master_configured,
     public_track_row,
 )
+from src.services.media_proxy_service import (
+    build_upstream_headers,
+    guess_audio_mime,
+)
 from src.services.config_service import (
     build_public_config,
     merge_config_update,
@@ -103,6 +107,32 @@ def test_config_update_normalizes_role_and_preserves_blank_secrets():
     assert merged["is_master"] is False
     assert merged["slsk_password"] == "existing"
     assert merged["database_file"] == "library.db"
+
+
+def test_media_proxy_headers_forward_only_allowed_values_and_authenticate():
+    assert build_upstream_headers(
+        {
+            "Range": "bytes=4-8",
+            "If-None-Match": '"cover-v1"',
+            "X-Unrelated": "drop-me",
+        },
+        forwarded=("Range", "If-None-Match"),
+        api_token=" secret-token ",
+        defaults={"Accept": "application/json"},
+    ) == {
+        "Accept": "application/json",
+        "Range": "bytes=4-8",
+        "If-None-Match": '"cover-v1"',
+        "Authorization": "Bearer secret-token",
+    }
+
+
+def test_guess_audio_mime_preserves_supported_and_fallback_types():
+    assert guess_audio_mime("/music/track.FLAC") == "audio/flac"
+    assert guess_audio_mime("/music/track.m4a") == "audio/mp4"
+    assert guess_audio_mime("/music/track.opus") == "audio/ogg"
+    assert guess_audio_mime("/music/track.unknown") == "application/octet-stream"
+
 
 def test_task_manager_injects_progress_callback_and_resets_state():
     manager = TaskManager()
