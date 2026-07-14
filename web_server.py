@@ -6,6 +6,7 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for, R
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
 from src.services import contribution_service
+from src.services import playlist_service
 from src.services.library_service import (
     availability_for,
     is_master_configured,
@@ -1191,13 +1192,10 @@ def api_library_playlists():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    from src.smart_playlist import parse_stored
     try:
         with DatabaseManager(config.db_path) as db:
-            rows = db.list_playlists_with_counts()
-        for r in rows:
-            r["smart_rules"] = parse_stored(r.get("smart_rules"))
-        return jsonify({"success": True, "playlists": rows})
+            result = playlist_service.list_library_playlists(db)
+        return jsonify(result.payload), result.status_code
     except Exception as e:
         logger.exception("api_library_playlists failed")
         return jsonify({"success": False, "message": str(e)}), 500
@@ -1215,24 +1213,19 @@ def api_library_playlists_create():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    from src.smart_playlist import serialize
     data = request.json or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        return jsonify({"success": False, "message": "name is required"}), 400
-    try:
-        smart_rules_json = serialize(data.get("smart_rules"))
-    except ValueError as e:
-        return jsonify({"success": False, "message": str(e)}), 400
+    prepared = playlist_service.prepare_playlist_create(data)
+    if isinstance(prepared, playlist_service.PlaylistServiceResult):
+        return jsonify(prepared.payload), prepared.status_code
     try:
         with DatabaseManager(config.db_path) as db:
-            pid = db.create_playlist(name, smart_rules=smart_rules_json)
+            result = playlist_service.create_library_playlist(db, prepared)
     except ValueError as e:
         return jsonify({"success": False, "message": str(e)}), 400
     except Exception as e:
         logger.exception("api_library_playlists_create failed")
         return jsonify({"success": False, "message": str(e)}), 500
-    return jsonify({"success": True, "playlist_id": pid, "name": name}), 201
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/playlists/<playlist_id>", methods=["PUT"])
@@ -1257,74 +1250,22 @@ def api_library_playlist_update(playlist_id: str):
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    from src.smart_playlist import serialize
     data = request.json or {}
-    if not isinstance(data, dict):
-        return jsonify({"success": False, "message": "body must be an object"}), 400
-
-    has_name = "name" in data
-    has_tracks = "track_mbids" in data
-    has_rules = "smart_rules" in data
-    if not has_name and not has_tracks and not has_rules:
-        return jsonify({
-            "success": False,
-            "message": "at least one of 'name', 'track_mbids', or 'smart_rules' is required",
-        }), 400
-    if has_tracks and has_rules:
-        return jsonify({
-            "success": False,
-            "message": "track_mbids and smart_rules are mutually exclusive",
-        }), 400
-
-    if has_rules:
-        try:
-            smart_rules_json = serialize(data.get("smart_rules"))
-        except ValueError as e:
-            return jsonify({"success": False, "message": str(e)}), 400
+    prepared = playlist_service.prepare_playlist_update(data)
+    if isinstance(prepared, playlist_service.PlaylistServiceResult):
+        return jsonify(prepared.payload), prepared.status_code
 
     try:
         with DatabaseManager(config.db_path) as db:
-            if db.get_playlist(playlist_id) is None:
-                return jsonify({
-                    "success": False,
-                    "message": "playlist not found or deleted",
-                }), 404
-            renamed = False
-            landed = None
-            requested = None
-            rules_changed = False
-            if has_name:
-                new_name = (data.get("name") or "").strip()
-                if not new_name:
-                    return jsonify({
-                        "success": False,
-                        "message": "name must not be empty",
-                    }), 400
-                renamed = db.rename_playlist(playlist_id, new_name)
-            if has_tracks:
-                mbids = data.get("track_mbids")
-                if not isinstance(mbids, list):
-                    return jsonify({
-                        "success": False,
-                        "message": "track_mbids must be a list",
-                    }), 400
-                requested = len(mbids)
-                landed = db.replace_playlist_membership(playlist_id, mbids)
-            if has_rules:
-                rules_changed = db.update_playlist_smart_rules(
-                    playlist_id, smart_rules_json
-                )
+            result = playlist_service.update_library_playlist(
+                db,
+                playlist_id,
+                prepared,
+            )
     except Exception as e:
         logger.exception("api_library_playlist_update failed")
         return jsonify({"success": False, "message": str(e)}), 500
-
-    resp = {"success": True, "playlist_id": playlist_id, "renamed": renamed}
-    if has_tracks:
-        resp["landed"] = landed
-        resp["requested"] = requested
-    if has_rules:
-        resp["rules_changed"] = rules_changed
-    return jsonify(resp)
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/playlists/<playlist_id>", methods=["DELETE"])
