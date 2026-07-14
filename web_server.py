@@ -10,6 +10,13 @@ from src.services.library_service import (
     is_master_configured,
     public_track_row,
 )
+from src.services.config_service import (
+    build_public_config,
+    merge_config_update,
+    normalize_config_update,
+    read_config_file,
+    write_config_file,
+)
 from src.services.task_service import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -658,29 +665,13 @@ def get_config_json():
     editable set.
     """
     try:
-        with open(CONFIG_FILE, "r") as f:
-            raw = json.load(f)
+        raw = read_config_file(CONFIG_FILE)
     except FileNotFoundError:
         return jsonify({"success": False, "message": "config.json not found"}), 404
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-    redacted = {**CONFIG_DEFAULT_VALUES, **raw}
-    # Older files may have only is_master, while partially-upgraded files can
-    # contain contradictory values.  The response always presents the
-    # canonical role and a compatibility bool derived from it.
-    synchronize_authority_fields(redacted)
-    for key in CONFIG_SECRET_KEYS:
-        if key in redacted and redacted[key]:
-            redacted[key] = ""
-    return jsonify({
-        "success": True,
-        "config": redacted,
-        "editable_keys": sorted(CONFIG_EDITABLE_KEYS),
-        "secret_keys": sorted(CONFIG_SECRET_KEYS),
-        "bool_keys": sorted(CONFIG_BOOL_KEYS),
-        "groups": [{"label": label, "keys": keys} for label, keys in CONFIG_GROUPS],
-    })
+    return jsonify(build_public_config(raw))
 
 
 @app.route("/api/config", methods=["POST"])
@@ -697,41 +688,22 @@ def update_config():
     data = request.json or {}
     if not isinstance(data, dict):
         return jsonify({"success": False, "message": "body must be an object"}), 400
-    if "device_role" in data:
-        normalized_role = normalize_device_role(data["device_role"])
-        if normalized_role is None:
-            return jsonify({
-                "success": False,
-                "message": "device_role must be master, satellite, or standalone",
-            }), 400
-        data = {**data, "device_role": normalized_role}
+    try:
+        data = normalize_config_update(data)
+    except ValueError as e:
+        return jsonify({"success": False, "message": str(e)}), 400
 
     try:
-        with open(CONFIG_FILE, "r") as f:
-            current = json.load(f)
+        current = read_config_file(CONFIG_FILE)
     except FileNotFoundError:
         return jsonify({"success": False, "message": "config.json not found"}), 404
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-    # Migrate a role-less legacy file before applying updates.  is_master is
-    # deliberately not editable; every write derives it from device_role.
-    synchronize_authority_fields(current)
-    changed = []
-    for key, value in data.items():
-        if key not in CONFIG_EDITABLE_KEYS:
-            continue
-        if key in CONFIG_SECRET_KEYS and value == "":
-            continue
-        if current.get(key) != value:
-            current[key] = value
-            changed.append(key)
-    synchronize_authority_fields(current)
+    current, changed = merge_config_update(current, data)
 
     try:
-        ensure_parent_dir(CONFIG_FILE)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(current, f, indent=4)
+        write_config_file(CONFIG_FILE, current)
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 

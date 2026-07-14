@@ -6,6 +6,11 @@ from src.services.library_service import (
     is_master_configured,
     public_track_row,
 )
+from src.services.config_service import (
+    build_public_config,
+    merge_config_update,
+    normalize_config_update,
+)
 from src.services.task_service import TaskManager
 
 
@@ -59,6 +64,45 @@ def test_public_track_row_preserves_wire_shape_and_hides_paths():
         "is_liked": True,
     }
 
+
+def test_build_public_config_applies_defaults_and_redacts_secrets():
+    payload = build_public_config({
+        "music_library_path": "/music",
+        "slsk_password": "secret",
+        "is_master": True,
+    })
+
+    assert payload["success"] is True
+    assert payload["config"]["music_library_path"] == "/music"
+    assert payload["config"]["slsk_password"] == ""
+    assert payload["config"]["device_role"] == "master"
+    assert "library_maintenance_interval_seconds" in payload["config"]
+    assert "slsk_password" in payload["secret_keys"]
+
+
+def test_config_update_normalizes_role_and_preserves_blank_secrets():
+    update = normalize_config_update({
+        "device_role": " SATELLITE ",
+        "slsk_password": "",
+        "music_library_path": "/new/music",
+        "database_file": "ignored.db",
+    })
+
+    merged, changed = merge_config_update(
+        {
+            "is_master": True,
+            "slsk_password": "existing",
+            "music_library_path": "/music",
+            "database_file": "library.db",
+        },
+        update,
+    )
+
+    assert changed == ["device_role", "music_library_path"]
+    assert merged["device_role"] == "satellite"
+    assert merged["is_master"] is False
+    assert merged["slsk_password"] == "existing"
+    assert merged["database_file"] == "library.db"
 
 def test_task_manager_injects_progress_callback_and_resets_state():
     manager = TaskManager()
