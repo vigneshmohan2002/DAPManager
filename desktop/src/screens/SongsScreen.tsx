@@ -1,37 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
-import ContextMenu, {
-  type ContextMenuEntry,
-} from "../components/ContextMenu";
+import { useMemo, useState } from "react";
+import ContextMenu from "../components/ContextMenu";
 import IdentifyTagDialog from "../components/IdentifyTagDialog";
 import TopBar from "../components/TopBar";
-import { useToast } from "../components/Toast";
+import type { LibraryTrack } from "../lib/api";
 import {
-  addTrackToPlaylist,
-  applyTrackTags,
-  contributeTrack,
-  fetchAllTracks,
-  fetchConfig,
-  fetchPlaylists,
-  identifyTrack,
-  postSuggestions,
-  queueCatalogDownload,
-  setTrackLiked,
-  softDeleteTrack,
-  SUGGESTION_HOST_KEY,
-  suggestionHostFromConfig,
-  type Availability,
-  type IdentifyCandidate,
-  type LibraryTrack,
-  type Playlist,
-  type TagMeta,
-} from "../lib/api";
-import {
-  createPlayableQueue,
   filterAndSortTracks,
   type SongSortDirection,
   type SongSortKey,
 } from "../lib/songList";
-import { usePlayer } from "../player/PlayerContext";
+import SongsFilters from "./songs/SongsFilters";
+import SongsTable from "./songs/SongsTable";
+import { buildSongContextMenu } from "./songs/menu";
+import { useSongsActions } from "./songs/useSongsActions";
+import { useSongsLibrary } from "./songs/useSongsLibrary";
 
 type Props = {
   ready: boolean;
@@ -50,18 +31,10 @@ type Props = {
   onOpenSettings: (focusKey?: string) => void;
 };
 
-const AVAILABILITY_LABEL: Record<Availability, string> = {
-  local: "local",
-  drive: "drive",
-  remote: "catalog-only",
-  unavailable: "missing",
-};
-
-const AVAILABILITY_CLASS: Record<Availability, string> = {
-  local: "bg-emerald-900/40 text-emerald-300",
-  drive: "bg-sky-900/40 text-sky-300",
-  remote: "bg-amber-900/40 text-amber-300",
-  unavailable: "bg-neutral-800 text-neutral-400",
+type SongMenuState = {
+  x: number;
+  y: number;
+  track: LibraryTrack;
 };
 
 export default function SongsScreen({
@@ -71,596 +44,92 @@ export default function SongsScreen({
   onPlaylistsChanged,
   onOpenSettings,
 }: Props) {
-  const [rows, setRows] = useState<LibraryTrack[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SongSortKey>("artist");
-  const [dir, setDir] = useState<SongSortDirection>("asc");
-  const [playlistName, setPlaylistName] = useState<string | null>(null);
-  const [allPlaylists, setAllPlaylists] = useState<Playlist[]>([]);
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    track: LibraryTrack;
-  } | null>(null);
-  const [tableVersion, setTableVersion] = useState(0);
-  const [identify, setIdentify] = useState<{
-    mbid: string;
-    candidate: IdentifyCandidate;
-    localPath: string;
-  } | null>(null);
-  const [identifying, setIdentifying] = useState(false);
-  const [applyingTag, setApplyingTag] = useState(false);
-  const [contributingMbid, setContributingMbid] = useState<string | null>(null);
-  const [suggestingMbid, setSuggestingMbid] = useState<string | null>(null);
-  const [canContributeToMaster, setCanContributeToMaster] = useState(false);
-
-  // Filters: match the web /library page's defaults + semantic.
-  //   catalog-only OFF  -> local_only=1 (only rows with a file here)
-  //   catalog-only ON   -> include rows whose only source is the
-  //                        master (played via the stream proxy).
-  //   show-orphans OFF  -> live rows only (default).
+  const [direction, setDirection] = useState<SongSortDirection>("asc");
   const [catalogOnly, setCatalogOnly] = useState(false);
   const [showOrphans, setShowOrphans] = useState(false);
+  const [menu, setMenu] = useState<SongMenuState | null>(null);
 
-  const {
-    play,
-    current,
-    isPlaying,
-    toggle,
-    playNext,
-    addToQueue,
-    setTrackLikedInQueue,
-  } = usePlayer();
-  const toast = useToast();
-
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-    fetchConfig()
-      .then((payload) => {
-        if (cancelled) return;
-        const role = String(payload.config.device_role ?? "satellite");
-        const masterUrl = String(payload.config.master_url ?? "").trim();
-        setCanContributeToMaster(
-          role !== "master" && role !== "standalone" && Boolean(masterUrl),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setCanContributeToMaster(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [ready]);
-
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    (async () => {
-      try {
-        const data = await fetchAllTracks({
-          playlistId: playlistId ?? undefined,
-          localOnly: !catalogOnly,
-          includeOrphans: showOrphans,
-        });
-        if (!cancelled) setRows(data);
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [ready, playlistId, catalogOnly, showOrphans, tableVersion]);
-
-  // Full playlist list drives the "Add to playlist" submenu and the
-  // scoped-title lookup. Re-fetched whenever the app signals a
-  // playlist mutation happened anywhere.
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const lists = await fetchPlaylists();
-        if (!cancelled) setAllPlaylists(lists);
-      } catch {
-        if (!cancelled) setAllPlaylists([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [ready, playlistsVersion]);
-
-  useEffect(() => {
-    if (!playlistId) {
-      setPlaylistName(null);
-      return;
-    }
-    const match = allPlaylists.find((p) => p.playlist_id === playlistId);
-    setPlaylistName(match?.name ?? null);
-  }, [playlistId, allPlaylists]);
-
+  const library = useSongsLibrary({
+    ready,
+    playlistId,
+    playlistsVersion,
+    catalogOnly,
+    showOrphans,
+  });
   const visible = useMemo(
-    () => filterAndSortTracks(rows, search, sort, dir),
-    [rows, search, sort, dir],
+    () => filterAndSortTracks(library.rows, search, sort, direction),
+    [library.rows, search, sort, direction],
   );
-
-  const playFrom = (startIndex: number) => {
-    // Strip unavailable rows from the queue so next/prev can't land
-    // on a dead end. startIndex is into `visible`; remap it to the
-    // same track's position in the filtered queue.
-    const selection = createPlayableQueue(visible, startIndex);
-    if (selection.queue.length) play(selection.queue, selection.startIndex);
-  };
-
-  const handleLikeToggle = async (track: LibraryTrack) => {
-    const nextLiked = !track.is_liked;
-    // Optimistic flip so the heart fills the moment the user clicks.
-    // The server is authoritative on rollback if the request fails.
-    setRows((rs) =>
-      rs.map((r) => (r.mbid === track.mbid ? { ...r, is_liked: nextLiked } : r)),
-    );
-    setTrackLikedInQueue(track.mbid, nextLiked);
-    const result = await setTrackLiked(track.mbid, nextLiked);
-    if (!result.success) {
-      setRows((rs) =>
-        rs.map((r) =>
-          r.mbid === track.mbid ? { ...r, is_liked: track.is_liked } : r,
-        ),
-      );
-      setTrackLikedInQueue(track.mbid, track.is_liked);
-      toast.show(result.message ?? "Could not save like", "err");
-      return;
-    }
-    // The first like in a fresh library auto-creates the Liked Songs
-    // smart playlist on the server — tell the sidebar to re-fetch so
-    // the new pin appears without a manual refresh.
-    if (nextLiked) onPlaylistsChanged();
-  };
+  const actions = useSongsActions({
+    visibleTracks: visible,
+    setRows: library.setRows,
+    allPlaylists: library.allPlaylists,
+    playlistId,
+    reloadTable: library.reloadTable,
+    onPlaylistsChanged,
+    onOpenSettings,
+  });
 
   const clickHeader = (key: SongSortKey) => {
-    if (key === sort) setDir(dir === "asc" ? "desc" : "asc");
-    else {
-      setSort(key);
-      setDir("asc");
-    }
-  };
-
-  const arrow = (key: SongSortKey) =>
-    sort === key ? (dir === "asc" ? " ↑" : " ↓") : "";
-
-  const reloadTable = () => setTableVersion((v) => v + 1);
-
-  const handleQueueDownload = async (mbid: string) => {
-    const result = await queueCatalogDownload([mbid]);
-    if (!result.success) {
-      toast.show(result.message || "Queue failed", "err");
+    if (key === sort) {
+      setDirection(direction === "asc" ? "desc" : "asc");
       return;
     }
-    if (result.queued > 0) {
-      toast.show("Queued for download.");
-    } else if (result.skipped_linked > 0) {
-      toast.show("Already has a local file — nothing queued.");
-    } else if (result.skipped_queued > 0) {
-      toast.show("Already in the download queue.");
-    } else if (result.not_found > 0) {
-      toast.show("Track not found in catalog.", "err");
-    } else {
-      toast.show("Nothing queued.");
-    }
+    setSort(key);
+    setDirection("asc");
   };
 
-  const handleSoftDelete = async (track: LibraryTrack) => {
-    const label = `${track.artist} — ${track.title}`;
-    if (
-      !window.confirm(
-        `Soft-delete "${label}"? It becomes an orphan — restore from the web /orphans page if needed.`,
-      )
-    )
-      return;
-    const result = await softDeleteTrack(track.mbid);
-    if (!result.success) {
-      toast.show(result.message || "Delete failed", "err");
-      return;
-    }
-    toast.show(`Deleted "${label}".`);
-    onPlaylistsChanged();
-    reloadTable();
-  };
-
-  const handleContribute = async (track: LibraryTrack) => {
-    if (contributingMbid) return;
-    setContributingMbid(track.mbid);
-    try {
-      const payload = await fetchConfig();
-      const role = String(payload.config.device_role ?? "satellite");
-      const masterUrl = String(payload.config.master_url ?? "").trim();
-      if (role === "master" || role === "standalone" || !masterUrl) {
-        toast.show("This device has no upstream master to contribute to.", "err");
-        return;
-      }
-      const result = await contributeTrack(track.mbid);
-      if (!result.success) {
-        toast.show(result.message || "Contribution failed", "err");
-        return;
-      }
-      const labels: Record<string, string> = {
-        attempting: "The master is trying to acquire a matching copy.",
-        have_better: "The master already has an equal-or-better copy.",
-        satisfied: "The master downloaded a matching copy.",
-        needs_upload: "The master requested an upload; run Contributions again to send it.",
-        ingested: "The track was uploaded and ingested by the master.",
-      };
-      toast.show(
-        result.status
-          ? labels[result.status] ?? `Contribution status: ${result.status}.`
-          : "Track offered to the master.",
-      );
-    } catch (e) {
-      toast.show(`Contribution failed: ${String(e)}`, "err");
-    } finally {
-      setContributingMbid(null);
-    }
-  };
-
-  const handleSuggest = async (track: LibraryTrack) => {
-    if (suggestingMbid) return;
-    setSuggestingMbid(track.mbid);
-    try {
-      // Read on demand rather than caching at screen mount: Settings can be
-      // edited while Songs remains mounted, and this action should use the
-      // newly saved host immediately.
-      const config = await fetchConfig();
-      const host = suggestionHostFromConfig(config.config);
-      if (!host) {
-        toast.show(
-          `${SUGGESTION_HOST_KEY} is not configured. Opening Settings.`,
-          "err",
-        );
-        onOpenSettings(SUGGESTION_HOST_KEY);
-        return;
-      }
-
-      const result = await postSuggestions([
-        { artist: track.artist, title: track.title, mbid: track.mbid },
-      ]);
-      if (!result.success) {
-        toast.show(result.message || "Suggestion failed", "err");
-        return;
-      }
-      const label = `${track.artist} — ${track.title}`;
-      if (result.queued > 0) {
-        toast.show(`Suggested ${label} to Jellyfin.`);
-      } else if (result.skipped > 0) {
-        toast.show(`${label} is already queued on the host.`);
-      } else {
-        toast.show(`Sent ${label} to the host.`);
-      }
-    } catch (e) {
-      toast.show(`Suggestion failed: ${String(e)}`, "err");
-    } finally {
-      setSuggestingMbid(null);
-    }
-  };
-
-  const handleIdentify = async (track: LibraryTrack) => {
-    if (identifying) return;
-    setIdentifying(true);
-    try {
-      const result = await identifyTrack(track.mbid);
-      if (result.kind === "needs_config") {
-        toast.show(
-          `${result.message} Opening Settings.`,
-          "err",
-        );
-        onOpenSettings(result.key);
-        return;
-      }
-      if (result.kind === "error") {
-        toast.show(result.message, "err");
-        return;
-      }
-      if (result.kind === "no_match") {
-        toast.show("No match found on AcoustID / MusicBrainz.");
-        return;
-      }
-      setIdentify({
-        mbid: track.mbid,
-        candidate: result.candidate,
-        localPath: result.localPath,
-      });
-    } finally {
-      setIdentifying(false);
-    }
-  };
-
-  const handleApplyTags = async (meta: TagMeta) => {
-    if (!identify || applyingTag) return;
-    setApplyingTag(true);
-    try {
-      const result = await applyTrackTags(identify.mbid, meta);
-      if (!result.success) {
-        toast.show(result.message || "Tag apply failed", "err");
-        return;
-      }
-      toast.show("Tags written.");
-      setIdentify(null);
-      // If the MBID changed, the old row becomes an orphan and a new
-      // row is upserted. Either way, the visible table needs to re-
-      // fetch so artist/title/album reflect the new identity.
-      reloadTable();
-      onPlaylistsChanged();
-    } finally {
-      setApplyingTag(false);
-    }
-  };
-
-  const handleAddToPlaylist = async (pid: string, track: LibraryTrack) => {
-    const pl = allPlaylists.find((p) => p.playlist_id === pid);
-    const name = pl?.name ?? pid;
-    const result = await addTrackToPlaylist(pid, track.mbid);
-    if (!result.success) {
-      toast.show(result.message || "Add failed", "err");
-      return;
-    }
-    if (result.added === 0) {
-      toast.show(`Already in "${name}".`);
-      return;
-    }
-    toast.show(
-      result.missed > 0
-        ? `Added to "${name}" (${result.missed} dropped as unknown).`
-        : `Added to "${name}".`,
-    );
-    onPlaylistsChanged();
-    // If we're currently scoped to that playlist, refresh the table.
-    if (playlistId === pid) reloadTable();
-  };
-
-  const menuEntries: ContextMenuEntry[] | null = menu
-    ? [
-        { kind: "label", text: `${menu.track.artist} — ${menu.track.title}` },
-        { kind: "separator" },
-        {
-          kind: "item",
-          label: menu.track.is_liked ? "Remove from Liked Songs" : "Add to Liked Songs",
-          disabled: menu.track.availability === "unavailable",
-          onSelect: () => handleLikeToggle(menu.track),
-        },
-        {
-          kind: "item",
-          label: "Play next",
-          // Adding an unplayable row to the queue would just stall the
-          // player when next() lands on it — refuse at the source.
-          disabled: menu.track.availability === "unavailable",
-          onSelect: () =>
-            playNext({ ...menu.track, albumId: menu.track.album_id }),
-        },
-        {
-          kind: "item",
-          label: "Add to queue",
-          disabled: menu.track.availability === "unavailable",
-          onSelect: () =>
-            addToQueue({ ...menu.track, albumId: menu.track.album_id }),
-        },
-        { kind: "separator" },
-        {
-          kind: "list",
-          heading: "Add to playlist",
-          emptyText: "(no playlists — create one from the sidebar)",
-          // Smart playlists derive their membership from rules, so
-          // adding a track manually to one would just store a row the
-          // read path ignores. Hide them rather than letting the user
-          // "succeed" at a no-op.
-          items: allPlaylists
-            .filter((p) => !p.smart_rules)
-            .map((p) => ({
-              key: p.playlist_id,
-              label: p.name,
-              onSelect: () => handleAddToPlaylist(p.playlist_id, menu.track),
-            })),
-        },
-        { kind: "separator" },
-        {
-          kind: "item",
-          label: "Queue Download",
-          onSelect: () => handleQueueDownload(menu.track.mbid),
-        },
-        {
-          kind: "item",
-          label:
-            suggestingMbid === menu.track.mbid
-              ? "Suggesting…"
-              : "Suggest to Jellyfin",
-          disabled: suggestingMbid !== null,
-          onSelect: () => handleSuggest(menu.track),
-        },
-        {
-          kind: "item",
-          label:
-            contributingMbid === menu.track.mbid
-              ? "Contributing…"
-              : "Contribute to master",
-          // Only a true local row has bytes this device can promise or upload.
-          // Drive/catalog rows are playable through another source but do not
-          // have a local_path accepted by /api/contribute/track.
-          disabled:
-            !canContributeToMaster ||
-            menu.track.availability !== "local" ||
-            contributingMbid !== null,
-          onSelect: () => handleContribute(menu.track),
-        },
-        {
-          kind: "item",
-          label: identifying ? "Identifying…" : "Identify & Tag",
-          // Identify needs a local file to fingerprint. "drive" rows
-          // have a DAP path but no local_path; "remote" and
-          // "unavailable" have neither. Only "local" qualifies.
-          disabled: menu.track.availability !== "local" || identifying,
-          onSelect: () => handleIdentify(menu.track),
-        },
-        {
-          kind: "item",
-          label: "Soft-Delete",
-          danger: true,
-          onSelect: () => handleSoftDelete(menu.track),
-        },
-      ]
+  const menuEntries = menu
+    ? buildSongContextMenu({
+        track: menu.track,
+        playlists: library.allPlaylists,
+        canContributeToMaster: library.canContributeToMaster,
+        contributingMbid: actions.contributingMbid,
+        suggestingMbid: actions.suggestingMbid,
+        identifying: actions.identifying,
+        actions: actions.menuActions,
+      })
     : null;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar
-        title={playlistId ? playlistName ?? "Playlist" : "Songs"}
+        title={playlistId ? library.playlistName ?? "Playlist" : "Songs"}
         subtitle={
           playlistId
-            ? `${visible.length} of ${rows.length} · playlist`
-            : `${visible.length} of ${rows.length}`
+            ? `${visible.length} of ${library.rows.length} · playlist`
+            : `${visible.length} of ${library.rows.length}`
         }
         search={search}
         onSearch={setSearch}
       />
-      <div className="titlebar-nodrag flex items-center gap-4 px-6 py-2 border-b border-[var(--color-border)] text-sm text-[var(--color-text-muted)]">
-        <label className="flex items-center gap-2 cursor-pointer select-none hover:text-[var(--color-text)]">
-          <input
-            type="checkbox"
-            checked={catalogOnly}
-            onChange={(e) => setCatalogOnly(e.target.checked)}
-          />
-          Show catalog-only
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer select-none hover:text-[var(--color-text)]">
-          <input
-            type="checkbox"
-            checked={showOrphans}
-            onChange={(e) => setShowOrphans(e.target.checked)}
-          />
-          Show orphans
-        </label>
-      </div>
+      <SongsFilters
+        catalogOnly={catalogOnly}
+        showOrphans={showOrphans}
+        onCatalogOnlyChange={setCatalogOnly}
+        onShowOrphansChange={setShowOrphans}
+      />
       <div className="flex-1 overflow-y-auto">
-        {!ready || loading ? (
-          <div className="px-6 py-6 text-[var(--color-text-muted)] text-sm">
-            Loading…
-          </div>
-        ) : error ? (
-          <div className="px-6 py-6 text-[var(--color-accent)] text-sm">
-            {error}
-          </div>
-        ) : visible.length === 0 ? (
-          <div className="px-6 py-6 text-[var(--color-text-muted)] text-sm">
-            No tracks.
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-[var(--color-bg)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
-              <tr>
-                <th className="w-10"></th>
-                <th className="w-9"></th>
-                <th
-                  onClick={() => clickHeader("title")}
-                  className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
-                >
-                  Title{arrow("title")}
-                </th>
-                <th
-                  onClick={() => clickHeader("artist")}
-                  className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
-                >
-                  Artist{arrow("artist")}
-                </th>
-                <th
-                  onClick={() => clickHeader("album")}
-                  className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
-                >
-                  Album{arrow("album")}
-                </th>
-                <th className="w-36 text-left font-medium px-3 py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((t, idx) => {
-                const isCurrent = current?.mbid === t.mbid;
-                const playable = t.availability !== "unavailable";
-                return (
-                  <tr
-                    key={t.mbid}
-                    onClick={() => {
-                      if (!playable) return;
-                      if (isCurrent) toggle();
-                      else playFrom(idx);
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      setMenu({ x: e.clientX, y: e.clientY, track: t });
-                    }}
-                    className={`border-b border-[var(--color-border)]/40 ${
-                      playable
-                        ? "cursor-pointer hover:bg-[var(--color-surface)]/60"
-                        : "opacity-60 cursor-default"
-                    }`}
-                  >
-                    <td className="w-10 px-3 py-1.5 text-center text-[var(--color-text-muted)]">
-                      {isCurrent && isPlaying ? (
-                        <span className="text-[var(--color-accent)]">♪</span>
-                      ) : null}
-                    </td>
-                    <td className="w-9 px-1 py-1.5 text-center">
-                      <button
-                        onClick={(e) => {
-                          // Heart toggles must not also trigger the row's
-                          // play-on-click handler — that would start
-                          // playback every time a user likes a track.
-                          e.stopPropagation();
-                          handleLikeToggle(t);
-                        }}
-                        aria-label={t.is_liked ? "Unlike" : "Like"}
-                        aria-pressed={t.is_liked}
-                        className={`text-base transition-colors ${
-                          t.is_liked
-                            ? "text-rose-400 hover:text-rose-300"
-                            : "text-[var(--color-text-muted)]/40 hover:text-rose-400"
-                        }`}
-                      >
-                        {t.is_liked ? "♥" : "♡"}
-                      </button>
-                    </td>
-                    <td
-                      className={`px-3 py-1.5 truncate max-w-0 ${isCurrent ? "text-[var(--color-accent)]" : ""}`}
-                    >
-                      {t.title}
-                    </td>
-                    <td className="px-3 py-1.5 truncate max-w-0 text-[var(--color-text-muted)]">
-                      {t.artist}
-                    </td>
-                    <td className="px-3 py-1.5 truncate max-w-0 text-[var(--color-text-muted)]">
-                      {t.album ?? ""}
-                    </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-[11px] ${AVAILABILITY_CLASS[t.availability]}`}
-                      >
-                        {AVAILABILITY_LABEL[t.availability]}
-                      </span>
-                      {t.orphan ? (
-                        <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-[11px] bg-rose-900/40 text-rose-300">
-                          orphan
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+        <SongsTable
+          ready={ready}
+          loading={library.loading}
+          error={library.error}
+          tracks={visible}
+          sort={sort}
+          direction={direction}
+          currentMbid={actions.currentMbid}
+          isPlaying={actions.isPlaying}
+          onSort={clickHeader}
+          onPlayFrom={actions.playFrom}
+          onTogglePlayback={actions.toggle}
+          onLikeToggle={actions.menuActions.onLikeToggle}
+          onContextMenu={(event, track) => {
+            event.preventDefault();
+            setMenu({ x: event.clientX, y: event.clientY, track });
+          }}
+        />
       </div>
       {menuEntries && menu ? (
         <ContextMenu
@@ -670,13 +139,13 @@ export default function SongsScreen({
           onClose={() => setMenu(null)}
         />
       ) : null}
-      {identify ? (
+      {actions.identify ? (
         <IdentifyTagDialog
-          candidate={identify.candidate}
-          localPath={identify.localPath}
-          applying={applyingTag}
-          onApply={handleApplyTags}
-          onCancel={() => setIdentify(null)}
+          candidate={actions.identify.candidate}
+          localPath={actions.identify.localPath}
+          applying={actions.applyingTag}
+          onApply={actions.handleApplyTags}
+          onCancel={actions.closeIdentifyDialog}
         />
       ) : null}
     </div>

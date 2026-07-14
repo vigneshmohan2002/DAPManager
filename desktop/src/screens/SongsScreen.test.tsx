@@ -91,6 +91,7 @@ describe("SongsScreen list and playback contract", () => {
       bool_keys: [],
       groups: [],
     });
+    apiMocks.setTrackLiked.mockResolvedValue({ success: true });
   });
 
   it("filters case-insensitively across album metadata", async () => {
@@ -160,5 +161,33 @@ describe("SongsScreen list and playback contract", () => {
     fireEvent.click(missing.closest("tr")!);
 
     await waitFor(() => expect(playerMocks.play).not.toHaveBeenCalled());
+  });
+
+  it("optimistically likes a track without triggering row playback", async () => {
+    const user = userEvent.setup();
+    const onPlaylistsChanged = vi.fn();
+    render(
+      <SongsScreen
+        ready
+        playlistsVersion={0}
+        onPlaylistsChanged={onPlaylistsChanged}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+    const localTitle = await screen.findByText("Local opener");
+    const likeButton = localTitle.closest("tr")?.querySelector("button");
+    expect(likeButton).not.toBeNull();
+
+    await user.click(likeButton!);
+
+    expect(likeButton).toHaveAttribute("aria-label", "Unlike");
+    expect(likeButton).toHaveAttribute("aria-pressed", "true");
+    expect(apiMocks.setTrackLiked).toHaveBeenCalledWith("local-1", true);
+    expect(playerMocks.setTrackLikedInQueue).toHaveBeenCalledWith(
+      "local-1",
+      true,
+    );
+    expect(playerMocks.play).not.toHaveBeenCalled();
+    expect(onPlaylistsChanged).toHaveBeenCalledTimes(1);
   });
 });
