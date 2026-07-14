@@ -1,34 +1,15 @@
-import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import ContextMenu from "./ContextMenu";
 import {
-  createPlaylist,
-  deletePlaylist,
-  fetchPlaylists,
-  renamePlaylist,
-  updatePlaylistSmartRules,
-  type Playlist,
-  type SmartRuleset,
-} from "../lib/api";
-import ContextMenu, { type ContextMenuEntry } from "./ContextMenu";
+  STATIC_SECTIONS,
+  type SidebarItem,
+  type SidebarSection,
+} from "./sidebar/model";
+import { usePlaylistSidebarController } from "./sidebar/usePlaylistSidebarController";
 import SmartPlaylistDialog from "./SmartPlaylistDialog";
 import { useToast } from "./Toast";
 
-type SidebarItem = {
-  id: string;
-  label: string;
-  count?: number;
-  // Attached only to playlist items so right-click can open the
-  // rename/delete menu. Static items leave this unset.
-  playlistId?: string;
-  // Truthy on smart playlists so the row can render a badge and the
-  // context menu can offer "Edit rules…".
-  smartRules?: SmartRuleset | null;
-};
-
-type SidebarSection = {
-  title: string;
-  items: SidebarItem[];
-  accessory?: React.ReactNode;
-};
+export { playlistSidebarId } from "./sidebar/model";
 
 type Props = {
   activeId: string;
@@ -41,49 +22,9 @@ type Props = {
   onPlaylistDeleted: (pid: string) => void;
 };
 
-const STATIC_SECTIONS: SidebarSection[] = [
-  {
-    // Home is its own section because it sits above Library — it's the
-    // launch surface for recent/liked/jump-back-in, not another library
-    // browser. Anchored at the very top so users land here on start.
-    title: "",
-    items: [{ id: "home", label: "Home" }],
-  },
-  {
-    title: "Library",
-    items: [
-      { id: "albums", label: "Albums" },
-      { id: "artists", label: "Artists" },
-      { id: "songs", label: "Songs" },
-      { id: "stats", label: "Listening" },
-    ],
-  },
-  {
-    title: "Discover",
-    items: [
-      { id: "downloads", label: "Downloads" },
-      { id: "releases", label: "New Releases" },
-    ],
-  },
-  {
-    title: "Manage",
-    items: [
-      { id: "audit", label: "Audit" },
-      { id: "duplicates", label: "Duplicates" },
-      { id: "orphans", label: "Orphans" },
-      { id: "fleet", label: "Fleet" },
-      { id: "contributions", label: "Contributions" },
-      { id: "sync", label: "Sync" },
-      { id: "suggest", label: "Suggest" },
-      { id: "settings", label: "Settings" },
-    ],
-  },
-];
-
-// Sidebar id convention: static screens use their own id ("albums"),
-// playlists use "playlist:<playlist_id>" so App.tsx can route the click
-// to SongsScreen with the right scope.
-export const playlistSidebarId = (pid: string) => `playlist:${pid}`;
+type RenderSection = SidebarSection & {
+  accessory?: ReactNode;
+};
 
 export default function Sidebar({
   activeId,
@@ -97,133 +38,34 @@ export default function Sidebar({
 }: Props) {
   const isMac =
     typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [playlistError, setPlaylistError] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    pid: string;
-    name: string;
-    smartRules: SmartRuleset | null;
-  } | null>(null);
-  // Dialog state: undefined = closed; { kind: "create" } = new playlist;
-  // { kind: "edit", ... } = editing an existing smart playlist's rules.
-  const [dialog, setDialog] = useState<
-    | { kind: "create" }
-    | {
-        kind: "edit";
-        playlistId: string;
-        name: string;
-        rules: SmartRuleset | null;
-      }
-    | null
-  >(null);
-  const [saving, setSaving] = useState(false);
   const toast = useToast();
-
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchPlaylists();
-        if (!cancelled) {
-          setPlaylists(data);
-          setPlaylistError(null);
-        }
-      } catch (e) {
-        if (!cancelled) setPlaylistError(String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [ready, playlistsVersion]);
-
-  const handleCreate = async (name: string, rules: SmartRuleset | null) => {
-    setSaving(true);
-    try {
-      const result = await createPlaylist(name, rules);
-      if (!result.success || !result.playlist_id) {
-        toast.show(result.message ?? "Failed to create playlist", "err");
-        return;
-      }
-      toast.show(
-        `Created ${rules ? "smart " : ""}playlist "${result.name ?? name}".`,
-      );
-      onPlaylistCreated(result.playlist_id);
-      setDialog(null);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleEditRules = async (
-    playlistId: string,
-    _name: string,
-    rules: SmartRuleset | null,
-  ) => {
-    setSaving(true);
-    try {
-      const result = await updatePlaylistSmartRules(playlistId, rules);
-      if (!result.success) {
-        toast.show(result.message || "Save rules failed", "err");
-        return;
-      }
-      toast.show(rules ? "Rules updated." : "Rules cleared.");
-      onPlaylistsChanged();
-      setDialog(null);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleRename = async (pid: string, currentName: string) => {
-    const next = (
-      window.prompt("Rename playlist to:", currentName) ?? ""
-    ).trim();
-    if (!next || next === currentName) return;
-    const result = await renamePlaylist(pid, next);
-    if (!result.success) {
-      toast.show(result.message || "Rename failed", "err");
-      return;
-    }
-    toast.show(`Renamed to "${next}".`);
-    onPlaylistsChanged();
-  };
-
-  const handleDelete = async (pid: string, name: string) => {
-    if (
-      !window.confirm(
-        `Soft-delete playlist "${name}"? It becomes an orphan — restore from the web /orphans page if needed.`,
-      )
-    )
-      return;
-    const result = await deletePlaylist(pid);
-    if (!result.success) {
-      toast.show(result.message || "Delete failed", "err");
-      return;
-    }
-    toast.show(`Deleted "${name}".`);
-    onPlaylistDeleted(pid);
-  };
-
-  // Liked Songs is a system smart playlist with a reserved id; we pin
-  // it at the top of the section instead of letting it sort
-  // alphabetically with user-created playlists. The heart glyph on the
-  // label makes it identifiable at a glance even if a user renames a
-  // regular playlist to "Liked".
-  const orderedPlaylists = [...playlists].sort((a, b) => {
-    if (a.playlist_id === "liked_songs") return -1;
-    if (b.playlist_id === "liked_songs") return 1;
-    return 0;
+  const {
+    playlists,
+    playlistItems,
+    playlistError,
+    menu,
+    menuEntries,
+    dialog,
+    saving,
+    openCreateDialog,
+    openMenu,
+    closeMenu,
+    cancelDialog,
+    saveDialog,
+  } = usePlaylistSidebarController({
+    ready,
+    playlistsVersion,
+    onPlaylistsChanged,
+    onPlaylistCreated,
+    onPlaylistDeleted,
+    showToast: toast.show,
   });
 
-  const playlistSection: SidebarSection = {
+  const playlistSection: RenderSection = {
     title: "Playlists",
     accessory: (
       <button
-        onClick={() => setDialog({ kind: "create" })}
+        onClick={openCreateDialog}
         disabled={!ready}
         title="New playlist"
         className="text-lg leading-none px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40"
@@ -231,60 +73,8 @@ export default function Sidebar({
         +
       </button>
     ),
-    items: orderedPlaylists.map((p) => ({
-      // Smart playlists carry their (decoded) ruleset so the right-
-      // click handler can prefill the edit dialog without re-fetching.
-      id: playlistSidebarId(p.playlist_id),
-      label: p.playlist_id === "liked_songs" ? `♥ ${p.name}` : p.name,
-      count: p.track_count,
-      playlistId: p.playlist_id,
-      smartRules: p.smart_rules,
-    })),
+    items: playlistItems,
   };
-
-  const isSmart = Boolean(menu?.smartRules);
-  // The Liked Songs system playlist is rename-and-delete-locked —
-  // the backend refuses the delete with 409 (Stage 11f) and a
-  // user-renamed "Liked Songs" wouldn't sync the way the rest of
-  // the auto-created infrastructure assumes. Hide both actions
-  // from the menu so the user doesn't try and get a toast they
-  // can't fix.
-  const isSystem = menu?.pid === "liked_songs";
-  const menuEntries: ContextMenuEntry[] | null = menu
-    ? [
-        { kind: "label", text: menu.name },
-        { kind: "separator" },
-        ...(isSmart
-          ? [
-              {
-                kind: "item" as const,
-                label: "Edit rules…",
-                disabled: isSystem,
-                onSelect: () =>
-                  setDialog({
-                    kind: "edit",
-                    playlistId: menu.pid,
-                    name: menu.name,
-                    rules: menu.smartRules,
-                  }),
-              },
-            ]
-          : []),
-        {
-          kind: "item",
-          label: "Rename…",
-          disabled: isSystem,
-          onSelect: () => handleRename(menu.pid, menu.name),
-        },
-        {
-          kind: "item",
-          label: "Delete (soft)",
-          danger: true,
-          disabled: isSystem,
-          onSelect: () => handleDelete(menu.pid, menu.name),
-        },
-      ]
-    : null;
 
   return (
     <aside className="w-60 shrink-0 bg-[var(--color-bg-sidebar)] border-r border-[var(--color-border)] flex flex-col">
@@ -313,16 +103,10 @@ export default function Sidebar({
           section={playlistSection}
           activeId={activeId}
           onSelect={onSelect}
-          onContextMenuItem={(item, e) => {
+          onContextMenuItem={(item, event) => {
             if (!item.playlistId) return;
-            e.preventDefault();
-            setMenu({
-              x: e.clientX,
-              y: e.clientY,
-              pid: item.playlistId,
-              name: item.label,
-              smartRules: item.smartRules ?? null,
-            });
+            event.preventDefault();
+            openMenu(item, event.clientX, event.clientY);
           }}
           footer={
             playlistError ? (
@@ -345,7 +129,7 @@ export default function Sidebar({
           x={menu.x}
           y={menu.y}
           entries={menuEntries}
-          onClose={() => setMenu(null)}
+          onClose={closeMenu}
         />
       ) : null}
       {dialog ? (
@@ -358,12 +142,8 @@ export default function Sidebar({
           initialName={dialog.kind === "edit" ? dialog.name : ""}
           initialRules={dialog.kind === "edit" ? dialog.rules : null}
           saving={saving}
-          onSave={(name, rules) =>
-            dialog.kind === "edit"
-              ? handleEditRules(dialog.playlistId, name, rules)
-              : handleCreate(name, rules)
-          }
-          onCancel={() => (saving ? undefined : setDialog(null))}
+          onSave={saveDialog}
+          onCancel={cancelDialog}
         />
       ) : null}
     </aside>
@@ -377,15 +157,14 @@ function Section({
   onContextMenuItem,
   footer,
 }: {
-  section: SidebarSection;
+  section: RenderSection;
   activeId: string;
   onSelect: (id: string) => void;
-  onContextMenuItem?: (item: SidebarItem, e: React.MouseEvent) => void;
-  footer?: React.ReactNode;
+  onContextMenuItem?: (item: SidebarItem, event: React.MouseEvent) => void;
+  footer?: ReactNode;
 }) {
-  // Sections with an empty title (e.g. the top-level Home anchor) skip
-  // the heading row but keep the same vertical rhythm so the next
-  // section's heading still sits flush below the items above.
+  // Empty-title sections (the top-level Home anchor) retain the same rhythm
+  // without rendering a heading row.
   const showHeading = section.title.length > 0 || section.accessory;
   return (
     <div className="mb-6">
@@ -402,7 +181,7 @@ function Section({
             <li key={item.id}>
               <button
                 onClick={() => onSelect(item.id)}
-                onContextMenu={(e) => onContextMenuItem?.(item, e)}
+                onContextMenu={(event) => onContextMenuItem?.(item, event)}
                 className={`w-full flex items-center text-left px-3 py-1.5 rounded-md text-sm transition-colors ${
                   active
                     ? "bg-[var(--color-surface)] text-[var(--color-text)]"
