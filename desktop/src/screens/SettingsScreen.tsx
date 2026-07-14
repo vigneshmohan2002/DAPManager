@@ -1,18 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
-import {
-  fetchConfig,
-  fetchStatus,
-  regenerateDailyMixes,
-  restartBackend,
-  saveConfig,
-  startTagBackfill,
-  type BackendStatus,
-  type ConfigPayload,
-  type ConfigValue,
-} from "../lib/api";
-import { buildConfigPatch } from "../lib/configDraft";
+import LibraryTools from "./settings/LibraryTools";
+import { useSettingsController } from "./settings/useSettingsController";
 
 type Props = {
   ready: boolean;
@@ -28,31 +18,21 @@ export default function SettingsScreen({
   focusKey,
   onConsumedFocusKey,
 }: Props) {
-  const [payload, setPayload] = useState<ConfigPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Record<string, ConfigValue>>({});
-  const [saving, setSaving] = useState(false);
-  const [restartOnly, setRestartOnly] = useState(false);
   const toast = useToast();
+  const {
+    payload,
+    loadError,
+    saving,
+    dirty,
+    secretKeys,
+    booleanKeys,
+    effectiveValue,
+    changeValue,
+    load,
+    save,
+  } = useSettingsController({ ready, notify: toast.show });
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [flashKey, setFlashKey] = useState<string | null>(null);
-
-  const load = async () => {
-    if (!ready) return;
-    setLoadError(null);
-    try {
-      const p = await fetchConfig();
-      setPayload(p);
-      setDraft({});
-    } catch (e) {
-      setLoadError(String(e));
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
 
   // Scroll + flash when the caller hands us a focusKey. Runs after
   // the payload lands so the target row actually exists.
@@ -67,72 +47,6 @@ export default function SettingsScreen({
       return () => window.clearTimeout(t);
     }
   }, [focusKey, payload, onConsumedFocusKey]);
-
-  const secretSet = new Set(payload?.secret_keys ?? []);
-  const boolSet = new Set(payload?.bool_keys ?? []);
-
-  const effective = (key: string): ConfigValue => {
-    if (key in draft) return draft[key];
-    return payload?.config[key] ?? (boolSet.has(key) ? false : "");
-  };
-
-  const onChange = (key: string, value: ConfigValue) => {
-    setDraft((d) => ({ ...d, [key]: value }));
-  };
-
-  const dirty = Object.keys(draft).length > 0;
-
-  const handleSave = async () => {
-    if (!payload) return;
-    setSaving(true);
-    // Build patch: coerce numeric-typed values back to numbers; leave
-    // blanks in secret fields as '' so the backend treats them as
-    // "don't change".
-    const patch = buildConfigPatch(draft, payload.config, boolSet);
-    try {
-      if (restartOnly) {
-        const recovered = await restartBackend();
-        if (!recovered.success) {
-          setRestartOnly(!recovered.backend_running);
-          toast.show(recovered.message, "err");
-          return;
-        }
-        setRestartOnly(false);
-      }
-
-      const result = await saveConfig(patch);
-      if (!result.success) {
-        toast.show(result.message || "Save failed", "err");
-        return;
-      }
-      const n = result.changed.length;
-      const needsRestart = result.changed.some(
-        (key) => key === "device_role" || key === "api_token",
-      );
-      let restartMessage = "";
-      if (needsRestart) {
-        const restarted = await restartBackend();
-        if (!restarted.success) {
-          setRestartOnly(!restarted.backend_running);
-          toast.show(`Settings saved, but ${restarted.message}`, "err");
-          if (restarted.backend_running) await load();
-          return;
-        }
-        setRestartOnly(false);
-        restartMessage = ` ${restarted.message}`;
-      }
-      toast.show(
-        n === 0
-          ? "No changes."
-          : `Saved ${n} change${n === 1 ? "" : "s"}: ${result.changed.join(", ")}.${restartMessage}`,
-      );
-      await load();
-    } catch (error) {
-      toast.show(`Settings could not be saved: ${String(error)}`, "err");
-    } finally {
-      setSaving(false);
-    }
-  };
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -177,9 +91,9 @@ export default function SettingsScreen({
                 </legend>
                 <div className="space-y-2 mt-2">
                   {group.keys.map((key) => {
-                    const value = effective(key);
-                    const isSecret = secretSet.has(key);
-                    const isBool = boolSet.has(key);
+                    const value = effectiveValue(key);
+                    const isSecret = secretKeys.has(key);
+                    const isBool = booleanKeys.has(key);
                     const flashed = flashKey === key;
                     return (
                       <div
@@ -205,14 +119,14 @@ export default function SettingsScreen({
                             id={`cfg-${key}`}
                             type="checkbox"
                             checked={Boolean(value)}
-                            onChange={(e) => onChange(key, e.target.checked)}
+                            onChange={(e) => changeValue(key, e.target.checked)}
                           />
                         ) : (
                           <input
                             id={`cfg-${key}`}
                             type={isSecret ? "password" : "text"}
                             value={value == null ? "" : String(value)}
-                            onChange={(e) => onChange(key, e.target.value)}
+                            onChange={(e) => changeValue(key, e.target.value)}
                             placeholder={
                               isSecret ? "(leave blank to keep current)" : ""
                             }
@@ -227,7 +141,7 @@ export default function SettingsScreen({
             ))}
             <div className="flex items-center gap-3 pt-2">
               <button
-                onClick={handleSave}
+                onClick={save}
                 disabled={!dirty || saving}
                 className="px-4 py-2 rounded-md bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110"
               >
@@ -249,141 +163,5 @@ export default function SettingsScreen({
         )}
       </div>
     </div>
-  );
-}
-
-// --- Library tools --------------------------------------------------------
-
-// Polls /api/status while a job is running so the button shows the
-// task's progress detail without forcing the user to re-click. The
-// poll stops as soon as the job goes idle to avoid burning the
-// network for the rest of the session.
-function LibraryTools({ ready }: { ready: boolean }) {
-  const [status, setStatus] = useState<BackendStatus | null>(null);
-  const [kicking, setKicking] = useState(false);
-  const toast = useToast();
-
-  // Backfill is the only TaskManager-driven job this card cares
-  // about — narrow the running indicator to that task name so a
-  // Library Scan running in another tab doesn't paint this row
-  // "in progress".
-  const backfilling = Boolean(
-    status?.running && status.task === "Genre tag backfill",
-  );
-
-  useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      try {
-        const s = await fetchStatus();
-        if (cancelled) return;
-        setStatus(s);
-        // Fast poll while running, slow heartbeat while idle — the
-        // user is only on this screen briefly so 5s idle is fine.
-        timer = setTimeout(tick, s.running ? 1500 : 5000);
-      } catch {
-        if (!cancelled) timer = setTimeout(tick, 5000);
-      }
-    };
-    tick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [ready]);
-
-  const handleBackfill = async () => {
-    setKicking(true);
-    try {
-      const result = await startTagBackfill(true);
-      if (!result.success) {
-        toast.show(result.message ?? "Couldn't start backfill", "err");
-      } else {
-        toast.show("Tag backfill started");
-        // Force an immediate poll so the button flips to "Running"
-        // without waiting for the next 5s idle tick.
-        fetchStatus().then(setStatus).catch(() => {});
-      }
-    } finally {
-      setKicking(false);
-    }
-  };
-
-  const [regenerating, setRegenerating] = useState(false);
-
-  const handleRegenMixes = async () => {
-    setRegenerating(true);
-    try {
-      const result = await regenerateDailyMixes();
-      if (!result.success) {
-        toast.show(result.message ?? "Couldn't regenerate", "err");
-        return;
-      }
-      if (result.mixes === 0) {
-        const why =
-          result.reason === "cold_start"
-            ? "Play more tracks first — we need more listening history."
-            : result.reason === "no_tags"
-              ? "Run the genre tag backfill first."
-              : "No mixes generated.";
-        toast.show(why);
-      } else {
-        toast.show(`Regenerated ${result.mixes} Daily Mix${result.mixes === 1 ? "" : "es"}.`);
-      }
-    } finally {
-      setRegenerating(false);
-    }
-  };
-
-  return (
-    <fieldset className="border border-[var(--color-border)] rounded-md px-4 pt-3 pb-4">
-      <legend className="px-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-        Library tools
-      </legend>
-      <div className="mt-2 flex items-start gap-4">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm">Backfill genre tags from MusicBrainz</p>
-          <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
-            Walks your library and asks MusicBrainz for each artist's
-            top tags. Powers genre filters on smart playlists and the
-            Artist Radio feature. Rate-limited to ~1 request/sec, so a
-            500-artist library takes about 15 minutes. Incremental —
-            re-running skips artists already tagged in the last 30 days.
-          </p>
-          {backfilling && status?.detail && (
-            <p className="mt-2 text-xs text-[var(--color-text)] font-mono">
-              {status.detail}
-            </p>
-          )}
-        </div>
-        <button
-          onClick={handleBackfill}
-          disabled={!ready || kicking || backfilling}
-          className="shrink-0 px-3 py-1.5 rounded-md bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium disabled:opacity-50"
-        >
-          {backfilling ? "Running…" : kicking ? "Starting…" : "Backfill"}
-        </button>
-      </div>
-      <div className="mt-4 pt-4 border-t border-[var(--color-border)]/40 flex items-start gap-4">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm">Regenerate Daily Mixes</p>
-          <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
-            Clusters your top artists into 4–6 themed mixes shown on
-            Home. Needs at least eight artists with three or more
-            plays in the last 90 days, plus a finished tag backfill.
-            Pure-SQL — runs in milliseconds.
-          </p>
-        </div>
-        <button
-          onClick={handleRegenMixes}
-          disabled={!ready || regenerating}
-          className="shrink-0 px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm border border-[var(--color-border)] hover:bg-[var(--color-surface)]/70 disabled:opacity-50"
-        >
-          {regenerating ? "…" : "Regenerate"}
-        </button>
-      </div>
-    </fieldset>
   );
 }
