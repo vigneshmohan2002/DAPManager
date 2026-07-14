@@ -206,6 +206,48 @@ def test_sync_all_progress_callback_receives_updates(db):
     assert any("finished" in m.get("message", "") for m in messages)
 
 
+def test_sync_all_progress_contract_reports_only_executed_steps(db):
+    messages = []
+    with patch("src.sync_all.main_run_catalog_pull", return_value={}), \
+         patch("src.sync_all.main_run_playlist_pull", return_value={}), \
+         patch("src.sync_all.main_run_playlist_push", return_value={}), \
+         patch("src.sync_all.main_run_lyrics_pull", return_value={}), \
+         patch("src.sync_all.main_run_inventory_report") as inventory:
+        out = main_run_sync_all(
+            db,
+            _cfg(
+                report_inventory_to_host=False,
+                contribute_to_host=False,
+            ),
+            progress_callback=messages.append,
+        )
+
+    assert messages == [
+        {"message": "Sync All: pull_catalog"},
+        {"message": "Sync All: pull_artist_tags"},
+        {"message": "Sync All: pull_playlists"},
+        {"message": "Sync All: push_playlists"},
+        {"message": "Sync All: pull_lyrics"},
+        {
+            "message": (
+                "Sync All finished: pull_catalog=ok, pull_artist_tags=ok, "
+                "pull_playlists=ok, push_playlists=ok, pull_lyrics=ok, "
+                "report_inventory=skipped, contribute=skipped"
+            )
+        },
+    ]
+    assert [step["status"] for step in out["steps"]] == [
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "skipped",
+        "skipped",
+    ]
+    inventory.assert_not_called()
+
+
 def test_authority_role_ignores_stale_master_url_and_legacy_false(
     db, _stub_contribute, _stub_artist_tags_pull
 ):

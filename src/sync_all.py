@@ -18,7 +18,8 @@ doesn't block the others.
 """
 
 import logging
-from typing import Callable, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, cast
 
 from .catalog_sync import (
     main_run_artist_tags_pull,
@@ -29,6 +30,13 @@ from .catalog_sync import (
 )
 from .contribution_sync import main_run_contribute
 from .config_manager import device_role_from_config, is_authority_config
+from .contracts import (
+    DeviceRole,
+    JSONObject,
+    ProgressEvent,
+    SyncOperation,
+    SyncStepResult,
+)
 from .db_manager import DatabaseManager
 from .inventory_sync import main_run_inventory_report
 
@@ -37,6 +45,82 @@ logger = logging.getLogger(__name__)
 
 def _bool(val) -> bool:
     return bool(val) and val not in ("false", "False", "0", 0)
+
+
+@dataclass(frozen=True)
+class _SyncStep:
+    """One ordered operation and the reason it may not apply."""
+
+    name: str
+    operation: SyncOperation
+    skip_reason: Optional[str] = None
+
+
+def _execute_step(
+    step: _SyncStep,
+    results: List[SyncStepResult],
+    report: Callable[[str], None],
+) -> None:
+    """Run one step without allowing its failure to stop later work."""
+    if step.skip_reason is not None:
+        results.append(
+            {
+                "name": step.name,
+                "status": "skipped",
+                "message": step.skip_reason,
+            }
+        )
+        return
+
+    report(f"Sync All: {step.name}")
+    try:
+        summary = step.operation() or {}
+        results.append(
+            {
+                "name": step.name,
+                "status": "ok",
+                "summary": cast(JSONObject, summary),
+            }
+        )
+    except Exception as exc:
+        logger.warning(
+            f"Sync All: {step.name} failed: {exc}",
+            exc_info=True,
+        )
+        results.append(
+            {
+                "name": step.name,
+                "status": "error",
+                "message": str(exc),
+            }
+        )
+
+
+def _pull_skip_reason(
+    master_url: str,
+    device_role: DeviceRole,
+    is_authority: bool,
+) -> Optional[str]:
+    if master_url and not is_authority:
+        return None
+    if is_authority:
+        return f"{device_role} role owns its catalog"
+    return "master_url not configured"
+
+
+def _contribution_skip_reason(
+    master_url: str,
+    device_role: DeviceRole,
+    is_authority: bool,
+    contribute: bool,
+) -> Optional[str]:
+    if is_authority:
+        return f"{device_role} role owns its catalog"
+    if not master_url:
+        return "master_url not configured"
+    if contribute:
+        return None
+    return "contribute_to_host is disabled"
 
 
 def main_run_sync_all(
@@ -49,7 +133,7 @@ def main_run_sync_all(
     Returns ``{steps: [{name, status, message, summary?}]}`` where
     ``status`` is one of 'ok', 'skipped', 'error'.
     """
-    results: List[Dict] = []
+    results: List[SyncStepResult] = []
 
     master_url = (config.get("master_url") or "").strip()
     device_role = device_role_from_config(config)
@@ -66,63 +150,66 @@ def main_run_sync_all(
         contribute = bool(master_url)
     contribute = _bool(contribute)
 
-    def _report(msg: str):
+    def _report(msg: str) -> None:
         logger.info(msg)
         if progress_callback:
-            progress_callback({"message": msg})
+            event: ProgressEvent = {"message": msg}
+            progress_callback(event)
 
-    def _run(name: str, fn: Callable[[], Dict]):
-        _report(f"Sync All: {name}")
-        try:
-            summary = fn() or {}
-            results.append({"name": name, "status": "ok", "summary": summary})
-        except Exception as e:
-            logger.warning(f"Sync All: {name} failed: {e}", exc_info=True)
-            results.append({"name": name, "status": "error", "message": str(e)})
+    pull_skip_reason = _pull_skip_reason(
+        master_url,
+        device_role,
+        is_authority,
+    )
+    contribution_skip_reason = _contribution_skip_reason(
+        master_url,
+        device_role,
+        is_authority,
+        contribute,
+    )
 
-    def _skip(name: str, reason: str):
-        results.append({"name": name, "status": "skipped", "message": reason})
-
-    # Pulls only make sense for satellites (devices that point at a master).
-    if master_url and not is_authority:
-        _run("pull_catalog", lambda: main_run_catalog_pull(db, config))
-        _run(
+    steps = [
+        _SyncStep(
+            "pull_catalog",
+            lambda: main_run_catalog_pull(db, config),
+            pull_skip_reason,
+        ),
+        _SyncStep(
             "pull_artist_tags",
             lambda: main_run_artist_tags_pull(db, config),
-        )
-        _run("pull_playlists", lambda: main_run_playlist_pull(db, config))
-        _run("push_playlists", lambda: main_run_playlist_push(db, config))
+            pull_skip_reason,
+        ),
+        _SyncStep(
+            "pull_playlists",
+            lambda: main_run_playlist_pull(db, config),
+            pull_skip_reason,
+        ),
+        _SyncStep(
+            "push_playlists",
+            lambda: main_run_playlist_push(db, config),
+            pull_skip_reason,
+        ),
         # Lyrics ride along last — cheap when there's nothing new
-        # (one query on the cursor) and order-independent of the
-        # other deltas.
-        _run("pull_lyrics", lambda: main_run_lyrics_pull(db, config))
-    else:
-        reason = (
-            f"{device_role} role owns its catalog"
-            if is_authority
-            else "master_url not configured"
-        )
-        _skip("pull_catalog", reason)
-        _skip("pull_artist_tags", reason)
-        _skip("pull_playlists", reason)
-        _skip("push_playlists", reason)
-        _skip("pull_lyrics", reason)
-
-    if report_inv:
-        _run("report_inventory", lambda: main_run_inventory_report(db, config))
-    else:
-        _skip("report_inventory", "report_inventory_to_host is disabled")
-
-    # Contribute local tracks up to the master (identifier-first, upload
-    # fallback). Only meaningful for satellites that point at a master.
-    if is_authority:
-        _skip("contribute", f"{device_role} role owns its catalog")
-    elif not master_url:
-        _skip("contribute", "master_url not configured")
-    elif contribute:
-        _run("contribute", lambda: main_run_contribute(db, config))
-    else:
-        _skip("contribute", "contribute_to_host is disabled")
+        # (one query on the cursor) and order-independent of other deltas.
+        _SyncStep(
+            "pull_lyrics",
+            lambda: main_run_lyrics_pull(db, config),
+            pull_skip_reason,
+        ),
+        _SyncStep(
+            "report_inventory",
+            lambda: main_run_inventory_report(db, config),
+            None if report_inv else "report_inventory_to_host is disabled",
+        ),
+        # Contribute local tracks using identifier-first, upload fallback.
+        _SyncStep(
+            "contribute",
+            lambda: main_run_contribute(db, config),
+            contribution_skip_reason,
+        ),
+    ]
+    for step in steps:
+        _execute_step(step, results, _report)
 
     summary_line = ", ".join(
         f"{r['name']}={r['status']}" for r in results

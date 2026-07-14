@@ -14,12 +14,14 @@ Design notes (see project sync model memory):
 """
 
 import logging
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, cast
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .contracts import CatalogApplyAction, DeltaSyncResult, ProgressEvent
 from .db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,60 @@ PLAYLIST_SYNC_STATE_KEY = "last_playlist_sync"
 PLAYLIST_PUSH_STATE_KEY = "last_playlist_push"
 LYRICS_SYNC_STATE_KEY = "last_lyrics_sync"
 ARTIST_TAGS_SYNC_STATE_KEY = "last_artist_tags_sync"
+
+
+@dataclass(frozen=True)
+class _DeltaPullSpec:
+    """Stable protocol details for one master-owned delta feed."""
+
+    state_key: str
+    endpoint: str
+    collection_key: str
+    fetch_message: str
+    apply_message: str
+    completion_message: str
+    batch_size: int
+    include_stale: bool = False
+
+
+_CATALOG_PULL = _DeltaPullSpec(
+    state_key=SYNC_STATE_KEY,
+    endpoint="/api/catalog",
+    collection_key="tracks",
+    fetch_message="Fetching catalog delta",
+    apply_message="Applying catalog rows",
+    completion_message="Catalog pull done",
+    batch_size=100,
+)
+_PLAYLIST_PULL = _DeltaPullSpec(
+    state_key=PLAYLIST_SYNC_STATE_KEY,
+    endpoint="/api/playlists",
+    collection_key="playlists",
+    fetch_message="Fetching playlist delta",
+    apply_message="Applying playlists",
+    completion_message="Playlist pull done",
+    batch_size=25,
+)
+_LYRICS_PULL = _DeltaPullSpec(
+    state_key=LYRICS_SYNC_STATE_KEY,
+    endpoint="/api/lyrics",
+    collection_key="lyrics",
+    fetch_message="Fetching lyrics delta",
+    apply_message="Applying lyrics",
+    completion_message="Lyrics pull done",
+    batch_size=100,
+    include_stale=True,
+)
+_ARTIST_TAGS_PULL = _DeltaPullSpec(
+    state_key=ARTIST_TAGS_SYNC_STATE_KEY,
+    endpoint="/api/artist-tags",
+    collection_key="artist_tags",
+    fetch_message="Fetching artist-tag delta",
+    apply_message="Applying artist tags",
+    completion_message="Artist-tag pull done",
+    batch_size=100,
+    include_stale=True,
+)
 
 
 class CatalogClient:
@@ -75,7 +131,7 @@ class CatalogClient:
         logger.info(message)
         if not self.progress_callback:
             return
-        payload = {"message": message}
+        payload: ProgressEvent = {"message": message}
         if detail is not None:
             payload["detail"] = detail
         if current is not None and total is not None:
@@ -83,69 +139,93 @@ class CatalogClient:
             payload["total"] = total
         self.progress_callback(payload)
 
+    def _pull_delta(
+        self,
+        spec: _DeltaPullSpec,
+        apply_row: Callable[[dict], str],
+    ) -> DeltaSyncResult:
+        """Fetch and atomically advance one delta feed's cursor.
+
+        Cursor persistence deliberately remains after every row has applied.
+        A request, validation, or row failure therefore leaves the previous
+        cursor intact and makes the next pull safely replay the delta.
+        """
+        since = self.db.get_sync_state(spec.state_key)
+        self._report(
+            spec.fetch_message + (f" since {since}" if since else " (initial)")
+        )
+
+        params = {"since": since} if since else {}
+        response = self.session.get(
+            f"{self.master_url}{spec.endpoint}",
+            params=params,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data: dict = response.json() or {}
+        if not data.get("success"):
+            raise RuntimeError(
+                "Master responded with failure: "
+                f"{data.get('message', 'unknown error')}"
+            )
+
+        rows = data.get(spec.collection_key) or []
+        as_of = data.get("as_of")
+        counts: Dict[str, int] = {
+            "inserted": 0,
+            "updated": 0,
+            "skipped": 0,
+        }
+        if spec.include_stale:
+            counts["stale"] = 0
+
+        total = len(rows)
+        for current, row in enumerate(rows, 1):
+            action = cast(CatalogApplyAction, apply_row(row))
+            if action in ("inserted", "updated"):
+                counts[action] += 1
+            elif action == "stale" and spec.include_stale:
+                counts["stale"] += 1
+            else:
+                counts["skipped"] += 1
+
+            if total and (current == total or current % spec.batch_size == 0):
+                self._report(
+                    f"{spec.apply_message} ({current}/{total})",
+                    current=current,
+                    total=total,
+                )
+
+        if as_of:
+            self.db.set_sync_state(spec.state_key, as_of)
+
+        summary: DeltaSyncResult = {
+            "received": total,
+            "inserted": counts["inserted"],
+            "updated": counts["updated"],
+            "skipped": counts["skipped"],
+            "since": since,
+            "as_of": as_of,
+        }
+        completion_parts = [
+            f"{counts['inserted']} new",
+            f"{counts['updated']} updated",
+        ]
+        if spec.include_stale:
+            summary["stale"] = counts["stale"]
+            completion_parts.append(f"{counts['stale']} stale")
+        completion_parts.append(f"{counts['skipped']} skipped")
+        self._report(
+            f"{spec.completion_message}: {', '.join(completion_parts)}"
+        )
+        return summary
+
     def pull(self) -> dict:
         """Pull the catalog delta and apply it.
 
         Returns a summary: {received, inserted, updated, skipped, as_of, since}.
         """
-        since = self.db.get_sync_state(SYNC_STATE_KEY)
-        self._report(
-            "Fetching catalog delta" + (f" since {since}" if since else " (initial)")
-        )
-
-        params = {"since": since} if since else {}
-        resp = self.session.get(
-            f"{self.master_url}/api/catalog", params=params, timeout=self.timeout
-        )
-        resp.raise_for_status()
-        data = resp.json() or {}
-        if not data.get("success"):
-            raise RuntimeError(
-                f"Master responded with failure: {data.get('message', 'unknown error')}"
-            )
-
-        tracks = data.get("tracks") or []
-        as_of = data.get("as_of")
-
-        inserted = 0
-        updated = 0
-        skipped = 0
-        total = len(tracks)
-        for i, row in enumerate(tracks, 1):
-            action = self.db.apply_catalog_row(row)
-            if action == "inserted":
-                inserted += 1
-            elif action == "updated":
-                updated += 1
-            else:
-                skipped += 1
-            if total and (i == total or i % 100 == 0):
-                self._report(
-                    f"Applying catalog rows ({i}/{total})",
-                    current=i,
-                    total=total,
-                )
-
-        # Only advance the cursor if the master told us where it was at query
-        # time. Without that we'd risk moving the cursor past rows written
-        # during the pull itself.
-        if as_of:
-            self.db.set_sync_state(SYNC_STATE_KEY, as_of)
-
-        summary = {
-            "received": total,
-            "inserted": inserted,
-            "updated": updated,
-            "skipped": skipped,
-            "since": since,
-            "as_of": as_of,
-        }
-        self._report(
-            f"Catalog pull done: {inserted} new, {updated} updated, "
-            f"{skipped} skipped"
-        )
-        return summary
-
+        return self._pull_delta(_CATALOG_PULL, self.db.apply_catalog_row)
 
     def pull_playlists(self) -> dict:
         """Pull the playlist delta and apply each one (full-membership replace).
@@ -154,62 +234,7 @@ class CatalogClient:
         get silently dropped from membership until a later pass picks them
         up. Returns {received, inserted, updated, skipped, since, as_of}.
         """
-        since = self.db.get_sync_state(PLAYLIST_SYNC_STATE_KEY)
-        self._report(
-            "Fetching playlist delta"
-            + (f" since {since}" if since else " (initial)")
-        )
-
-        params = {"since": since} if since else {}
-        resp = self.session.get(
-            f"{self.master_url}/api/playlists", params=params, timeout=self.timeout
-        )
-        resp.raise_for_status()
-        data = resp.json() or {}
-        if not data.get("success"):
-            raise RuntimeError(
-                f"Master responded with failure: {data.get('message', 'unknown error')}"
-            )
-
-        playlists = data.get("playlists") or []
-        as_of = data.get("as_of")
-
-        inserted = 0
-        updated = 0
-        skipped = 0
-        total = len(playlists)
-        for i, pl in enumerate(playlists, 1):
-            action = self.db.apply_playlist_row(pl)
-            if action == "inserted":
-                inserted += 1
-            elif action == "updated":
-                updated += 1
-            else:
-                skipped += 1
-            if total and (i == total or i % 25 == 0):
-                self._report(
-                    f"Applying playlists ({i}/{total})",
-                    current=i,
-                    total=total,
-                )
-
-        if as_of:
-            self.db.set_sync_state(PLAYLIST_SYNC_STATE_KEY, as_of)
-
-        summary = {
-            "received": total,
-            "inserted": inserted,
-            "updated": updated,
-            "skipped": skipped,
-            "since": since,
-            "as_of": as_of,
-        }
-        self._report(
-            f"Playlist pull done: {inserted} new, {updated} updated, "
-            f"{skipped} skipped"
-        )
-        return summary
-
+        return self._pull_delta(_PLAYLIST_PULL, self.db.apply_playlist_row)
 
     def pull_lyrics(self) -> dict:
         """Pull the lyrics delta and apply each row.
@@ -221,68 +246,7 @@ class CatalogClient:
         first; lyrics for unknown mbids still apply (the row's keyed
         by mbid, not the foreign key).
         """
-        since = self.db.get_sync_state(LYRICS_SYNC_STATE_KEY)
-        self._report(
-            "Fetching lyrics delta"
-            + (f" since {since}" if since else " (initial)")
-        )
-
-        params = {"since": since} if since else {}
-        resp = self.session.get(
-            f"{self.master_url}/api/lyrics",
-            params=params,
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json() or {}
-        if not data.get("success"):
-            raise RuntimeError(
-                f"Master responded with failure: "
-                f"{data.get('message', 'unknown error')}"
-            )
-
-        lyrics = data.get("lyrics") or []
-        as_of = data.get("as_of")
-        inserted = 0
-        updated = 0
-        stale = 0
-        skipped = 0
-        total = len(lyrics)
-        for i, row in enumerate(lyrics, 1):
-            action = self.db.apply_lyrics_row(row)
-            if action == "inserted":
-                inserted += 1
-            elif action == "updated":
-                updated += 1
-            elif action == "stale":
-                stale += 1
-            else:
-                skipped += 1
-            if total and (i == total or i % 100 == 0):
-                self._report(
-                    f"Applying lyrics ({i}/{total})",
-                    current=i,
-                    total=total,
-                )
-
-        if as_of:
-            self.db.set_sync_state(LYRICS_SYNC_STATE_KEY, as_of)
-
-        summary = {
-            "received": total,
-            "inserted": inserted,
-            "updated": updated,
-            "stale": stale,
-            "skipped": skipped,
-            "since": since,
-            "as_of": as_of,
-        }
-        self._report(
-            f"Lyrics pull done: {inserted} new, {updated} updated, "
-            f"{stale} stale, {skipped} skipped"
-        )
-        return summary
-
+        return self._pull_delta(_LYRICS_PULL, self.db.apply_lyrics_row)
 
     def pull_artist_tags(self) -> dict:
         """Pull authoritative artist-tag snapshots from the master.
@@ -292,68 +256,10 @@ class CatalogClient:
         Artist Radio, and Daily Mix metadata behave consistently without
         every satellite independently consuming MusicBrainz's rate limit.
         """
-        since = self.db.get_sync_state(ARTIST_TAGS_SYNC_STATE_KEY)
-        self._report(
-            "Fetching artist-tag delta"
-            + (f" since {since}" if since else " (initial)")
+        return self._pull_delta(
+            _ARTIST_TAGS_PULL,
+            self.db.apply_artist_tags_row,
         )
-
-        params = {"since": since} if since else {}
-        resp = self.session.get(
-            f"{self.master_url}/api/artist-tags",
-            params=params,
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json() or {}
-        if not data.get("success"):
-            raise RuntimeError(
-                f"Master responded with failure: "
-                f"{data.get('message', 'unknown error')}"
-            )
-
-        snapshots = data.get("artist_tags") or []
-        as_of = data.get("as_of")
-        inserted = 0
-        updated = 0
-        stale = 0
-        skipped = 0
-        total = len(snapshots)
-        for i, row in enumerate(snapshots, 1):
-            action = self.db.apply_artist_tags_row(row)
-            if action == "inserted":
-                inserted += 1
-            elif action == "updated":
-                updated += 1
-            elif action == "stale":
-                stale += 1
-            else:
-                skipped += 1
-            if total and (i == total or i % 100 == 0):
-                self._report(
-                    f"Applying artist tags ({i}/{total})",
-                    current=i,
-                    total=total,
-                )
-
-        if as_of:
-            self.db.set_sync_state(ARTIST_TAGS_SYNC_STATE_KEY, as_of)
-
-        summary = {
-            "received": total,
-            "inserted": inserted,
-            "updated": updated,
-            "stale": stale,
-            "skipped": skipped,
-            "since": since,
-            "as_of": as_of,
-        }
-        self._report(
-            f"Artist-tag pull done: {inserted} new, {updated} updated, "
-            f"{stale} stale, {skipped} skipped"
-        )
-        return summary
-
 
     def push_playlists(self) -> dict:
         """Push locally-edited playlists to the master.

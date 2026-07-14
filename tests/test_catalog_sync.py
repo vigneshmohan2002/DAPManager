@@ -158,6 +158,151 @@ def test_pull_does_not_advance_cursor_when_as_of_missing(db):
     assert db.get_sync_state(SYNC_STATE_KEY) == "2026-04-18 12:00:00"
 
 
+@pytest.mark.parametrize(
+    (
+        "pull_method",
+        "apply_method",
+        "state_key",
+        "endpoint",
+        "collection_key",
+        "batch_size",
+        "fetch_label",
+        "apply_label",
+        "completion_label",
+        "includes_stale",
+    ),
+    [
+        (
+            "pull",
+            "apply_catalog_row",
+            SYNC_STATE_KEY,
+            "/api/catalog",
+            "tracks",
+            100,
+            "catalog",
+            "catalog rows",
+            "Catalog",
+            False,
+        ),
+        (
+            "pull_playlists",
+            "apply_playlist_row",
+            PLAYLIST_SYNC_STATE_KEY,
+            "/api/playlists",
+            "playlists",
+            25,
+            "playlist",
+            "playlists",
+            "Playlist",
+            False,
+        ),
+        (
+            "pull_lyrics",
+            "apply_lyrics_row",
+            LYRICS_SYNC_STATE_KEY,
+            "/api/lyrics",
+            "lyrics",
+            100,
+            "lyrics",
+            "lyrics",
+            "Lyrics",
+            True,
+        ),
+        (
+            "pull_artist_tags",
+            "apply_artist_tags_row",
+            ARTIST_TAGS_SYNC_STATE_KEY,
+            "/api/artist-tags",
+            "artist_tags",
+            100,
+            "artist-tag",
+            "artist tags",
+            "Artist-tag",
+            True,
+        ),
+    ],
+)
+def test_delta_pull_protocol_and_progress_contract(
+    db,
+    pull_method,
+    apply_method,
+    state_key,
+    endpoint,
+    collection_key,
+    batch_size,
+    fetch_label,
+    apply_label,
+    completion_label,
+    includes_stale,
+):
+    since = "2026-06-01 10:00:00"
+    as_of = "2026-06-01 11:00:00"
+    db.set_sync_state(state_key, since)
+    rows = [{"row": index} for index in range(batch_size + 1)]
+    actions = ["inserted", "updated", "stale"] + [
+        "skipped"
+    ] * (batch_size - 2)
+    payload = {
+        "success": True,
+        "as_of": as_of,
+        collection_key: rows,
+    }
+    progress = []
+    client = CatalogClient(
+        db=db,
+        master_url="http://host.local:5001",
+        progress_callback=progress.append,
+    )
+
+    with patch.object(
+        db,
+        apply_method,
+        side_effect=actions,
+    ) as apply_row, patch.object(
+        client.session,
+        "get",
+        return_value=_mock_response(payload),
+    ) as mock_get:
+        summary = getattr(client, pull_method)()
+
+    assert mock_get.call_args.args[0] == f"http://host.local:5001{endpoint}"
+    assert mock_get.call_args.kwargs["params"] == {"since": since}
+    assert apply_row.call_count == batch_size + 1
+    assert db.get_sync_state(state_key) == as_of
+    assert progress[0] == {"message": f"Fetching {fetch_label} delta since {since}"}
+    assert progress[-3:-1] == [
+        {
+            "message": f"Applying {apply_label} ({batch_size}/{batch_size + 1})",
+            "current": batch_size,
+            "total": batch_size + 1,
+        },
+        {
+            "message": f"Applying {apply_label} ({batch_size + 1}/{batch_size + 1})",
+            "current": batch_size + 1,
+            "total": batch_size + 1,
+        },
+    ]
+
+    expected_skipped = batch_size - 2 if includes_stale else batch_size - 1
+    expected = {
+        "received": batch_size + 1,
+        "inserted": 1,
+        "updated": 1,
+        "skipped": expected_skipped,
+        "since": since,
+        "as_of": as_of,
+    }
+    completion_parts = ["1 new", "1 updated"]
+    if includes_stale:
+        expected["stale"] = 1
+        completion_parts.append("1 stale")
+    completion_parts.append(f"{expected_skipped} skipped")
+    assert summary == expected
+    assert progress[-1] == {
+        "message": f"{completion_label} pull done: {', '.join(completion_parts)}"
+    }
+
+
 def test_pull_skips_rows_without_mbid(db):
     client = CatalogClient(db=db, master_url="http://host.local:5001")
     payload = {
