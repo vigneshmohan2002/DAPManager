@@ -6,6 +6,9 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for, R
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
 from src.services import contribution_service
+from src.services import library_application_service
+from src.services import listening_service
+from src.services import lyrics_service
 from src.services import playlist_service
 from src.services.library_service import (
     availability_for,
@@ -1116,68 +1119,19 @@ def api_library_track_like(mbid: str):
     mbid = (mbid or "").strip()
     if not mbid:
         return jsonify({"success": False, "message": "mbid is required"}), 400
-    liked = request.method == "POST"
 
-    # Satellite proxy path. Local-only fallback would mean the heart
-    # gets clobbered on the next catalog pull when the master's
-    # is_liked=0 wins over the satellite's local update.
-    if _master_url_configured():
-        import requests
-        cfg = config._config if isinstance(config._config, dict) else {}
-        master_url = (cfg.get("master_url") or "").rstrip("/")
-        upstream = f"{master_url}/api/library/tracks/{mbid}/like"
-        headers = {}
-        token = (cfg.get("api_token") or "").strip()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        try:
-            resp = requests.request(
-                request.method, upstream, headers=headers, timeout=(5, 10),
-            )
-        except requests.RequestException as e:
-            logger.warning("like proxy to master failed: %s", e)
-            return jsonify({
-                "success": False,
-                "message": "couldn't reach master to save the like",
-            }), 502
-        if resp.status_code == 404:
-            return jsonify({
-                "success": False,
-                "message": "track not found on master",
-            }), 404
-        if resp.status_code >= 400:
-            return jsonify({
-                "success": False,
-                "message": f"master returned {resp.status_code}",
-            }), resp.status_code
+    import requests
 
-        # Master accepted — mirror the change locally so the UI is
-        # consistent until the next catalog pull. Tolerant if the
-        # track isn't on the satellite yet (catalog-only row hasn't
-        # landed) — the master is the source of truth either way.
-        try:
-            with DatabaseManager(config.db_path) as db:
-                db.set_track_liked(mbid, liked)
-                if liked:
-                    db.ensure_liked_songs_playlist()
-        except Exception as e:
-            logger.warning("local mirror after like-proxy failed: %s", e)
-        return jsonify({"success": True, "liked": liked})
-
-    try:
-        with DatabaseManager(config.db_path) as db:
-            new_state = db.set_track_liked(mbid, liked)
-            if new_state is None:
-                return jsonify({
-                    "success": False,
-                    "message": "track not found or orphaned",
-                }), 404
-            if liked:
-                db.ensure_liked_songs_playlist()
-        return jsonify({"success": True, "liked": new_state})
-    except Exception as e:
-        logger.exception("api_library_track_like failed")
-        return jsonify({"success": False, "message": str(e)}), 500
+    result = library_application_service.apply_track_like(
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        config_data=getattr(config, "_config", None),
+        mbid=mbid,
+        method=request.method,
+        request_sender=requests.request,
+        master_configured=_master_url_configured(),
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/playlists", methods=["GET"])
@@ -1496,44 +1450,12 @@ def api_library_record_play():
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     data = request.json or {}
-    mbid = (data.get("mbid") or "").strip()
-    if not mbid:
-        return jsonify({"success": False, "message": "mbid is required"}), 400
-    source = data.get("source")
-    if source is not None and not isinstance(source, str):
-        return jsonify({
-            "success": False,
-            "message": "source must be a string when provided",
-        }), 400
-    # listened_ms is optional. The player computes it as wall-clock ms
-    # the audio was unpaused on this load — i.e., not the same as
-    # current playback position, which would inflate on forward seeks.
-    # Cap at 30 minutes here so a misbehaving / hostile client can't
-    # claim a 6-hour listen for a 3-minute track via clock skew or
-    # pause-spam. 30m is comfortably longer than the longest real
-    # track most users have; future Stage 12 work can tighten this to
-    # `min(track_duration * 1.5)` once tracks grows a duration column.
-    listened_ms_raw = data.get("listened_ms")
-    listened_ms = None
-    if listened_ms_raw is not None:
-        if isinstance(listened_ms_raw, bool) or not isinstance(
-            listened_ms_raw, (int, float)
-        ):
-            return jsonify({
-                "success": False,
-                "message": "listened_ms must be a number when provided",
-            }), 400
-        if listened_ms_raw < 0:
-            return jsonify({
-                "success": False,
-                "message": "listened_ms must be non-negative",
-            }), 400
-        listened_ms = min(int(listened_ms_raw), 30 * 60 * 1000)
+    prepared = listening_service.prepare_play_event(data)
+    if isinstance(prepared, listening_service.ListeningServiceResult):
+        return jsonify(prepared.payload), prepared.status_code
     try:
         with DatabaseManager(config.db_path) as db:
-            event_id = db.record_play_event(
-                mbid, source=source, listened_ms=listened_ms,
-            )
+            event_id = listening_service.record_play(db, prepared)
     except ValueError as e:
         return jsonify({"success": False, "message": str(e)}), 400
     except Exception as e:
@@ -1560,64 +1482,41 @@ def api_library_play_stats():
         return jsonify({"success": False, "message": "Not initialized"}), 503
     since = (request.args.get("since") or "").strip() or None
     try:
-        limit = int(request.args.get("limit", "20"))
+        limit = listening_service.normalize_stats_limit(
+            request.args.get("limit", "20")
+        )
     except ValueError:
         return jsonify({"success": False, "message": "limit must be an integer"}), 400
-    limit = max(1, min(200, limit))
     try:
         with DatabaseManager(config.db_path) as db:
-            total = db.play_count_since(since)
-            listening_time_ms = db.listening_time_since(since)
-            top_tracks = db.top_tracks_since(since, limit=limit)
-            top_artists = db.top_artists_since(since, limit=limit)
-            recent = db.recent_plays(limit=limit)
-            hours = db.plays_by_hour(since)
+            payload = listening_service.build_play_stats(
+                db,
+                since=since,
+                limit=limit,
+            )
     except Exception as e:
         logger.exception("api_library_play_stats failed")
         return jsonify({"success": False, "message": str(e)}), 500
-    # Pad to a full 24-hour array so the heatmap layout is fixed-width
-    # in the UI and hours with zero plays don't get omitted. Backend
-    # decides the shape because the same padding logic would otherwise
-    # live in every client.
-    hour_counts = [0] * 24
-    for row in hours:
-        h = row.get("hour")
-        if isinstance(h, int) and 0 <= h < 24:
-            hour_counts[h] = int(row.get("plays") or 0)
-    return jsonify({
-        "success": True,
-        "total": total,
-        # Sum across the same window the "total plays" count uses, so
-        # the two headline numbers come from the same population. Legacy
-        # (pre-Stage-12a) rows have NULL listened_ms and are excluded.
-        "listening_time_ms": listening_time_ms,
-        "top_tracks": top_tracks,
-        "top_artists": top_artists,
-        "recent": recent,
-        "hour_of_day": hour_counts,
-    })
+    return jsonify(payload)
 
 
-# Lyrics cache freshness — how long a cached LRCLIB result (hit *or*
-# miss) is considered fresh before we re-fetch. 30 days mirrors the
-# Stage 13 plan and balances "stay fresh as lyrics get added" against
-# "don't hammer LRCLIB". Manual overrides never expire.
-_LYRICS_TTL_SEC = 30 * 24 * 60 * 60
+# Compatibility names retained for tests/importers that patch the former route
+# helpers. The cache policy itself now lives outside the Flask adapter.
+_LYRICS_TTL_SEC = lyrics_service.LYRICS_TTL_SECONDS
 
 
 def _is_lyrics_fresh(fetched_at: str) -> bool:
-    """Compare an ISO timestamp from the DB to now. Tolerant — a
-    parse failure returns True (treat as fresh) so a malformed legacy
-    row doesn't trigger an immediate re-fetch storm."""
-    try:
-        from datetime import datetime, timezone
-        # SQLite CURRENT_TIMESTAMP is "YYYY-MM-DD HH:MM:SS" in UTC.
-        ts = datetime.fromisoformat(fetched_at.replace(" ", "T"))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - ts).total_seconds() < _LYRICS_TTL_SEC
-    except Exception:
-        return True
+    return lyrics_service.is_lyrics_fresh(
+        fetched_at,
+        ttl_seconds=_LYRICS_TTL_SEC,
+    )
+
+
+def _fetch_lyrics_from_lrclib(**kwargs):
+    """Late import keeps the provider optional until a cache miss needs it."""
+    from src.lrclib_client import fetch_lyrics
+
+    return fetch_lyrics(**kwargs)
 
 
 @app.route("/api/library/tracks/<mbid>/lyrics", methods=["GET", "POST"])
@@ -1655,106 +1554,29 @@ def api_library_track_lyrics(mbid: str):
             }), 400
         try:
             with DatabaseManager(config.db_path) as db:
-                # An empty manual paste clears the row entirely so the
-                # next GET can re-try LRCLIB instead of being stuck on
-                # the manual blank.
-                if not (lrc or "").strip():
-                    db.conn.execute(
-                        "DELETE FROM lyrics WHERE track_mbid = ?", (mbid,)
-                    )
-                    db.conn.commit()
-                    return jsonify({"success": True, "lrc": None})
-                db.upsert_lyrics(mbid, lrc, synced, "manual")
-                row = db.get_lyrics(mbid)
+                result = lyrics_service.save_manual_lyrics(
+                    db,
+                    mbid=mbid,
+                    lrc=lrc,
+                    synced=synced,
+                )
         except Exception as e:
             logger.exception("api_library_track_lyrics POST failed")
             return jsonify({"success": False, "message": str(e)}), 500
-        return jsonify({
-            "success": True,
-            "lrc": row["lrc"],
-            "synced": bool(row["synced"]),
-            "source": row["source"],
-            "fetched_at": row["fetched_at"],
-        })
+        return jsonify(result.payload), result.status_code
 
-    # GET path
     try:
         with DatabaseManager(config.db_path) as db:
-            row = db.get_lyrics(mbid)
-            if row and (row["source"] == "manual" or _is_lyrics_fresh(
-                row["fetched_at"]
-            )):
-                return jsonify({
-                    "success": True,
-                    "lrc": row["lrc"],
-                    "synced": bool(row["synced"]),
-                    "source": row["source"],
-                    "fetched_at": row["fetched_at"],
-                })
-            # Need to fetch. Look up the canonical track + artist for
-            # the lookup keys — LRCLIB matches on those, not the mbid.
-            track = db.conn.execute(
-                "SELECT title, artist, album FROM tracks "
-                "WHERE mbid = ? AND deleted_at IS NULL",
-                (mbid,),
-            ).fetchone()
-            if track is None:
-                return jsonify({
-                    "success": False,
-                    "message": "track not found",
-                }), 404
-
-            from src.lrclib_client import fetch_lyrics
-            try:
-                result = fetch_lyrics(
-                    track_name=track["title"],
-                    artist_name=track["artist"],
-                    album_name=track["album"] or None,
-                )
-            except RuntimeError as e:
-                # Transient — don't cache. Return whatever we have so
-                # the user at least sees stale cached lyrics if there
-                # were any, instead of a hard failure.
-                logger.warning("lrclib fetch failed: %s", e)
-                if row is not None:
-                    return jsonify({
-                        "success": True,
-                        "lrc": row["lrc"],
-                        "synced": bool(row["synced"]),
-                        "source": row["source"],
-                        "fetched_at": row["fetched_at"],
-                        "stale": True,
-                    })
-                return jsonify({
-                    "success": False,
-                    "message": "lyrics lookup failed",
-                }), 502
-
-            # Cache the result (hit or miss). A None result becomes a
-            # negative-cache row so the next reopen doesn't refetch.
-            if result is None:
-                db.upsert_lyrics(mbid, None, False, "lrclib")
-                return jsonify({
-                    "success": True,
-                    "lrc": None,
-                    "synced": False,
-                    "source": "lrclib",
-                    "fetched_at": None,
-                })
-            db.upsert_lyrics(
-                mbid, result["lrc"], result["synced"], "lrclib",
+            result = lyrics_service.load_track_lyrics(
+                db,
+                mbid=mbid,
+                fetch_lyrics=_fetch_lyrics_from_lrclib,
+                freshness_check=_is_lyrics_fresh,
             )
-            stored = db.get_lyrics(mbid)
-            return jsonify({
-                "success": True,
-                "lrc": stored["lrc"],
-                "synced": bool(stored["synced"]),
-                "source": stored["source"],
-                "fetched_at": stored["fetched_at"],
-            })
     except Exception as e:
         logger.exception("api_library_track_lyrics GET failed")
         return jsonify({"success": False, "message": str(e)}), 500
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/daily-mixes/regenerate", methods=["POST"])
@@ -1907,6 +1729,13 @@ def api_library_wrapped():
     return jsonify({"success": True, **summary})
 
 
+def _load_daily_mixes(db):
+    """Late-bound compatibility seam for Home's Daily Mix read model."""
+    from src.daily_mixes import list_daily_mixes
+
+    return list_daily_mixes(db)
+
+
 @app.route("/api/library/home", methods=["GET"])
 def api_library_home():
     """Roll-up payload for the desktop Home screen.
@@ -1921,69 +1750,19 @@ def api_library_home():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    from datetime import datetime, timedelta, timezone
-
-    # Match the existing scrobble timestamp shape: space-separated, UTC.
-    since_30d = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    since_30d = library_application_service.home_window_start()
 
     try:
         with DatabaseManager(config.db_path) as db:
-            recent = db.recent_plays(limit=12)
-            top_artists = db.top_artists_since(since_30d, limit=8)
-            liked_total = db.conn.execute(
-                "SELECT COUNT(*) FROM tracks "
-                "WHERE is_liked = 1 AND deleted_at IS NULL"
-            ).fetchone()[0]
-            # First six liked tracks by most-recently-updated, so a row
-            # the user just hearted lands at the front of the preview.
-            liked_rows = db.conn.execute(
-                "SELECT mbid, title, artist, album, "
-                "       COALESCE(NULLIF(release_mbid, ''), "
-                "                album || '|' || artist) AS album_id "
-                "FROM tracks "
-                "WHERE is_liked = 1 AND deleted_at IS NULL "
-                "ORDER BY updated_at DESC LIMIT 6"
-            ).fetchall()
-            liked_preview = [dict(r) for r in liked_rows]
-            from src.daily_mixes import list_daily_mixes
-            daily_mixes = list_daily_mixes(db)
-
-        # "Jump back in" is the last six distinct albums you played
-        # from, derived from `recent` to avoid an extra DB call. Pulling
-        # from recent_plays(12) is enough for almost everyone — the rare
-        # user who plays the same album back-to-back six times in a row
-        # will see fewer than six tiles, which is the right behavior
-        # anyway ("you've been listening to one thing — keep going").
-        jump_back_in: list[dict] = []
-        seen_albums: set[str] = set()
-        for row in recent:
-            aid = row.get("album_id")
-            album = row.get("album")
-            if not aid or not album or aid in seen_albums:
-                continue
-            seen_albums.add(aid)
-            jump_back_in.append({
-                "album_id": aid,
-                "title": album,
-                "artist": row.get("artist") or "",
-            })
-            if len(jump_back_in) >= 6:
-                break
-
+            payload = library_application_service.build_home_payload(
+                db,
+                _load_daily_mixes,
+                since_30d=since_30d,
+            )
     except Exception as e:
         logger.exception("api_library_home failed")
         return jsonify({"success": False, "message": str(e)}), 500
-
-    return jsonify({
-        "success": True,
-        "recent": recent,
-        "top_artists": top_artists,
-        "liked": {"total": liked_total, "preview": liked_preview},
-        "jump_back_in": jump_back_in,
-        "daily_mixes": daily_mixes,
-    })
+    return jsonify(payload)
 
 
 @app.route("/api/stream/<path:mbid>")

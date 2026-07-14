@@ -2774,10 +2774,8 @@ def test_lyrics_fetches_lrclib_on_cache_miss_and_caches_result(
     with patch('web_server.DatabaseManager') as MockDB, \
          patch('src.lrclib_client.fetch_lyrics') as fetch:
         inst = MockDB.return_value.__enter__.return_value
-        # First get_lyrics call (cache check) → no row.
-        # conn.execute(...).fetchone() looks up the track for LRCLIB
-        # keys. Final get_lyrics (after upsert) returns the freshly
-        # cached row.
+        # First get_lyrics call (cache check) → no row. Final get_lyrics
+        # (after upsert) returns the freshly cached row.
         inst.get_lyrics.side_effect = [
             None,
             {
@@ -2788,11 +2786,9 @@ def test_lyrics_fetches_lrclib_on_cache_miss_and_caches_result(
                 "fetched_at": "2026-05-13 10:00:00",
             },
         ]
-        track_cur = MagicMock()
-        track_cur.fetchone.return_value = {
+        inst.get_live_track_identity.return_value = {
             "title": "Song", "artist": "Artist", "album": "Album",
         }
-        inst.conn.execute.return_value = track_cur
 
         fetch.return_value = {"lrc": "[00:01.00] line", "synced": True}
 
@@ -2817,11 +2813,9 @@ def test_lyrics_caches_miss_so_repeated_opens_dont_refetch(
          patch('src.lrclib_client.fetch_lyrics') as fetch:
         inst = MockDB.return_value.__enter__.return_value
         inst.get_lyrics.return_value = None
-        track_cur = MagicMock()
-        track_cur.fetchone.return_value = {
+        inst.get_live_track_identity.return_value = {
             "title": "Song", "artist": "Artist", "album": None,
         }
-        inst.conn.execute.return_value = track_cur
         fetch.return_value = None  # LRCLIB miss
 
         res = client.get('/api/library/tracks/m1/lyrics')
@@ -2846,13 +2840,9 @@ def test_lyrics_post_clears_row_on_empty_lrc(
             json={"lrc": "   ", "synced": False},
         )
     assert res.status_code == 200
-    # The DELETE goes through conn.execute, not upsert_lyrics.
+    # Clearing goes through the database facade, not an empty upsert.
     inst.upsert_lyrics.assert_not_called()
-    delete_calls = [
-        call for call in inst.conn.execute.call_args_list
-        if "DELETE FROM lyrics" in (call.args[0] if call.args else "")
-    ]
-    assert len(delete_calls) == 1
+    inst.delete_lyrics.assert_called_once_with("m1")
 
 
 def test_daily_mixes_regenerate_returns_summary_on_master(
@@ -3033,9 +3023,7 @@ def test_lyrics_404s_when_track_missing_from_library(
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
         inst.get_lyrics.return_value = None
-        track_cur = MagicMock()
-        track_cur.fetchone.return_value = None
-        inst.conn.execute.return_value = track_cur
+        inst.get_live_track_identity.return_value = None
 
         res = client.get('/api/library/tracks/missing/lyrics')
     assert res.status_code == 404
@@ -3100,18 +3088,13 @@ def test_home_bundles_cards_in_one_response(
         inst.top_artists_since.return_value = [
             {"artist": "X", "plays": 5, "distinct_tracks": 3},
         ]
-        # The liked rollup queries `inst.conn.execute(...).fetchone()` —
-        # patch the chain so the count + preview both resolve. Each call
-        # returns a different shape depending on the SQL, so we use
-        # side_effect to dispatch by call order.
-        count_cursor = MagicMock()
-        count_cursor.fetchone.return_value = (4,)
-        preview_cursor = MagicMock()
-        preview_cursor.fetchall.return_value = [
-            {"mbid": "m1", "title": "A", "artist": "X", "album": "Al",
-             "album_id": "rmb-1"},
-        ]
-        inst.conn.execute.side_effect = [count_cursor, preview_cursor]
+        inst.get_liked_tracks_summary.return_value = {
+            "total": 4,
+            "preview": [
+                {"mbid": "m1", "title": "A", "artist": "X", "album": "Al",
+                 "album_id": "rmb-1"},
+            ],
+        }
 
         res = client.get('/api/library/home')
 
