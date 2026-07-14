@@ -14,7 +14,7 @@ in-flight offers get polled until they reach a terminal state
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, Optional, cast
+from typing import Optional, cast
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -27,6 +27,7 @@ from .contracts import (
     ContributionActionResult,
     ContributionRunResult,
     ContributionStatus,
+    MessageReporter,
     ProgressCallback,
 )
 from .db_manager import DatabaseManager, Track
@@ -151,7 +152,7 @@ def _contribution_context(
 
 def _progress_reporter(
     progress_callback: Optional[ProgressCallback],
-) -> Callable[[str], None]:
+) -> MessageReporter:
     """Adapt the public structured callback to a message-only reporter."""
 
     def report(message: str) -> None:
@@ -166,7 +167,7 @@ def _offer_candidates(
     db: DatabaseManager,
     context: _ContributionContext,
     batch: int,
-    report: Callable[[str], None],
+    report: MessageReporter,
 ) -> _ContributionCounts:
     counts = _ContributionCounts()
     candidates = db.get_contributable_tracks(limit=batch)

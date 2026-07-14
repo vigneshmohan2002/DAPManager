@@ -15,13 +15,22 @@ Design notes (see project sync model memory):
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, cast
+from typing import Any, Dict, Mapping, Optional, Sequence, cast
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .contracts import CatalogApplyAction, DeltaSyncResult, ProgressEvent
+from .contracts import (
+    CatalogApplyAction,
+    CatalogApplyCallback,
+    CatalogRow,
+    ConfigMapping,
+    DeltaSyncResult,
+    PlaylistPushResult,
+    ProgressCallback,
+    ProgressEvent,
+)
 from .db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -94,16 +103,16 @@ class CatalogClient:
         self,
         db: DatabaseManager,
         master_url: str,
-        progress_callback: Optional[Callable[[dict], None]] = None,
+        progress_callback: Optional[ProgressCallback] = None,
         timeout: int = 30,
         api_token: Optional[str] = None,
-    ):
+    ) -> None:
         if not master_url:
             raise ValueError("master_url is required to pull the catalog")
 
         self.db = db
         self.master_url = master_url.rstrip("/")
-        self.progress_callback = progress_callback
+        self.progress_callback: Optional[ProgressCallback] = progress_callback
         self.timeout = timeout
 
         self.session = requests.Session()
@@ -127,7 +136,7 @@ class CatalogClient:
         detail: Optional[str] = None,
         current: Optional[int] = None,
         total: Optional[int] = None,
-    ):
+    ) -> None:
         logger.info(message)
         if not self.progress_callback:
             return
@@ -142,7 +151,7 @@ class CatalogClient:
     def _pull_delta(
         self,
         spec: _DeltaPullSpec,
-        apply_row: Callable[[dict], str],
+        apply_row: CatalogApplyCallback,
     ) -> DeltaSyncResult:
         """Fetch and atomically advance one delta feed's cursor.
 
@@ -162,15 +171,15 @@ class CatalogClient:
             timeout=self.timeout,
         )
         response.raise_for_status()
-        data: dict = response.json() or {}
+        data = cast(Mapping[str, Any], response.json() or {})
         if not data.get("success"):
             raise RuntimeError(
                 "Master responded with failure: "
                 f"{data.get('message', 'unknown error')}"
             )
 
-        rows = data.get(spec.collection_key) or []
-        as_of = data.get("as_of")
+        rows = cast(Sequence[CatalogRow], data.get(spec.collection_key) or [])
+        as_of = cast(Optional[str], data.get("as_of"))
         counts: Dict[str, int] = {
             "inserted": 0,
             "updated": 0,
@@ -181,7 +190,7 @@ class CatalogClient:
 
         total = len(rows)
         for current, row in enumerate(rows, 1):
-            action = cast(CatalogApplyAction, apply_row(row))
+            action: CatalogApplyAction = apply_row(row)
             if action in ("inserted", "updated"):
                 counts[action] += 1
             elif action == "stale" and spec.include_stale:
@@ -220,23 +229,29 @@ class CatalogClient:
         )
         return summary
 
-    def pull(self) -> dict:
+    def pull(self) -> DeltaSyncResult:
         """Pull the catalog delta and apply it.
 
         Returns a summary: {received, inserted, updated, skipped, as_of, since}.
         """
-        return self._pull_delta(_CATALOG_PULL, self.db.apply_catalog_row)
+        return self._pull_delta(
+            _CATALOG_PULL,
+            cast(CatalogApplyCallback, self.db.apply_catalog_row),
+        )
 
-    def pull_playlists(self) -> dict:
+    def pull_playlists(self) -> DeltaSyncResult:
         """Pull the playlist delta and apply each one (full-membership replace).
 
         Tracks must be pulled first — unknown track MBIDs on the satellite
         get silently dropped from membership until a later pass picks them
         up. Returns {received, inserted, updated, skipped, since, as_of}.
         """
-        return self._pull_delta(_PLAYLIST_PULL, self.db.apply_playlist_row)
+        return self._pull_delta(
+            _PLAYLIST_PULL,
+            cast(CatalogApplyCallback, self.db.apply_playlist_row),
+        )
 
-    def pull_lyrics(self) -> dict:
+    def pull_lyrics(self) -> DeltaSyncResult:
         """Pull the lyrics delta and apply each row.
 
         Cheaper than running LRCLIB lookups on every satellite — the
@@ -246,9 +261,12 @@ class CatalogClient:
         first; lyrics for unknown mbids still apply (the row's keyed
         by mbid, not the foreign key).
         """
-        return self._pull_delta(_LYRICS_PULL, self.db.apply_lyrics_row)
+        return self._pull_delta(
+            _LYRICS_PULL,
+            cast(CatalogApplyCallback, self.db.apply_lyrics_row),
+        )
 
-    def pull_artist_tags(self) -> dict:
+    def pull_artist_tags(self) -> DeltaSyncResult:
         """Pull authoritative artist-tag snapshots from the master.
 
         Each payload item replaces one artist's full tag set, including an
@@ -258,10 +276,10 @@ class CatalogClient:
         """
         return self._pull_delta(
             _ARTIST_TAGS_PULL,
-            self.db.apply_artist_tags_row,
+            cast(CatalogApplyCallback, self.db.apply_artist_tags_row),
         )
 
-    def push_playlists(self) -> dict:
+    def push_playlists(self) -> PlaylistPushResult:
         """Push locally-edited playlists to the master.
 
         Selects playlists with updated_at > last_playlist_push, POSTs them
@@ -310,7 +328,7 @@ class CatalogClient:
 
         self.db.set_sync_state(PLAYLIST_PUSH_STATE_KEY, snapshot)
 
-        summary = {
+        summary: PlaylistPushResult = {
             "sent": len(rows),
             "accepted": int(data.get("accepted", 0)),
             "stale": int(data.get("stale", 0)),
@@ -327,9 +345,9 @@ class CatalogClient:
 
 def main_run_catalog_pull(
     db: DatabaseManager,
-    config: dict,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-) -> dict:
+    config: ConfigMapping,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> DeltaSyncResult:
     """Entry point used by the web server / CLI."""
     master_url = (config.get("master_url") or "").rstrip("/")
     client = CatalogClient(
@@ -343,9 +361,9 @@ def main_run_catalog_pull(
 
 def main_run_playlist_pull(
     db: DatabaseManager,
-    config: dict,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-) -> dict:
+    config: ConfigMapping,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> DeltaSyncResult:
     """Pull only the playlist delta. Tracks should be pulled first."""
     master_url = (config.get("master_url") or "").rstrip("/")
     client = CatalogClient(
@@ -359,9 +377,9 @@ def main_run_playlist_pull(
 
 def main_run_playlist_push(
     db: DatabaseManager,
-    config: dict,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-) -> dict:
+    config: ConfigMapping,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> PlaylistPushResult:
     """Push locally-edited playlists to the master."""
     master_url = (config.get("master_url") or "").rstrip("/")
     client = CatalogClient(
@@ -375,9 +393,9 @@ def main_run_playlist_push(
 
 def main_run_lyrics_pull(
     db: DatabaseManager,
-    config: dict,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-) -> dict:
+    config: ConfigMapping,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> DeltaSyncResult:
     """Pull the lyrics delta from the master.
 
     Skipped at the sync_all level when no master_url is configured;
@@ -395,9 +413,9 @@ def main_run_lyrics_pull(
 
 def main_run_artist_tags_pull(
     db: DatabaseManager,
-    config: dict,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-) -> dict:
+    config: ConfigMapping,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> DeltaSyncResult:
     """Pull the artist-tag delta from the master."""
     master_url = (config.get("master_url") or "").rstrip("/")
     client = CatalogClient(

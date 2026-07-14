@@ -112,9 +112,12 @@ class ProgressReporter(Protocol):
 
 
 ProgressCallback: TypeAlias = Callable[[ProgressEvent], None]
+MessageReporter: TypeAlias = Callable[[str], None]
 
 
 CatalogApplyAction: TypeAlias = Literal["inserted", "updated", "stale", "skipped"]
+CatalogRow: TypeAlias = Dict[str, Any]
+CatalogApplyCallback: TypeAlias = Callable[[CatalogRow], CatalogApplyAction]
 SyncStepStatus: TypeAlias = Literal["ok", "skipped", "error"]
 
 
@@ -127,6 +130,31 @@ class DeltaSyncResult(TypedDict, total=False):
     pushed: int
     since: Optional[str]
     as_of: Optional[str]
+
+
+class PlaylistPushResult(TypedDict):
+    sent: int
+    accepted: int
+    stale: int
+    skipped: int
+    since: Optional[str]
+    as_of: Optional[str]
+
+
+class InventoryItem(TypedDict):
+    """One device-local track advertised to an authority device."""
+
+    mbid: str
+    local_path: str
+
+
+class InventoryReportResult(TypedDict):
+    """Stable summary returned by the inventory sync entry point."""
+
+    mode: Literal["local", "remote"]
+    device_id: str
+    items: int
+    written: int
 
 
 class SyncStepBase(TypedDict):

@@ -11,35 +11,25 @@ each call, so retrying after a network blip is always safe.
 """
 
 import logging
-from typing import Any, Callable, List, Literal, Mapping, Optional, TypedDict, cast
+from typing import Any, List, Mapping, Optional, cast
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .config_manager import is_authority_config
-from .contracts import ConfigMapping, ProgressCallback
+from .contracts import (
+    ConfigMapping,
+    InventoryItem,
+    InventoryReportResult,
+    MessageReporter,
+    ProgressCallback,
+)
 from .db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 INVENTORY_REPORT_STATE_KEY = "last_inventory_report"
-
-
-class InventoryItem(TypedDict):
-    """One device-local track advertised to the master."""
-
-    mbid: str
-    local_path: str
-
-
-class InventoryReportResult(TypedDict):
-    """Stable summary returned by :func:`main_run_inventory_report`."""
-
-    mode: Literal["local", "remote"]
-    device_id: str
-    items: int
-    written: int
 
 
 def _config_text(config: ConfigMapping, key: str) -> str:
@@ -74,7 +64,7 @@ def _session(api_token: Optional[str] = None) -> requests.Session:
 
 def _progress_reporter(
     progress_callback: Optional[ProgressCallback],
-) -> Callable[[str], None]:
+) -> MessageReporter:
     """Adapt the public structured callback to a message-only reporter."""
 
     def report(message: str) -> None:
@@ -89,7 +79,7 @@ def _record_local_inventory(
     db: DatabaseManager,
     device_id: str,
     items: List[InventoryItem],
-    report: Callable[[str], None],
+    report: MessageReporter,
 ) -> InventoryReportResult:
     report(f"Recording own inventory ({len(items)} items)")
     written = db.replace_device_inventory(device_id, items)
@@ -108,7 +98,7 @@ def _record_remote_inventory(
     device_id: str,
     master_url: str,
     items: List[InventoryItem],
-    report: Callable[[str], None],
+    report: MessageReporter,
 ) -> InventoryReportResult:
     report(f"Reporting inventory to {master_url} ({len(items)} items)")
     session = _session(api_token=_config_text(config, "api_token") or None)

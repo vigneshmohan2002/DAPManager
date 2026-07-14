@@ -19,7 +19,7 @@ doesn't block the others.
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, cast
+from typing import List, Optional, cast
 
 from .catalog_sync import (
     main_run_artist_tags_pull,
@@ -31,9 +31,12 @@ from .catalog_sync import (
 from .contribution_sync import main_run_contribute
 from .config_manager import device_role_from_config, is_authority_config
 from .contracts import (
+    ConfigMapping,
     DeviceRole,
     JSONObject,
-    ProgressEvent,
+    MessageReporter,
+    ProgressCallback,
+    SyncAllResult,
     SyncOperation,
     SyncStepResult,
 )
@@ -43,7 +46,7 @@ from .inventory_sync import main_run_inventory_report
 logger = logging.getLogger(__name__)
 
 
-def _bool(val) -> bool:
+def _bool(val: object) -> bool:
     return bool(val) and val not in ("false", "False", "0", 0)
 
 
@@ -59,7 +62,7 @@ class _SyncStep:
 def _execute_step(
     step: _SyncStep,
     results: List[SyncStepResult],
-    report: Callable[[str], None],
+    report: MessageReporter,
 ) -> None:
     """Run one step without allowing its failure to stop later work."""
     if step.skip_reason is not None:
@@ -125,9 +128,9 @@ def _contribution_skip_reason(
 
 def main_run_sync_all(
     db: DatabaseManager,
-    config: dict,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-) -> Dict:
+    config: ConfigMapping,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> SyncAllResult:
     """Run all sync operations applicable to this device.
 
     Returns ``{steps: [{name, status, message, summary?}]}`` where
@@ -153,8 +156,7 @@ def main_run_sync_all(
     def _report(msg: str) -> None:
         logger.info(msg)
         if progress_callback:
-            event: ProgressEvent = {"message": msg}
-            progress_callback(event)
+            progress_callback({"message": msg})
 
     pull_skip_reason = _pull_skip_reason(
         master_url,
@@ -168,7 +170,7 @@ def main_run_sync_all(
         contribute,
     )
 
-    steps = [
+    steps: List[_SyncStep] = [
         _SyncStep(
             "pull_catalog",
             lambda: main_run_catalog_pull(db, config),

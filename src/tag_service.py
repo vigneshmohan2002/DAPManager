@@ -17,7 +17,7 @@ Confidence tiers mirror Picard's colours:
 
 import logging
 import os
-from typing import Any, Mapping, Optional, Sequence, Tuple, cast
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 import acoustid
 import musicbrainzngs
@@ -120,7 +120,7 @@ def _build_tag_metadata(
     }
 
 
-def read_current_tags(filepath: str) -> dict:
+def read_current_tags(filepath: str) -> TagMetadata:
     """Return the file's existing tags as a flat dict (best-effort).
 
     Used to show a before/after diff in the review step. Missing or
@@ -157,7 +157,7 @@ def read_current_tags(filepath: str) -> dict:
 
 def identify_file(
     filepath: str, api_key: str, contact: str = ""
-) -> Optional[dict]:
+) -> Optional[TagCandidate]:
     """Fingerprint + MusicBrainz lookup; return a candidate without writing.
 
     Returns ``None`` when AcoustID returns no results, when MusicBrainz
@@ -236,12 +236,12 @@ def identify_file(
         "score": score,
         "tier": _tier(score),
         "meta": meta,
-        "current": cast(TagMetadata, read_current_tags(filepath)),
+        "current": read_current_tags(filepath),
     }
     return candidate
 
 
-def write_tags(filepath: str, meta: dict) -> str:
+def write_tags(filepath: str, meta: TagMetadata) -> str:
     """Write ``meta`` to ``filepath`` using the right container handler.
 
     Returns the container name ("flac"|"mp3"|"ogg"|"m4a") on success.
@@ -271,7 +271,7 @@ def _s(v) -> str:
     return "" if v is None else str(v)
 
 
-def _write_flac(filepath: str, meta: dict) -> None:
+def _write_flac(filepath: str, meta: TagMetadata) -> None:
     audio = FLAC(filepath)
     audio["title"] = _s(meta.get("title"))
     audio["artist"] = _s(meta.get("artist"))
@@ -288,7 +288,7 @@ def _write_flac(filepath: str, meta: dict) -> None:
     audio.save()
 
 
-def _write_mp3(filepath: str, meta: dict) -> None:
+def _write_mp3(filepath: str, meta: TagMetadata) -> None:
     try:
         audio = EasyID3(filepath)
     except mutagen.id3.ID3NoHeaderError:
@@ -314,7 +314,7 @@ def _write_mp3(filepath: str, meta: dict) -> None:
     audio.save()
 
 
-def _write_ogg(filepath: str, meta: dict) -> None:
+def _write_ogg(filepath: str, meta: TagMetadata) -> None:
     audio = OggVorbis(filepath)
     audio["title"] = _s(meta.get("title"))
     audio["artist"] = _s(meta.get("artist"))
@@ -384,7 +384,7 @@ def update_album_tags(
     return ext.lstrip(".")
 
 
-def _write_m4a(filepath: str, meta: dict) -> None:
+def _write_m4a(filepath: str, meta: TagMetadata) -> None:
     audio = MP4(filepath)
     # MP4 uses atom keys
     audio["\xa9nam"] = _s(meta.get("title"))
