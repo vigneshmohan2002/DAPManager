@@ -1,5 +1,8 @@
 import threading
 import time
+from unittest.mock import Mock
+
+from src.services import config_service
 
 from src.services.library_service import (
     availability_for,
@@ -11,9 +14,11 @@ from src.services.media_proxy_service import (
     guess_audio_mime,
 )
 from src.services.config_service import (
+    build_first_run_config,
     build_public_config,
     merge_config_update,
     normalize_config_update,
+    reload_runtime_config,
 )
 from src.services.task_service import TaskManager
 
@@ -107,6 +112,67 @@ def test_config_update_normalizes_role_and_preserves_blank_secrets():
     assert merged["is_master"] is False
     assert merged["slsk_password"] == "existing"
     assert merged["database_file"] == "library.db"
+
+
+def test_build_first_run_config_filters_fields_and_owns_database_path(tmp_path):
+    builder = Mock(return_value={
+        "device_role": "satellite",
+        "is_master": True,
+    })
+    target = tmp_path / "nested" / "config.json"
+
+    result = build_first_run_config(
+        str(target),
+        {
+            "role": " SATELLITE ",
+            "music_library_path": "/music",
+            "database_file": "/client-selected.db",
+        },
+        builder,
+    )
+
+    builder.assert_called_once_with(
+        "satellite",
+        database_file=str(target.with_name("dap_library.db")),
+        music_library_path="/music",
+    )
+    assert result["device_role"] == "satellite"
+    assert result["is_master"] is False
+
+
+def test_reload_runtime_config_owns_scheduler_dependency_policy(monkeypatch):
+    class FakeConfigManager:
+        _instance = None
+
+        def __init__(self):
+            self.reload_count = 0
+
+        def _load_config(self):
+            self.reload_count += 1
+
+    monkeypatch.setattr(config_service, "ConfigManager", FakeConfigManager)
+    runtime = FakeConfigManager()
+    sync_restart = Mock()
+    release_restart = Mock()
+    maintenance_restart = Mock()
+
+    reload_runtime_config(
+        runtime,
+        {
+            "sync_interval_seconds",
+            "lidarr_watch_interval_seconds",
+            "library_maintenance_on_startup",
+        },
+        start_sync_scheduler=sync_restart,
+        start_release_watcher=release_restart,
+        start_library_maintenance_scheduler=maintenance_restart,
+    )
+
+    assert runtime.reload_count == 1
+    assert FakeConfigManager._instance is runtime
+    sync_restart.assert_called_once_with(run_on_startup=False)
+    release_restart.assert_called_once_with()
+    maintenance_restart.assert_called_once_with(run_on_startup=False)
 
 
 def test_media_proxy_headers_forward_only_allowed_values_and_authenticate():

@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 
-from src.config_paths import ensure_parent_dir, resolve_config_path
+from src.config_paths import resolve_config_path
 from src.services import contribution_service
 from src.services import download_discovery_service
 from src.services import library_application_service
@@ -18,10 +18,12 @@ from src.services.library_service import (
     public_track_row,
 )
 from src.services.config_service import (
+    build_first_run_config,
     build_public_config,
     merge_config_update,
     normalize_config_update,
     read_config_file,
+    reload_runtime_config,
     write_config_file,
 )
 from src.services.media_proxy_service import (
@@ -381,10 +383,7 @@ from src.config_keys import (
     GROUPS as CONFIG_GROUPS,
     SECRET_KEYS as CONFIG_SECRET_KEYS,
 )
-from src.config_manager import (
-    normalize_device_role,
-    synchronize_authority_fields,
-)
+from src.config_manager import normalize_device_role
 
 API_AUTH_EXEMPT_PATHS = {"/api/status", "/api/healthz", "/api/openapi.json"}
 AUTH_COOKIE_NAME = "dapmanager_auth"
@@ -666,32 +665,16 @@ def update_config():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-    # Reload the in-process config so subsequent requests see the new values.
     try:
-        from src.config_manager import ConfigManager
-        global config
-        if config is not None:
-            config._load_config()
-            if isinstance(config, ConfigManager):
-                ConfigManager._instance = config
-
-        changed_set = set(changed)
-        if changed_set & {"sync_interval_seconds", "sync_on_startup"}:
-            _start_sync_scheduler(run_on_startup=False)
-        if changed_set & {
-            "lidarr_watch_enabled",
-            "lidarr_watch_interval_seconds",
-            "device_role",
-        }:
-            _start_release_watcher()
-        if changed_set & {
-            "library_maintenance_interval_seconds",
-            "library_maintenance_on_startup",
-            "device_role",
-        }:
-            # A Settings save is not a process start. Rebuild the loop without
-            # re-firing its startup job; interval=0 takes effect immediately.
-            _start_library_maintenance_scheduler(run_on_startup=False)
+        reload_runtime_config(
+            config,
+            changed,
+            start_sync_scheduler=_start_sync_scheduler,
+            start_release_watcher=_start_release_watcher,
+            start_library_maintenance_scheduler=(
+                _start_library_maintenance_scheduler
+            ),
+        )
     except Exception as e:
         logger.warning(f"Config written but in-process reload failed: {e}")
 
@@ -710,18 +693,6 @@ def update_config():
     return response
 
 
-_FIRST_RUN_FIELDS = {
-    "music_library_path", "downloads_path", "dap_mount_point",
-    "master_url", "public_master_url", "api_token", "device_name",
-    "slsk_username", "slsk_password",
-    "jellyfin_url", "jellyfin_api_key", "jellyfin_user_id",
-    "lidarr_url", "lidarr_api_key", "lidarr_enabled",
-    "acoustid_api_key", "contact_email",
-    "report_inventory_to_host", "contribute_to_host",
-    "fast_search", "remove_ft", "desperate_mode", "strict_quality",
-}
-
-
 @app.route("/api/save_config", methods=["POST"])
 def save_config():
     """Persist a fresh config.json from the setup wizard payload.
@@ -734,26 +705,17 @@ def save_config():
     from src.first_run import build_initial_config
 
     data = request.json or {}
-    role = (data.get("role") or "master").strip().lower()
-    payload = {k: v for k, v in data.items() if k in _FIRST_RUN_FIELDS}
-    database_file = os.path.join(
-        os.path.dirname(os.path.abspath(CONFIG_FILE)),
-        "dap_library.db",
-    )
     try:
-        new_config = build_initial_config(
-            role,
-            database_file=database_file,
-            **payload,
+        new_config = build_first_run_config(
+            CONFIG_FILE,
+            data,
+            build_initial_config,
         )
     except (TypeError, ValueError) as e:
         return jsonify({"success": False, "message": str(e)}), 400
-    synchronize_authority_fields(new_config)
 
     try:
-        ensure_parent_dir(CONFIG_FILE)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(new_config, f, indent=4)
+        write_config_file(CONFIG_FILE, new_config)
         return jsonify({"success": True})
     except Exception as e:
         logger.exception("save_config failed")
