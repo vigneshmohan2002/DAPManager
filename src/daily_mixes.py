@@ -146,11 +146,7 @@ def _purge_daily_mixes(db: DatabaseManager) -> None:
     """Hard-delete every daily_mix_* playlist row (and cascade
     membership). Used both before regen and on a cold-start fall-back
     so the UI never shows stale mixes."""
-    db.conn.execute(
-        "DELETE FROM playlists WHERE playlist_id LIKE ?",
-        (f"{DAILY_MIX_ID_PREFIX}%",),
-    )
-    db.conn.commit()
+    db.purge_playlists_by_prefix(DAILY_MIX_ID_PREFIX)
 
 
 def list_daily_mixes(db: DatabaseManager) -> list:
@@ -162,18 +158,7 @@ def list_daily_mixes(db: DatabaseManager) -> list:
     that shuffles cluster contents doesn't reorder the tiles on
     Home.
     """
-    cur = db.conn.execute(
-        "SELECT p.playlist_id, p.name, "
-        "       COUNT(pt.track_mbid) AS track_count "
-        "FROM playlists p "
-        "LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id "
-        "WHERE p.playlist_id LIKE ? AND p.deleted_at IS NULL "
-        "GROUP BY p.playlist_id "
-        "ORDER BY p.playlist_id",
-        (f"{DAILY_MIX_ID_PREFIX}%",),
-    )
-    rows = [dict(r) for r in cur.fetchall()]
-    cur.close()
+    rows = db.list_playlists_by_prefix(DAILY_MIX_ID_PREFIX)
     out = []
     for r in rows:
         # Name shape is "Daily Mix N: TagName" — pull the tag back out

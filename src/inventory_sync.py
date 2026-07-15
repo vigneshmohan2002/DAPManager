@@ -156,11 +156,6 @@ def main_run_inventory_report(
 
 def _stamp_cursor(db: DatabaseManager) -> None:
     """Persist the successful-report timestamp for the sync status widget."""
-    cursor = db.conn.cursor()
-    try:
-        row = cursor.execute("SELECT CURRENT_TIMESTAMP AS ts").fetchone()
-        ts = row["ts"] if row is not None else None
-    finally:
-        cursor.close()
+    ts = db.get_current_timestamp()
     if ts:
         db.set_sync_state(INVENTORY_REPORT_STATE_KEY, ts)

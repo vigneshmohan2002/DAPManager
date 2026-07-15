@@ -1263,6 +1263,10 @@ class DatabaseManager:
     def set_sync_state(self, key: str, value: str):
         self._sync_repository.set_state(key, value)
 
+    def get_current_timestamp(self) -> Optional[str]:
+        """Return SQLite's current timestamp from the active database."""
+        return self._sync_repository.get_current_timestamp()
+
     def get_all_playlists(self, include_orphans: bool = False):
         return [
             self._row_to_playlist(row)
@@ -1270,6 +1274,12 @@ class DatabaseManager:
                 include_orphans
             )
         ]
+
+    def purge_playlists_by_prefix(self, prefix: str) -> None:
+        self._playlist_repository.purge_by_prefix(prefix)
+
+    def list_playlists_by_prefix(self, prefix: str) -> List[dict]:
+        return self._playlist_repository.list_by_prefix(prefix)
 
     def list_playlists_with_counts(self) -> List[dict]:
         """Live playlists with membership counts, for the web library sidebar.

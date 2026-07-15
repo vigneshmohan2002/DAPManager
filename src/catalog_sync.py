@@ -293,9 +293,7 @@ class CatalogClient:
         Returns {sent, accepted, stale, skipped, since, as_of}.
         """
         last_push = self.db.get_sync_state(PLAYLIST_PUSH_STATE_KEY)
-        snapshot = self.db.conn.execute(
-            "SELECT CURRENT_TIMESTAMP AS t"
-        ).fetchone()["t"]
+        snapshot = self.db.get_current_timestamp()
         rows = self.db.get_playlists_since(last_push)
 
         if not rows:

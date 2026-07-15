@@ -6,6 +6,16 @@ from .base import SQLiteRepository
 
 
 class SyncRepository(SQLiteRepository):
+    def get_current_timestamp(self) -> Optional[str]:
+        cursor = self.conn.cursor()
+        try:
+            row = cursor.execute(
+                "SELECT CURRENT_TIMESTAMP AS ts"
+            ).fetchone()
+            return row["ts"] if row is not None else None
+        finally:
+            cursor.close()
+
     def get_state(self, key: str) -> Optional[str]:
         cursor = self.conn.cursor()
         try:

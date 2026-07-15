@@ -7,6 +7,32 @@ from .base import SQLiteRepository
 
 
 class PlaylistRepository(SQLiteRepository):
+    def purge_by_prefix(self, prefix: str) -> None:
+        self.conn.execute(
+            "DELETE FROM playlists WHERE playlist_id LIKE ?",
+            (f"{prefix}%",),
+        )
+        self.conn.commit()
+
+    def list_by_prefix(
+        self,
+        prefix: str,
+    ) -> List[Dict[str, object]]:
+        cursor = self.conn.execute(
+            "SELECT p.playlist_id, p.name, "
+            "       COUNT(pt.track_mbid) AS track_count "
+            "FROM playlists p "
+            "LEFT JOIN playlist_tracks pt "
+            "ON pt.playlist_id = p.playlist_id "
+            "WHERE p.playlist_id LIKE ? AND p.deleted_at IS NULL "
+            "GROUP BY p.playlist_id "
+            "ORDER BY p.playlist_id",
+            (f"{prefix}%",),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        cursor.close()
+        return rows
+
     def ensure_liked_songs_playlist(
         self,
         playlist_id: str,

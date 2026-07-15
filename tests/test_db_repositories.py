@@ -1,9 +1,20 @@
 """Focused characterization for repository behavior not covered elsewhere."""
 
+from datetime import datetime
+
 import pytest
 
+from src.catalog_sync import CatalogClient, PLAYLIST_PUSH_STATE_KEY
+from src.contribution_sync import (
+    CONTRIBUTE_STATE_KEY,
+    _stamp_cursor as stamp_contribution,
+)
 from src.db_manager import Track
 from src.db_repositories.downloads import DownloadRepository
+from src.inventory_sync import (
+    INVENTORY_REPORT_STATE_KEY,
+    _stamp_cursor as stamp_inventory,
+)
 
 
 def _normalize_query(value: str) -> str:
@@ -289,3 +300,56 @@ def test_album_merge_counts_and_split_dismissal_round_trip(db):
     assert db.get_dismissed_split_albums() == {"incident"}
     db.undismiss_split_album("incident")
     assert db.get_dismissed_split_albums() == set()
+
+
+def test_current_timestamp_facade_and_sync_callers(db, monkeypatch):
+    timestamp = db.get_current_timestamp()
+    assert timestamp is not None
+    datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+
+    fixed = "2026-07-15 12:34:56"
+    calls = []
+
+    def current_timestamp():
+        calls.append("timestamp")
+        return fixed
+
+    monkeypatch.setattr(db, "get_current_timestamp", current_timestamp)
+    stamp_inventory(db)
+    stamp_contribution(db)
+    push = CatalogClient(db, "http://master.invalid").push_playlists()
+
+    assert calls == ["timestamp", "timestamp", "timestamp"]
+    assert db.get_sync_state(INVENTORY_REPORT_STATE_KEY) == fixed
+    assert db.get_sync_state(CONTRIBUTE_STATE_KEY) == fixed
+    assert db.get_sync_state(PLAYLIST_PUSH_STATE_KEY) == fixed
+    assert push["as_of"] == fixed
+
+
+def test_playlist_prefix_operations_filter_count_and_purge(db):
+    db.add_or_update_track(Track(
+        mbid="mix-track",
+        title="Track",
+        artist="Artist",
+    ))
+    db.ensure_system_playlist("daily_mix_1", "Daily Mix 1: Rock")
+    db.ensure_system_playlist("daily_mix_2", "Daily Mix 2: Jazz")
+    regular_id = db.create_playlist("Regular")
+    db.link_track_to_playlist("daily_mix_1", "mix-track", 0)
+    db.soft_delete_playlist("daily_mix_2")
+
+    assert db.list_playlists_by_prefix("daily_mix_") == [{
+        "playlist_id": "daily_mix_1",
+        "name": "Daily Mix 1: Rock",
+        "track_count": 1,
+    }]
+
+    db.purge_playlists_by_prefix("daily_mix_")
+
+    assert db.list_playlists_by_prefix("daily_mix_") == []
+    assert db.get_playlist(regular_id) is not None
+    remaining_memberships = db.conn.execute(
+        "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id LIKE ?",
+        ("daily_mix_%",),
+    ).fetchone()[0]
+    assert remaining_memberships == 0
