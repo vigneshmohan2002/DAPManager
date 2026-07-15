@@ -2056,6 +2056,44 @@ def test_tag_identify_reports_no_match_gracefully(client, _tag_config):
     assert data["candidate"] is None
 
 
+def test_tag_identify_translates_identifier_exception(client, _tag_config):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.local_path = "/music/song.flac"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch(
+            'src.tag_service.identify_file',
+            side_effect=RuntimeError("fingerprint failed"),
+        ):
+            res = client.post('/api/tag/identify/m1')
+
+    assert res.status_code == 500
+    assert res.get_json() == {
+        "success": False,
+        "message": "fingerprint failed",
+    }
+
+
+def test_tag_identify_does_not_translate_current_tag_failure(
+    client, _tag_config,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.local_path = "/music/song.flac"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch('src.tag_service.identify_file', return_value=None), \
+             patch(
+                 'src.tag_service.read_current_tags',
+                 side_effect=RuntimeError("unreadable"),
+             ), \
+             pytest.raises(RuntimeError, match="unreadable"):
+            client.post('/api/tag/identify/m1')
+
+
 def test_tag_apply_writes_tags_and_updates_db(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
@@ -2141,6 +2179,35 @@ def test_tag_apply_404_when_no_local_path(client, mock_config):
         mock_db.get_track_by_mbid.return_value = mock_track
         res = client.post('/api/tag/apply/m1', json={"meta": {"title": "T"}})
     assert res.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (ValueError("unsupported format"), 400),
+        (RuntimeError("write failed"), 500),
+    ],
+)
+def test_tag_apply_translates_only_file_write_errors(
+    client, mock_config, error, expected_status,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        mock_db = MockDB.return_value.__enter__.return_value
+        mock_track = MagicMock()
+        mock_track.mbid = "m1"
+        mock_track.local_path = "/music/song.flac"
+        mock_db.get_track_by_mbid.return_value = mock_track
+
+        with patch('src.tag_service.write_tags', side_effect=error):
+            res = client.post(
+                '/api/tag/apply/m1',
+                json={"meta": {"title": "New"}},
+            )
+
+    assert res.status_code == expected_status
+    assert res.get_json()["message"] == str(error)
+    mock_db.add_or_update_track.assert_not_called()
+    mock_db.set_track_tag_tier.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

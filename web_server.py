@@ -6,10 +6,12 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for, R
 
 from src.config_paths import ensure_parent_dir, resolve_config_path
 from src.services import contribution_service
+from src.services import download_discovery_service
 from src.services import library_application_service
 from src.services import listening_service
 from src.services import lyrics_service
 from src.services import playlist_service
+from src.services import tag_application_service
 from src.services.library_service import (
     availability_for,
     is_master_configured,
@@ -299,28 +301,7 @@ def build_suggestion_items(raw_items):
     Returns a list of (query, mbid) tuples. Items without a usable query are dropped.
     Duplicates (same query, case-insensitive) are removed preserving first occurrence.
     """
-    seen = set()
-    results = []
-    for item in raw_items or []:
-        if not isinstance(item, dict):
-            continue
-        query = (item.get("search_query") or "").strip()
-        mbid = (item.get("mbid") or "").strip()
-        if not query:
-            artist = (item.get("artist") or "").strip()
-            title = (item.get("title") or "").strip()
-            if artist and title:
-                query = f"{artist} - {title}"
-            elif title:
-                query = title
-        if not query:
-            continue
-        key = query.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append((query, mbid))
-    return results
+    return download_discovery_service.build_suggestion_items(raw_items)
 
 
 def run_complete_albums(db_path, conf, run_downloads=False, progress_callback=None):
@@ -1907,40 +1888,31 @@ def request_download():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    if not config.is_master:
-        return jsonify({"success": False, "message": "This instance is not a master"}), 400
+    authority_error = download_discovery_service.validate_download_authority(
+        config.is_master
+    )
+    if authority_error is not None:
+        return jsonify(authority_error.payload), authority_error.status_code
 
     data = request.json or {}
-    query = (data.get("search_query") or "").strip()
-    if not query:
-        return jsonify({"success": False, "message": "search_query is required"}), 400
-
-    mbid_guess = (data.get("mbid_guess") or "").strip()
-    playlist_id = (data.get("playlist_id") or "SATELLITE").strip() or "SATELLITE"
+    prepared = download_discovery_service.prepare_download_request(data)
+    if isinstance(
+        prepared,
+        download_discovery_service.DownloadDiscoveryResult,
+    ):
+        return jsonify(prepared.payload), prepared.status_code
 
     try:
         with DatabaseManager(config.db_path) as db:
-            if db.is_download_queued(query):
-                return jsonify({
-                    "success": True,
-                    "queued": False,
-                    "message": "already queued",
-                })
-            item_id = db.queue_download(DownloadItem(
-                search_query=query,
-                playlist_id=playlist_id,
-                mbid_guess=mbid_guess,
-            ))
+            result = download_discovery_service.queue_download_request(
+                db,
+                prepared,
+                item_factory=DownloadItem,
+            )
     except Exception as e:
         logger.error(f"Download request failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
-    return jsonify({
-        "success": True,
-        "queued": True,
-        "item_id": item_id,
-        "message": "queued",
-    })
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/sync", methods=["POST"])
@@ -2427,35 +2399,19 @@ def tag_identify(mbid):
         }), 400
 
     from src import tag_service
-    with DatabaseManager(config.db_path) as db:
-        track = db.get_track_by_mbid(mbid)
-    if not track or not track.local_path:
-        return jsonify({
-            "success": False,
-            "message": "Track has no local_path — cannot fingerprint.",
-        }), 404
-
-    contact = (config._config.get("contact_email") or "").strip()
-    try:
-        candidate = tag_service.identify_file(track.local_path, api_key, contact)
-    except Exception as e:
-        logger.error(f"tag_identify failed for {mbid}: {e}", exc_info=True)
-        return jsonify({"success": False, "message": str(e)}), 500
-
-    if not candidate:
-        return jsonify({
-            "success": True,
-            "candidate": None,
-            "message": "no match",
-            "current": tag_service.read_current_tags(track.local_path),
-        })
-
-    return jsonify({
-        "success": True,
-        "candidate": candidate,
-        "mbid": mbid,
-        "local_path": track.local_path,
-    })
+    result = tag_application_service.identify_track(
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        mbid=mbid,
+        api_key=api_key,
+        contact_provider=lambda: (
+            config._config.get("contact_email") or ""
+        ).strip(),
+        identify_file=tag_service.identify_file,
+        read_current_tags=tag_service.read_current_tags,
+        event_logger=logger,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/tag/apply/<mbid>", methods=["POST"])
@@ -2471,55 +2427,22 @@ def tag_apply(mbid):
         return jsonify({"success": False, "message": "Not initialized"}), 503
 
     body = request.json or {}
-    meta = body.get("meta") or {}
-    if not isinstance(meta, dict) or not meta.get("title"):
-        return jsonify({"success": False, "message": "meta.title is required"}), 400
+    prepared = tag_application_service.prepare_tag_apply(body)
+    if isinstance(prepared, tag_application_service.TagApplicationResult):
+        return jsonify(prepared.payload), prepared.status_code
 
     from src import tag_service
     from src.db_manager import Track
-    with DatabaseManager(config.db_path) as db:
-        track = db.get_track_by_mbid(mbid)
-        if not track or not track.local_path:
-            return jsonify({
-                "success": False,
-                "message": "Track has no local_path — cannot tag.",
-            }), 404
-
-        try:
-            container = tag_service.write_tags(track.local_path, meta)
-        except ValueError as e:
-            return jsonify({"success": False, "message": str(e)}), 400
-        except Exception as e:
-            logger.error(f"tag_apply write failed for {mbid}: {e}", exc_info=True)
-            return jsonify({"success": False, "message": str(e)}), 500
-
-        new_mbid = (meta.get("mbid") or "").strip() or track.mbid
-        updated = Track(
-            mbid=new_mbid,
-            title=meta.get("title") or track.title,
-            artist=meta.get("artist") or track.artist,
-            album=meta.get("album") or track.album,
-            local_path=track.local_path,
-        )
-        if new_mbid != track.mbid:
-            db.soft_delete_track(track.mbid)
-        db.add_or_update_track(updated)
-        # Apply == user confirmation, so clear the review flag. Optional
-        # `score` from the client (the original AcoustID score) is kept
-        # for context; absence just leaves it NULL.
-        score = body.get("score")
-        try:
-            score = float(score) if score is not None else None
-        except (TypeError, ValueError):
-            score = None
-        db.set_track_tag_tier(new_mbid, "green", score)
-
-    return jsonify({
-        "success": True,
-        "container": container,
-        "mbid": new_mbid,
-        "previous_mbid": track.mbid,
-    })
+    result = tag_application_service.apply_track_tags(
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        mbid=mbid,
+        prepared=prepared,
+        write_tags=tag_service.write_tags,
+        track_factory=Track,
+        event_logger=logger,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/tracks/<mbid>", methods=["DELETE"])
@@ -2768,33 +2691,22 @@ def post_suggestions():
     raw_items = data.get("items", [])
     pairs = build_suggestion_items(raw_items)
 
-    queued = 0
-    skipped = 0
     try:
         with DatabaseManager(config.db_path) as db:
-            for query, mbid in pairs:
-                if db.is_download_queued(query):
-                    skipped += 1
-                    continue
-                db.queue_download(
-                    DownloadItem(
-                        search_query=query,
-                        playlist_id="SUGGESTED",
-                        mbid_guess=mbid,
-                        status="pending",
-                    )
-                )
-                queued += 1
+            counts = download_discovery_service.queue_suggestion_pairs(
+                db,
+                pairs,
+                item_factory=DownloadItem,
+            )
     except Exception as e:
         logger.error(f"Failed to process suggestions: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
-    return jsonify({
-        "success": True,
-        "received": len(raw_items),
-        "queued": queued,
-        "skipped": skipped,
-    })
+    result = download_discovery_service.suggestion_queue_result(
+        len(raw_items),
+        counts,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/suggestions/forward", methods=["POST"])
@@ -2808,49 +2720,29 @@ def forward_suggestions():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    master_url = (config.get("master_url") or "").strip().rstrip("/")
-    if not master_url:
-        return jsonify({
-            "success": False,
-            "message": "master_url not configured",
-        }), 409
+    target = download_discovery_service.normalize_forward_target(
+        config.get("master_url")
+    )
+    if isinstance(target, download_discovery_service.DownloadDiscoveryResult):
+        return jsonify(target.payload), target.status_code
 
     data = request.json or {}
     raw_items = data.get("items")
-    if not isinstance(raw_items, list):
-        return jsonify({
-            "success": False,
-            "message": "body must be {'items': [...]}",
-        }), 400
+    validation_error = download_discovery_service.validate_forward_items(
+        raw_items
+    )
+    if validation_error is not None:
+        return jsonify(validation_error.payload), validation_error.status_code
 
     import requests
 
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    token = (config.get("api_token") or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        upstream = requests.post(
-            f"{master_url}/api/suggestions",
-            json={"items": raw_items},
-            headers=headers,
-            timeout=(5, 30),
-        )
-    except requests.RequestException as e:
-        logger.warning("Suggestion forward to master failed: %s", e)
-        return jsonify({
-            "success": False,
-            "message": f"master unreachable: {e}",
-        }), 502
-
-    try:
-        payload = upstream.json()
-    except ValueError:
-        payload = {
-            "success": False,
-            "message": f"master returned non-JSON ({upstream.status_code})",
-        }
-    return jsonify(payload), upstream.status_code
+    result = download_discovery_service.forward_suggestions(
+        target,
+        raw_items,
+        api_token=config.get("api_token") or "",
+        http_post=requests.post,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/catalog/queue-download", methods=["POST"])
@@ -2871,60 +2763,24 @@ def catalog_queue_download():
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     data = request.json or {}
-    mbids = data.get("mbids")
-    if not isinstance(mbids, list):
-        return jsonify({
-            "success": False,
-            "message": "body must be {'mbids': [...]}",
-        }), 400
+    validated = download_discovery_service.validate_catalog_queue_body(data)
+    if isinstance(
+        validated,
+        download_discovery_service.DownloadDiscoveryResult,
+    ):
+        return jsonify(validated.payload), validated.status_code
 
-    queued = 0
-    queued_mbids = []
-    skipped_linked = 0
-    skipped_queued = 0
-    not_found = 0
     try:
         with DatabaseManager(config.db_path) as db:
-            for raw in mbids:
-                mbid = (raw or "").strip()
-                if not mbid:
-                    not_found += 1
-                    continue
-                track = db.get_track_by_mbid(mbid)
-                if track is None:
-                    not_found += 1
-                    continue
-                if track.local_path:
-                    skipped_linked += 1
-                    continue
-                query = f"{track.artist or ''} - {track.title or ''}".strip(" -")
-                if not query:
-                    not_found += 1
-                    continue
-                if db.is_download_queued(query):
-                    skipped_queued += 1
-                    continue
-                db.queue_download(DownloadItem(
-                    search_query=query,
-                    playlist_id="CATALOG",
-                    mbid_guess=mbid,
-                    status="pending",
-                ))
-                queued += 1
-                queued_mbids.append(mbid)
+            result = download_discovery_service.queue_catalog_downloads(
+                db,
+                validated,
+                item_factory=DownloadItem,
+            )
     except Exception as e:
         logger.error(f"catalog_queue_download failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-
-    return jsonify({
-        "success": True,
-        "received": len(mbids),
-        "queued": queued,
-        "queued_mbids": queued_mbids,
-        "skipped_linked": skipped_linked,
-        "skipped_queued": skipped_queued,
-        "not_found": not_found,
-    })
+    return jsonify(result.payload), result.status_code
 
 
 def _attempt_timeout_seconds() -> int:
@@ -3343,63 +3199,32 @@ def releases_wanted():
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
 
-    if not bool(config._config.get("lidarr_watch_enabled") or False):
-        # 200 / success:false / reason — same shape as artist-info's
-        # quiet miss so the UI renders an empty-state without console
-        # noise.
-        return jsonify({"success": False, "reason": "lidarr_disabled"})
+    disabled = download_discovery_service.validate_wanted_releases_enabled(
+        config._config
+    )
+    if disabled is not None:
+        return jsonify(disabled.payload), disabled.status_code
 
     from src.downloader import _build_lidarr_client
     from src.lidarr_client import LidarrError
 
-    client = _build_lidarr_client(config._config)
-    if client is None:
-        return jsonify({"success": False, "reason": "lidarr_unavailable"})
-
-    try:
-        records = client.get_wanted_missing(page=1, page_size=100)
-    except LidarrError as e:
-        # 502: upstream is configured but failing; distinct from
-        # 'lidarr_disabled' so the UI can show a "Lidarr offline" hint
-        # rather than the configure-it-first empty state.
-        return jsonify({"success": False, "message": str(e)}), 502
+    prepared = download_discovery_service.fetch_wanted_release_records(
+        config._config,
+        client_factory=_build_lidarr_client,
+        lidarr_error=LidarrError,
+    )
+    if isinstance(
+        prepared,
+        download_discovery_service.DownloadDiscoveryResult,
+    ):
+        return jsonify(prepared.payload), prepared.status_code
 
     with DatabaseManager(config.db_path) as db:
-        last_tick = db.get_sync_state("last_release_watch_tick")
-        queued_mbids = db.get_queued_release_mbids()
-        existing_mbids = db.get_existing_release_mbids()
-
-    items = []
-    for r in records:
-        mbid = r.get("foreignAlbumId") or ""
-        artist = (r.get("artist") or {}).get("artistName") or ""
-        title = r.get("title") or ""
-        # Lidarr ships its own cover URLs in `images`; prefer those
-        # because they're what its own UI uses (CDN-cached, often
-        # higher-quality than coverartarchive.org). Fall back to CAA
-        # so non-Lidarr-served albums still render artwork.
-        cover_url = ""
-        for img in r.get("images") or []:
-            if img.get("coverType") == "cover" and img.get("remoteUrl"):
-                cover_url = img.get("remoteUrl")
-                break
-        if not cover_url and mbid:
-            cover_url = f"https://coverartarchive.org/release-group/{mbid}/front-250"
-        items.append({
-            "mbid": mbid,
-            "artist": artist,
-            "title": title,
-            "release_date": r.get("releaseDate") or None,
-            "cover_url": cover_url,
-            "queued": mbid in queued_mbids,
-            "downloaded": mbid in existing_mbids,
-        })
-
-    return jsonify({
-        "success": True,
-        "last_tick": last_tick,
-        "items": items,
-    })
+        result = download_discovery_service.wanted_releases_result(
+            db,
+            prepared.records,
+        )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/search", methods=["GET"])
