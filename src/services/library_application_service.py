@@ -39,13 +39,29 @@ class HomeStore(Protocol):
     def get_liked_tracks_summary(self, limit: int = 6) -> Dict[str, Any]: ...
 
 
+class OrphanFileStore(Protocol):
+    """Persistence facade needed by orphan-file deletion policy."""
+
+    def get_orphan_tracks(self) -> List[Dict[str, Any]]: ...
+
+    def update_track_local_path(
+        self,
+        mbid: str,
+        path: Optional[str],
+    ) -> None: ...
+
+
 class UpstreamResponse(Protocol):
     status_code: int
 
 
 LikeDatabaseFactory = Callable[[str], AbstractContextManager[LikeStore]]
+OrphanDatabaseFactory = Callable[
+    [str], AbstractContextManager[OrphanFileStore]
+]
 RequestSender = Callable[..., UpstreamResponse]
 DailyMixLoader = Callable[[HomeStore], List[Dict[str, Any]]]
+FileRemover = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -202,3 +218,61 @@ def build_home_payload(
         "jump_back_in": jump_back_in,
         "daily_mixes": daily_mixes,
     }
+
+
+def delete_orphan_track_file(
+    *,
+    db_path: str,
+    database_factory: OrphanDatabaseFactory,
+    mbid: str,
+    remove_file: FileRemover,
+    event_logger: logging.Logger = logger,
+) -> LibraryApplicationResult:
+    """Authorize and remove an orphan's file in the established order.
+
+    The database context deliberately stays open during the filesystem
+    mutation.  A missing file is idempotent and still clears ``local_path``;
+    every other failure keeps the route's existing JSON 500 translation.
+    """
+    try:
+        with database_factory(db_path) as db:
+            orphans = {row["mbid"]: row for row in db.get_orphan_tracks()}
+            track = orphans.get(mbid)
+            if track is None:
+                return LibraryApplicationResult(
+                    {
+                        "success": False,
+                        "message": (
+                            "track is not an orphan; soft-delete it first"
+                        ),
+                    },
+                    409,
+                )
+
+            path = (track.get("local_path") or "").strip()
+            removed = False
+            if path:
+                try:
+                    remove_file(path)
+                    removed = True
+                except FileNotFoundError:
+                    pass
+                db.update_track_local_path(mbid, None)
+
+        return LibraryApplicationResult(
+            {
+                "success": True,
+                "mbid": mbid,
+                "path": path or None,
+                "removed": removed,
+            }
+        )
+    except Exception as exc:
+        event_logger.error(
+            f"delete_track_file({mbid}) failed: {exc}",
+            exc_info=True,
+        )
+        return LibraryApplicationResult(
+            {"success": False, "message": str(exc)},
+            500,
+        )

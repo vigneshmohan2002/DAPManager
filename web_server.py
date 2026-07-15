@@ -5,17 +5,25 @@ from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 
 from src.config_paths import resolve_config_path
+from src.services import album_task_service
 from src.services import contribution_service
 from src.services import download_discovery_service
+from src.services import fleet_service
 from src.services import library_application_service
 from src.services import listening_service
 from src.services import lyrics_service
+from src.services import maintenance_application_service
 from src.services import playlist_service
+from src.services import setup_application_service
 from src.services import tag_application_service
 from src.services.library_service import (
     availability_for,
+    build_artist_radio_payload,
     is_master_configured,
+    list_local_album_tracks,
+    list_public_albums,
     public_track_row,
+    query_public_tracks,
 )
 from src.services.config_service import (
     build_first_run_config,
@@ -27,10 +35,18 @@ from src.services.config_service import (
     write_config_file,
 )
 from src.services.media_proxy_service import (
+    FileStreamResolution,
+    LocalAlbumCoverResolution,
+    MasterAlbumCoverResolution,
+    MasterAlbumTracksResolution,
+    MasterStreamResolution,
     guess_audio_mime,
     request_album_cover,
     request_album_tracks,
     request_stream,
+    resolve_album_cover,
+    resolve_album_tracks,
+    resolve_stream_source,
 )
 from src.services.scheduler_service import (
     build_library_maintenance_scheduler,
@@ -308,19 +324,16 @@ def build_suggestion_items(raw_items):
 
 def run_complete_albums(db_path, conf, run_downloads=False, progress_callback=None):
     """Run the full album completion pipeline, optionally followed by downloads."""
-    with DatabaseManager(db_path) as db:
-        summary = complete_albums_logic(db, progress_callback=progress_callback)
-
-    if run_downloads and summary.get("tracks_queued", 0) > 0:
-        if progress_callback:
-            progress_callback({"message": "Downloading queued tracks..."})
-        with DatabaseManager(db_path) as db:
-            main_run_downloader(db, conf._config, progress_callback=progress_callback)
-
-        if progress_callback:
-            progress_callback({"message": "Re-scanning library..."})
-        with DatabaseManager(db_path) as db:
-            main_scan_library(db, conf._config)
+    album_task_service.run_album_completion_pipeline(
+        db_path=db_path,
+        config_values=conf._config,
+        run_downloads=run_downloads,
+        progress_callback=progress_callback,
+        database_factory=DatabaseManager,
+        complete_albums=complete_albums_logic,
+        run_downloader=main_run_downloader,
+        scan_library=main_scan_library,
+    )
 
 
 @app.before_request
@@ -763,68 +776,30 @@ def _read_master_config_for_download():
     needs to work right after the wizard finishes — before the next
     request triggers init.
     """
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
+    return setup_application_service.read_setup_config(CONFIG_FILE)
 
 
-BUNDLE_LINK_TTL_SECONDS = 60 * 60
+BUNDLE_LINK_TTL_SECONDS = setup_application_service.BUNDLE_LINK_TTL_SECONDS
 
 
 def _bundle_download_token(api_token: str, expires_at: int) -> str:
     """Mint a bundle-only token without exposing the general API secret."""
-    import hashlib
-    import hmac
-
-    message = f"dapmanager-bundle:{int(expires_at)}".encode("utf-8")
-    signature = hmac.new(
-        api_token.encode("utf-8"), message, hashlib.sha256
-    ).hexdigest()
-    return f"{int(expires_at)}.{signature}"
+    return setup_application_service.bundle_download_token(api_token, expires_at)
 
 
 def _valid_bundle_download_token(value: str, api_token: str) -> bool:
-    import hmac
-    import time
-
-    try:
-        expires_raw, _ = value.split(".", 1)
-        expires_at = int(expires_raw)
-    except (AttributeError, TypeError, ValueError):
-        return False
-    if expires_at < int(time.time()):
-        return False
-    expected = _bundle_download_token(api_token, expires_at)
-    return hmac.compare_digest(value, expected)
+    return setup_application_service.valid_bundle_download_token(
+        value,
+        api_token,
+    )
 
 
 @app.route("/api/satellite-bundle-link", methods=["GET"])
 def satellite_bundle_link():
     """Return a short-lived, bundle-scoped sharing URL for the dashboard."""
-    import time
-    from urllib.parse import quote
-
     cfg = _read_master_config_for_download() or {}
-    public_url = (cfg.get("public_master_url") or "").strip().rstrip("/")
-    if not public_url:
-        return jsonify({
-            "success": False,
-            "message": "public_master_url is not configured",
-        }), 409
-    url = f"{public_url}/download/mac"
-    api_token = (cfg.get("api_token") or "").strip()
-    expires_at = None
-    if api_token:
-        expires_at = int(time.time()) + BUNDLE_LINK_TTL_SECONDS
-        scoped = _bundle_download_token(api_token, expires_at)
-        url += f"?bundle_token={quote(scoped, safe='')}"
-    return jsonify({
-        "success": True,
-        "url": url,
-        "expires_at": expires_at,
-    })
+    result = setup_application_service.build_satellite_bundle_link(cfg)
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/download/mac", methods=["GET"])
@@ -837,71 +812,22 @@ def download_mac():
     bearer token, authenticated browser cookie, legacy ``?token=``, or a
     short-lived bundle-only token minted by ``/api/satellite-bundle-link``.
     """
-    import hmac
-    from src.satellite_bundle import (
-        BundleFetchError,
-        ensure_cached_bundle,
-        inject_master_config,
-    )
-
     cfg = _read_master_config_for_download() or {}
-    public_url = (cfg.get("public_master_url") or "").strip().rstrip("/")
-    if not public_url:
-        return jsonify({
-            "success": False,
-            "message": (
-                "public_master_url is not set. Open Settings → Multi-Device "
-                "Sync (or re-run /setup) and fill it in before sharing the "
-                "download link."
-            ),
-        }), 409
-
-    token = (cfg.get("api_token") or "").strip()
-    if token:
-        provided = ""
-        header = request.headers.get("Authorization", "")
-        if header.startswith("Bearer "):
-            provided = header[len("Bearer "):].strip()
-        else:
-            provided = (request.args.get("token") or "").strip()
-        if not provided:
-            provided = (request.cookies.get(AUTH_COOKIE_NAME) or "").strip()
-        scoped = (request.args.get("bundle_token") or "").strip()
-        if not (
-            hmac.compare_digest(provided, token)
-            or _valid_bundle_download_token(scoped, token)
-        ):
-            return jsonify({
-                "success": False,
-                "message": "missing or invalid api token",
-            }), 401
-
-    try:
-        base_path = ensure_cached_bundle()
-    except BundleFetchError as e:
-        logger.warning("download_mac: bundle fetch failed: %s", e)
-        return jsonify({
-            "success": False,
-            "message": (
-                "Could not fetch the satellite bundle from GitHub. "
-                "Check the master's outbound connectivity."
-            ),
-        }), 502
-
-    try:
-        body = inject_master_config(base_path, public_url, token or None)
-    except Exception as e:
-        logger.exception("download_mac: injection failed")
-        return jsonify({"success": False, "message": str(e)}), 500
-
+    result = setup_application_service.prepare_satellite_bundle_download(
+        cfg,
+        authorization_header=request.headers.get("Authorization", ""),
+        query_token=request.args.get("token") or "",
+        cookie_token=request.cookies.get(AUTH_COOKIE_NAME) or "",
+        bundle_token=request.args.get("bundle_token") or "",
+        event_logger=logger,
+    )
+    if result.body is None:
+        return jsonify(result.payload), result.status_code
     return Response(
-        body,
-        mimetype="application/zip",
-        headers={
-            "Content-Disposition": 'attachment; filename="DAPManager-mac.zip"',
-            "Content-Length": str(len(body)),
-            "Cache-Control": "no-store",
-        },
+        result.body,
+        status=result.status_code,
+        mimetype=result.mimetype,
+        headers=result.headers,
     )
 
 
@@ -915,38 +841,8 @@ def setup_detect_public_url():
          Tailscale runs in the container or for non-Docker installs).
     Returns {"source": "env"|"tailscale"|"none", "url"?: str}.
     """
-    import shutil
-    import subprocess
-
-    env_url = (os.environ.get("MASTER_PUBLIC_URL") or "").strip()
-    if env_url:
-        return jsonify({"source": "env", "url": env_url})
-
-    cli = shutil.which("tailscale")
-    if not cli:
-        return jsonify({"source": "none"})
-    port = (os.environ.get("MASTER_PORT") or "5001").strip() or "5001"
-    try:
-        proc = subprocess.run(
-            [cli, "status", "--json"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return jsonify({"source": "none"})
-    if proc.returncode != 0 or not proc.stdout:
-        return jsonify({"source": "none"})
-    try:
-        status = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return jsonify({"source": "none"})
-    self_block = status.get("Self") or {}
-    dns = (self_block.get("DNSName") or "").rstrip(".")
-    if dns:
-        return jsonify({"source": "tailscale", "url": f"http://{dns}:{port}"})
-    for ip in (self_block.get("TailscaleIPs") or []):
-        if ip and ":" not in ip:
-            return jsonify({"source": "tailscale", "url": f"http://{ip}:{port}"})
-    return jsonify({"source": "none"})
+    result = setup_application_service.detect_public_url()
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/albums")
@@ -961,18 +857,8 @@ def api_library_albums():
         return jsonify({"success": False, "message": "Not initialized"}), 503
     try:
         with DatabaseManager(config.db_path) as db:
-            albums = db.list_albums()
-        # cover_path is a local FS path; strip before sending to the webview.
-        public = [
-            {
-                "id": a["id"],
-                "title": a["title"],
-                "artist": a["artist"],
-                "track_count": a["track_count"],
-            }
-            for a in albums
-        ]
-        return jsonify({"success": True, "albums": public})
+            payload = list_public_albums(db)
+        return jsonify(payload)
     except Exception as e:
         logger.exception("api_library_albums failed")
         return jsonify({"success": False, "message": str(e)}), 500
@@ -1006,32 +892,17 @@ def api_library_tracks():
     include_orphans = request.args.get("include_orphans", "").lower() in (
         "1", "true", "yes",
     )
-    has_filters = bool(playlist_id) or local_only or include_orphans
 
     try:
         with DatabaseManager(config.db_path) as db:
-            if has_filters:
-                rows = db.list_tracks_filtered(
-                    playlist_id=playlist_id,
-                    local_only=local_only,
-                    include_orphans=include_orphans,
-                )
-            else:
-                rows = db.list_all_tracks()
-        has_master = _master_url_configured()
-        public = []
-        for r in rows:
-            availability = _availability_for(r, has_master)
-            is_orphan = bool(r.get("deleted_at"))
-            # When orphans are requested the UI wants to see them regardless
-            # of whether they're playable — restoring is the point.
-            if availability == "unavailable" and not (include_orphans and is_orphan):
-                continue
-            entry = _public_track_row(r, has_master)
-            if include_orphans:
-                entry["orphan"] = is_orphan
-            public.append(entry)
-        return jsonify({"success": True, "tracks": public})
+            payload = query_public_tracks(
+                db,
+                playlist_id=playlist_id,
+                local_only=local_only,
+                include_orphans=include_orphans,
+                has_master=_master_url_configured(),
+            )
+        return jsonify(payload)
     except Exception as e:
         logger.exception("api_library_tracks failed")
         return jsonify({"success": False, "message": str(e)}), 500
@@ -1255,27 +1126,24 @@ def api_library_album_cover(album_id: str):
     if not config:
         return ("", 503)
     try:
-        from flask import Response
         from src.cover_art import extract_cover
 
         with DatabaseManager(config.db_path) as db:
-            path = db.get_album_cover_path(album_id)
-        if path:
-            result = extract_cover(path)
-            if result is not None:
-                data, mime = result
-                return Response(
-                    data,
-                    mimetype=mime,
-                    headers={"Cache-Control": "public, max-age=86400"},
-                )
-
-        cfg = getattr(config, "_config", None)
-        if isinstance(cfg, dict):
-            master_url = (cfg.get("master_url") or "").strip().rstrip("/")
-            if master_url:
-                return _proxy_master_album_cover(master_url, album_id)
-        return ("", 404)
+            resolution = resolve_album_cover(
+                db,
+                album_id,
+                config_values=getattr(config, "_config", None),
+                extract_cover=extract_cover,
+            )
+        if isinstance(resolution, LocalAlbumCoverResolution):
+            return Response(
+                resolution.body,
+                mimetype=resolution.content_type,
+                headers={"Cache-Control": resolution.cache_control},
+            )
+        if isinstance(resolution, MasterAlbumCoverResolution):
+            return _proxy_master_album_cover(resolution.master_url, album_id)
+        return ("", resolution.status_code)
     except Exception:
         logger.exception("api_library_album_cover failed for %s", album_id)
         return ("", 500)
@@ -1321,64 +1189,34 @@ def api_library_album_tracks(album_id: str):
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
     try:
-        cfg = getattr(config, "_config", None)
-        if isinstance(cfg, dict):
-            master_url = (cfg.get("master_url") or "").strip().rstrip("/")
-            if master_url:
-                proxied = _proxy_master_album_tracks(master_url, album_id)
-                if proxied is not None:
-                    return proxied
-
-        with DatabaseManager(config.db_path) as db:
-            rows = db.list_album_tracks(album_id)
-        has_master = _master_url_configured()
-        public = [
-            {
-                **_public_track_row({**r, "album_id": album_id}, has_master),
-            }
-            for r in rows
-            if _availability_for(r, has_master) != "unavailable"
-        ]
-        return jsonify({"success": True, "tracks": public})
+        resolution = resolve_album_tracks(
+            album_id,
+            config_values=getattr(config, "_config", None),
+            load_local_tracks=_load_local_album_tracks,
+            request_tracks=request_album_tracks,
+            event_logger=logger,
+        )
+        if isinstance(resolution, MasterAlbumTracksResolution):
+            result = resolution.response
+            return Response(
+                result.body,
+                status=result.status_code,
+                content_type=result.content_type,
+            )
+        return jsonify(resolution.payload)
     except Exception as e:
         logger.exception("api_library_album_tracks failed for %s", album_id)
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-def _proxy_master_album_tracks(master_url: str, album_id: str):
-    """Return the master's playable album rows, or None for offline fallback."""
-    import requests
-    from flask import Response
-
-    token = (config._config.get("api_token") or "").strip()
-    try:
-        result = request_album_tracks(
-            master_url,
+def _load_local_album_tracks(album_id: str, *, has_master: bool) -> dict:
+    """Lazy database adapter used only when master rows are unavailable."""
+    with DatabaseManager(config.db_path) as db:
+        return list_local_album_tracks(
+            db,
             album_id,
-            api_token=token,
+            has_master=has_master,
         )
-    except requests.RequestException:
-        logger.warning(
-            "master album-track lookup unavailable for %s; using replica",
-            album_id,
-            exc_info=True,
-        )
-        return None
-
-    # A transient master failure should not make locally-held tracks unusable.
-    if result.status_code >= 500:
-        logger.warning(
-            "master album-track lookup returned %s for %s; using replica",
-            result.status_code,
-            album_id,
-        )
-        return None
-
-    return Response(
-        result.body,
-        status=result.status_code,
-        content_type=result.content_type,
-    )
 
 
 @app.route("/api/library/plays", methods=["POST"])
@@ -1581,20 +1419,13 @@ def api_library_artist_radio(name: str):
 
     try:
         with DatabaseManager(config.db_path) as db:
-            result = db.build_artist_radio(name, limit=limit)
-        has_master = _master_url_configured()
-        public = []
-        for row in result["tracks"]:
-            if _availability_for(row, has_master) == "unavailable":
-                continue
-            public.append(_public_track_row(row, has_master))
-        return jsonify({
-            "success": True,
-            "tracks": public,
-            "top_tag": result["top_tag"],
-            "seed_count": result["seed_count"],
-            "related_count": result["related_count"],
-        })
+            payload = build_artist_radio_payload(
+                db,
+                name,
+                limit=limit,
+                has_master=_master_url_configured(),
+            )
+        return jsonify(payload)
     except Exception as e:
         logger.exception("api_library_artist_radio failed for %r", name)
         return jsonify({"success": False, "message": str(e)}), 500
@@ -1728,24 +1559,21 @@ def api_stream_track(mbid: str):
         from flask import send_file
 
         with DatabaseManager(config.db_path) as db:
-            sources = db.get_track_sources(mbid)
-        if sources is None:
-            return ("", 404)
-
-        local = (sources.get("local_path") or "").strip()
-        if local and os.path.isfile(local):
-            return send_file(local, mimetype=_guess_audio_mime(local), conditional=True)
-
-        dap = (sources.get("dap_path") or "").strip()
-        if dap and os.path.isfile(dap):
-            return send_file(dap, mimetype=_guess_audio_mime(dap), conditional=True)
-
-        cfg = getattr(config, "_config", None)
-        if isinstance(cfg, dict):
-            master_url = (cfg.get("master_url") or "").strip().rstrip("/")
-            if master_url:
-                return _proxy_master_stream(master_url, mbid)
-        return ("", 404)
+            resolution = resolve_stream_source(
+                db,
+                mbid,
+                config_values=getattr(config, "_config", None),
+                file_exists=os.path.isfile,
+            )
+        if isinstance(resolution, FileStreamResolution):
+            return send_file(
+                resolution.path,
+                mimetype=resolution.content_type,
+                conditional=True,
+            )
+        if isinstance(resolution, MasterStreamResolution):
+            return _proxy_master_stream(resolution.master_url, mbid)
+        return ("", resolution.status_code)
     except Exception:
         logger.exception("api_stream_track failed for %s", mbid)
         return ("", 500)
@@ -2243,36 +2071,14 @@ def post_playlists():
     if not isinstance(items, list):
         return jsonify({"success": False, "message": "playlists must be a list"}), 400
 
-    accepted = 0
-    stale = 0
-    skipped = 0
-    results = []
     try:
         with DatabaseManager(config.db_path) as db:
-            for row in items:
-                action = db.apply_pushed_playlist_row(row)
-                if action in ("inserted", "updated"):
-                    accepted += 1
-                elif action == "stale":
-                    stale += 1
-                else:
-                    skipped += 1
-                results.append({
-                    "playlist_id": (row or {}).get("playlist_id"),
-                    "result": action,
-                })
+            result = playlist_service.apply_pushed_playlists(db, items)
     except Exception as e:
         logger.error(f"Playlist push apply failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
-    return jsonify({
-        "success": True,
-        "received": len(items),
-        "accepted": accepted,
-        "stale": stale,
-        "skipped": skipped,
-        "results": results,
-    })
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/inventory", methods=["POST"])
@@ -2433,33 +2239,21 @@ def soft_delete_track(mbid):
 def soft_delete_playlist_route(playlist_id):
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    # System playlists (Liked Songs and future system_generated rows)
-    # use reserved ids and would be auto-recreated on the next like
-    # / regenerate tick, which is confusing — refuse the delete so
-    # the user can't get into a flickering state. To clear the
-    # contents, they unlike the tracks; to hide the entry entirely
-    # would require a real "hide system playlist" preference.
-    if playlist_id == DatabaseManager.LIKED_SONGS_PLAYLIST_ID:
-        return jsonify({
-            "success": False,
-            "message": (
-                "Liked Songs is a system playlist and can't be deleted. "
-                "Unlike tracks to empty it."
-            ),
-        }), 409
     purge = request.args.get("purge", "").lower() in ("1", "true", "yes")
+    prepared = playlist_service.prepare_playlist_delete(
+        playlist_id,
+        purge=purge,
+        liked_songs_playlist_id=DatabaseManager.LIKED_SONGS_PLAYLIST_ID,
+    )
+    if isinstance(prepared, playlist_service.PlaylistServiceResult):
+        return jsonify(prepared.payload), prepared.status_code
     try:
         with DatabaseManager(config.db_path) as db:
-            if purge:
-                changed = db.purge_playlist(playlist_id)
-                return jsonify({
-                    "success": True, "purged": changed, "playlist_id": playlist_id,
-                })
-            changed = db.soft_delete_playlist(playlist_id)
+            result = playlist_service.delete_playlist(db, prepared)
     except Exception as e:
         logger.error(f"soft_delete_playlist({playlist_id}) failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-    return jsonify({"success": True, "deleted": changed, "playlist_id": playlist_id})
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/tracks/<mbid>/restore", methods=["POST"])
@@ -2504,30 +2298,14 @@ def delete_track_file(mbid):
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
-    try:
-        with DatabaseManager(config.db_path) as db:
-            orphans = {r["mbid"]: r for r in db.get_orphan_tracks()}
-            row = orphans.get(mbid)
-            if row is None:
-                return jsonify({
-                    "success": False,
-                    "message": "track is not an orphan; soft-delete it first",
-                }), 409
-            path = (row.get("local_path") or "").strip()
-            removed = False
-            if path:
-                try:
-                    os.remove(path)
-                    removed = True
-                except FileNotFoundError:
-                    pass
-                db.update_track_local_path(mbid, None)
-        return jsonify({
-            "success": True, "mbid": mbid, "path": path or None, "removed": removed,
-        })
-    except Exception as e:
-        logger.error(f"delete_track_file({mbid}) failed: {e}", exc_info=True)
-        return jsonify({"success": False, "message": str(e)}), 500
+    result = library_application_service.delete_orphan_track_file(
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        mbid=mbid,
+        remove_file=os.remove,
+        event_logger=logger,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/orphans/tracks")
@@ -2620,20 +2398,15 @@ def fleet_track_lookup():
     query = (request.args.get("q") or "").strip()
     try:
         with DatabaseManager(config.db_path) as db:
-            if mbid:
-                holders = db.get_devices_holding_mbid(mbid)
-                return jsonify({"success": True, "mbid": mbid, "holders": holders})
-            if query:
-                matches = db.find_tracks_for_fleet_search(query)
-                enriched = []
-                for row in matches:
-                    holders = db.get_devices_holding_mbid(row["mbid"])
-                    enriched.append({**row, "holders": holders})
-                return jsonify({"success": True, "query": query, "results": enriched})
+            result = fleet_service.lookup_fleet_track(
+                db,
+                mbid=mbid,
+                query=query,
+            )
     except Exception as e:
         logger.error(f"Fleet track lookup failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
-    return jsonify({"success": False, "message": "provide mbid or q"}), 400
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/suggestions", methods=["POST"])
@@ -3000,39 +2773,15 @@ def audit_queue():
     album_info = data.get("album_info", {})  # {artist, title}
 
     try:
-        count = 0
         with DatabaseManager(config.db_path) as db:
-            if queue_album:
-                # Queue full album
-                query = (
-                    f"::ALBUM:: {album_info.get('artist')} - {album_info.get('album')}"
-                )
-                db.queue_download(
-                    DownloadItem(
-                        search_query=query,
-                        playlist_id="AUDIT",
-                        mbid_guess=album_info.get(
-                            "release_mbid", ""
-                        ),  # Assuming FE sends this or we infer
-                        status="pending",
-                    )
-                )
-                count = 1
-            else:
-                for item in items:
-                    # Construct search query
-                    query = f"{item['artist']} - {item['title']}"
-                    db.queue_download(
-                        DownloadItem(
-                            search_query=query,
-                            playlist_id="AUDIT",
-                            mbid_guess="",
-                            status="pending",
-                        )
-                    )
-                    count += 1
-
-        return jsonify({"success": True, "queued_count": count})
+            result = album_task_service.queue_audit_downloads(
+                db,
+                items=items,
+                queue_album=queue_album,
+                album_info=album_info,
+                item_factory=DownloadItem,
+            )
+        return jsonify(result.payload)
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 
@@ -3307,19 +3056,25 @@ def api_split_albums_merge():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+def _maintenance_jellyfin_client_factory(config_values):
+    """Late-bound adapter so disabled maintenance never imports downloader."""
+    from src.downloader import _build_jellyfin_client
+
+    return _build_jellyfin_client(config_values)
+
+
 def _trigger_jellyfin_scan(context: str) -> None:
     """Best-effort Jellyfin library refresh after a metadata mutation.
 
     Swallows all errors (logged) so a Jellyfin outage never fails the request
     that triggered it. ``context`` names the calling operation for the log line.
     """
-    try:
-        from src.downloader import _build_jellyfin_client
-        jc = _build_jellyfin_client(config._config)
-        if jc:
-            jc.trigger_library_scan()
-    except Exception as e:
-        logger.warning("Jellyfin scan after %s failed: %s", context, e)
+    maintenance_application_service.trigger_jellyfin_scan(
+        context=context,
+        config_values=config._config,
+        jellyfin_client_factory=_maintenance_jellyfin_client_factory,
+        event_logger=logger,
+    )
 
 
 @app.route("/api/library/consolidate-editions", methods=["POST"])
@@ -3334,16 +3089,18 @@ def api_consolidate_editions():
         return jsonify({"success": False, "message": "Not initialized"}), 503
     data = request.json or {}
     dry_run = bool(data.get("dry_run", True))
-    try:
-        from src.split_album_detector import consolidate_editions
-        with DatabaseManager(config.db_path) as db:
-            summary = consolidate_editions(db, dry_run=dry_run)
-        if not dry_run and summary.get("tracks_reassigned", 0) > 0:
-            _trigger_jellyfin_scan("consolidate")
-        return jsonify({"success": True, "dry_run": dry_run, **summary})
-    except Exception as e:
-        logger.exception("api_consolidate_editions failed")
-        return jsonify({"success": False, "message": str(e)}), 500
+    from src.split_album_detector import consolidate_editions
+
+    result = maintenance_application_service.consolidate_album_editions(
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        dry_run=dry_run,
+        consolidate_operation=consolidate_editions,
+        config_values=config._config,
+        jellyfin_client_factory=_maintenance_jellyfin_client_factory,
+        event_logger=logger,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/scrub-dangling", methods=["POST"])
@@ -3379,16 +3136,18 @@ def api_retag_files():
         return jsonify({"success": False, "message": "Not initialized"}), 503
     data = request.json or {}
     only_mismatched = bool(data.get("only_mismatched", True))
-    try:
-        from src.split_album_detector import retag_files_from_db
-        with DatabaseManager(config.db_path) as db:
-            result = retag_files_from_db(db, only_mismatched=only_mismatched)
-        if result.get("tagged", 0) > 0:
-            _trigger_jellyfin_scan("retag")
-        return jsonify({"success": True, **result})
-    except Exception as e:
-        logger.exception("api_retag_files failed")
-        return jsonify({"success": False, "message": str(e)}), 500
+    from src.split_album_detector import retag_files_from_db
+
+    result = maintenance_application_service.retag_library_files(
+        db_path=config.db_path,
+        database_factory=DatabaseManager,
+        only_mismatched=only_mismatched,
+        retag_operation=retag_files_from_db,
+        config_values=config._config,
+        jellyfin_client_factory=_maintenance_jellyfin_client_factory,
+        event_logger=logger,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/library/split-albums/dismiss", methods=["POST"])
@@ -3420,35 +3179,13 @@ def api_split_albums_dismiss():
 
 @app.route("/api/install_slsk", methods=["POST"])
 def install_slsk():
-    try:
-        from src.binary_manager import install_from_local
-
-        # Define dirs
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        releases_dir = os.path.join(base_dir, "sldl_releases")
-        bin_dir = os.path.join(base_dir, "bin")
-
-        # Install
-        final_path = install_from_local(releases_dir, bin_dir)
-
-        # Update Config
-        if config_exists():
-            # Reload explicit config file to edit it
-            with open(CONFIG_FILE, "r") as f:
-                c = json.load(f)
-
-            c["slsk_cmd_base"] = [final_path]
-
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(c, f, indent=4)
-
-            # Force reload of app logic to pick up new command
-            init_app_logic()
-
-        return jsonify({"success": True, "path": final_path})
-
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
+    result = setup_application_service.install_slsk(
+        base_dir=os.path.dirname(os.path.abspath(__file__)),
+        config_path=CONFIG_FILE,
+        config_is_present=config_exists,
+        reinitialize_runtime=init_app_logic,
+    )
+    return jsonify(result.payload), result.status_code
 
 
 if __name__ == "__main__":

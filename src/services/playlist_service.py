@@ -40,6 +40,12 @@ class PlaylistStore(Protocol):
         self, playlist_id: str, smart_rules: Optional[str]
     ) -> bool: ...
 
+    def apply_pushed_playlist_row(self, row: Any) -> str: ...
+
+    def soft_delete_playlist(self, playlist_id: str) -> bool: ...
+
+    def purge_playlist(self, playlist_id: str) -> bool: ...
+
 
 @dataclass(frozen=True)
 class PlaylistServiceResult:
@@ -66,8 +72,17 @@ class UpdatePlaylistRequest:
     smart_rules: Optional[str]
 
 
+@dataclass(frozen=True)
+class DeletePlaylistRequest:
+    """Authorized playlist deletion and its selected mutation mode."""
+
+    playlist_id: str
+    purge: bool
+
+
 PreparedCreate = Union[CreatePlaylistRequest, PlaylistServiceResult]
 PreparedUpdate = Union[UpdatePlaylistRequest, PlaylistServiceResult]
+PreparedDelete = Union[DeletePlaylistRequest, PlaylistServiceResult]
 
 
 def list_library_playlists(db: PlaylistStore) -> PlaylistServiceResult:
@@ -232,3 +247,91 @@ def update_library_playlist(
     if prepared.has_rules:
         payload["rules_changed"] = rules_changed
     return PlaylistServiceResult(payload)
+
+
+def apply_pushed_playlists(
+    db: PlaylistStore,
+    items: List[Any],
+) -> PlaylistServiceResult:
+    """Apply a validated playlist push and aggregate LWW outcomes in order.
+
+    The database facade remains responsible for each row's transaction and
+    last-writer-wins decision.  Unknown action strings intentionally count as
+    skipped, matching the historical route's forward-compatible fallback.
+    """
+    accepted = 0
+    stale = 0
+    skipped = 0
+    results: List[Dict[str, Any]] = []
+
+    for row in items:
+        action = db.apply_pushed_playlist_row(row)
+        if action in ("inserted", "updated"):
+            accepted += 1
+        elif action == "stale":
+            stale += 1
+        else:
+            skipped += 1
+        results.append(
+            {
+                "playlist_id": (row or {}).get("playlist_id"),
+                "result": action,
+            }
+        )
+
+    return PlaylistServiceResult(
+        {
+            "success": True,
+            "received": len(items),
+            "accepted": accepted,
+            "stale": stale,
+            "skipped": skipped,
+            "results": results,
+        }
+    )
+
+
+def prepare_playlist_delete(
+    playlist_id: str,
+    *,
+    purge: bool,
+    liked_songs_playlist_id: str,
+) -> PreparedDelete:
+    """Protect the reserved Liked Songs row before opening the database."""
+    if playlist_id == liked_songs_playlist_id:
+        return PlaylistServiceResult(
+            {
+                "success": False,
+                "message": (
+                    "Liked Songs is a system playlist and can't be deleted. "
+                    "Unlike tracks to empty it."
+                ),
+            },
+            409,
+        )
+    return DeletePlaylistRequest(playlist_id=playlist_id, purge=purge)
+
+
+def delete_playlist(
+    db: PlaylistStore,
+    prepared: DeletePlaylistRequest,
+) -> PlaylistServiceResult:
+    """Purge or soft-delete an authorized playlist via the DB façade."""
+    if prepared.purge:
+        changed = db.purge_playlist(prepared.playlist_id)
+        return PlaylistServiceResult(
+            {
+                "success": True,
+                "purged": changed,
+                "playlist_id": prepared.playlist_id,
+            }
+        )
+
+    changed = db.soft_delete_playlist(prepared.playlist_id)
+    return PlaylistServiceResult(
+        {
+            "success": True,
+            "deleted": changed,
+            "playlist_id": prepared.playlist_id,
+        }
+    )

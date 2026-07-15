@@ -1,12 +1,28 @@
-"""Master media transport kept independent of Flask request/response objects."""
+"""Media source policy and master transport independent of Flask objects."""
 
 from dataclasses import dataclass
+import logging
 import os
-from typing import Dict, Iterable, Mapping, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Literal,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeAlias,
+    Union,
+)
 from urllib.parse import quote
 
 import requests
 
+
+logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 64 * 1024
 
@@ -45,6 +61,230 @@ class BufferedProxyResult:
     status_code: int
     content_type: str
     body: bytes
+
+
+class AlbumCoverStore(Protocol):
+    """Database facade needed to locate an album's embedded artwork."""
+
+    def get_album_cover_path(self, album_id: str) -> Optional[str]: ...
+
+
+class TrackSourceStore(Protocol):
+    """Database facade needed to resolve a playable track source."""
+
+    def get_track_sources(self, mbid: str) -> Optional[dict]: ...
+
+
+class AlbumTracksRequester(Protocol):
+    """Injectable master album-track transport."""
+
+    def __call__(
+        self,
+        master_url: str,
+        album_id: str,
+        *,
+        api_token: str = "",
+    ) -> BufferedProxyResult: ...
+
+
+class LocalAlbumTracksLoader(Protocol):
+    """Lazy replica loader; it must not run for a usable master response."""
+
+    def __call__(
+        self,
+        album_id: str,
+        *,
+        has_master: bool,
+    ) -> Dict[str, Any]: ...
+
+
+CoverExtractor: TypeAlias = Callable[
+    [str], Optional[Tuple[bytes, str]]
+]
+FileExists: TypeAlias = Callable[[str], bool]
+FileSource: TypeAlias = Literal["local", "drive"]
+
+
+@dataclass(frozen=True)
+class LocalAlbumCoverResolution:
+    body: bytes
+    content_type: str
+    cache_control: str = "public, max-age=86400"
+
+
+@dataclass(frozen=True)
+class MasterAlbumCoverResolution:
+    master_url: str
+    api_token: str
+
+
+@dataclass(frozen=True)
+class MissingMediaResolution:
+    status_code: int = 404
+
+
+AlbumCoverResolution: TypeAlias = Union[
+    LocalAlbumCoverResolution,
+    MasterAlbumCoverResolution,
+    MissingMediaResolution,
+]
+
+
+@dataclass(frozen=True)
+class MasterAlbumTracksResolution:
+    response: BufferedProxyResult
+
+
+@dataclass(frozen=True)
+class LocalAlbumTracksResolution:
+    payload: Dict[str, Any]
+
+
+AlbumTracksResolution: TypeAlias = Union[
+    MasterAlbumTracksResolution,
+    LocalAlbumTracksResolution,
+]
+
+
+@dataclass(frozen=True)
+class FileStreamResolution:
+    path: str
+    content_type: str
+    source: FileSource
+
+
+@dataclass(frozen=True)
+class MasterStreamResolution:
+    master_url: str
+    api_token: str
+
+
+StreamResolution: TypeAlias = Union[
+    FileStreamResolution,
+    MasterStreamResolution,
+    MissingMediaResolution,
+]
+
+
+def normalized_master_url(config_values: object) -> Optional[str]:
+    """Return a concrete, trailing-slash-free master URL from runtime config."""
+    if not isinstance(config_values, dict):
+        return None
+    master_url = (config_values.get("master_url") or "").strip().rstrip("/")
+    return master_url or None
+
+
+def configured_api_token(config_values: object) -> str:
+    """Return the stripped bearer token only from a concrete config mapping."""
+    if not isinstance(config_values, dict):
+        return ""
+    return (config_values.get("api_token") or "").strip()
+
+
+def resolve_album_cover(
+    db: AlbumCoverStore,
+    album_id: str,
+    *,
+    config_values: object,
+    extract_cover: CoverExtractor,
+) -> AlbumCoverResolution:
+    """Prefer locally embedded artwork, then the normalized master endpoint."""
+    cover_path = db.get_album_cover_path(album_id)
+    if cover_path:
+        extracted = extract_cover(cover_path)
+        if extracted is not None:
+            body, content_type = extracted
+            return LocalAlbumCoverResolution(body, content_type)
+
+    master_url = normalized_master_url(config_values)
+    if master_url is not None:
+        return MasterAlbumCoverResolution(
+            master_url=master_url,
+            api_token=configured_api_token(config_values),
+        )
+    return MissingMediaResolution()
+
+
+def resolve_album_tracks(
+    album_id: str,
+    *,
+    config_values: object,
+    load_local_tracks: LocalAlbumTracksLoader,
+    request_tracks: AlbumTracksRequester,
+    event_logger: logging.Logger = logger,
+) -> AlbumTracksResolution:
+    """Use authoritative master rows, falling back only when it is unavailable.
+
+    Every response below 500 is authoritative, including client errors.  The
+    lazy local loader is therefore untouched for all usable upstream replies,
+    avoiding both a database open and stale replica reads in the common path.
+    """
+    master_url = normalized_master_url(config_values)
+    if master_url is not None:
+        try:
+            response = request_tracks(
+                master_url,
+                album_id,
+                api_token=configured_api_token(config_values),
+            )
+        except requests.RequestException:
+            event_logger.warning(
+                "master album-track lookup unavailable for %s; using replica",
+                album_id,
+                exc_info=True,
+            )
+        else:
+            if response.status_code < 500:
+                return MasterAlbumTracksResolution(response)
+            event_logger.warning(
+                "master album-track lookup returned %s for %s; using replica",
+                response.status_code,
+                album_id,
+            )
+
+    return LocalAlbumTracksResolution(
+        load_local_tracks(
+            album_id,
+            has_master=master_url is not None,
+        )
+    )
+
+
+def resolve_stream_source(
+    db: TrackSourceStore,
+    mbid: str,
+    *,
+    config_values: object,
+    file_exists: FileExists = os.path.isfile,
+) -> StreamResolution:
+    """Resolve audio in local, DAP, normalized-master, then missing order."""
+    sources = db.get_track_sources(mbid)
+    if sources is None:
+        return MissingMediaResolution()
+
+    local_path = (sources.get("local_path") or "").strip()
+    if local_path and file_exists(local_path):
+        return FileStreamResolution(
+            path=local_path,
+            content_type=guess_audio_mime(local_path),
+            source="local",
+        )
+
+    dap_path = (sources.get("dap_path") or "").strip()
+    if dap_path and file_exists(dap_path):
+        return FileStreamResolution(
+            path=dap_path,
+            content_type=guess_audio_mime(dap_path),
+            source="drive",
+        )
+
+    master_url = normalized_master_url(config_values)
+    if master_url is not None:
+        return MasterStreamResolution(
+            master_url=master_url,
+            api_token=configured_api_token(config_values),
+        )
+    return MissingMediaResolution()
 
 
 def build_upstream_headers(
