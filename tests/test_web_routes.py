@@ -242,7 +242,7 @@ def test_post_suggestions_skips_already_queued(client, mock_config):
 def test_get_catalog_returns_all_rows_without_since(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
-        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-17 12:00:00"}
+        mock_db.get_current_timestamp.return_value = "2026-04-17 12:00:00"
         mock_db.get_catalog_since.return_value = [
             {"mbid": "m1", "title": "Song", "artist": "A", "updated_at": "2026-04-17 11:00:00"},
             {"mbid": "m2", "title": "Song2", "artist": "B", "updated_at": "2026-04-17 11:30:00"},
@@ -262,7 +262,7 @@ def test_get_catalog_returns_all_rows_without_since(client, mock_config):
 def test_get_catalog_with_since_filter(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
-        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-17 13:00:00"}
+        mock_db.get_current_timestamp.return_value = "2026-04-17 13:00:00"
         mock_db.get_catalog_since.return_value = []
 
         res = client.get('/api/catalog?since=2026-04-17+12:00:00')
@@ -276,9 +276,7 @@ def test_get_catalog_with_since_filter(client, mock_config):
 def test_get_artist_tags_delta_returns_grouped_snapshots(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
-        mock_db.conn.execute.return_value.fetchone.return_value = {
-            "t": "2026-06-03 12:00:00",
-        }
+        mock_db.get_current_timestamp.return_value = "2026-06-03 12:00:00"
         mock_db.get_artist_tags_since.return_value = [{
             "artist_name": "Artist",
             "mbid": "artist-mbid",
@@ -1668,7 +1666,7 @@ def test_soft_delete_playlist_route(client, mock_config):
 def test_get_playlists_delta_returns_rows(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
-        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-18 12:00:00"}
+        mock_db.get_current_timestamp.return_value = "2026-04-18 12:00:00"
         mock_db.get_playlists_since.return_value = [
             {
                 "playlist_id": "p1",
@@ -1693,7 +1691,7 @@ def test_get_playlists_delta_returns_rows(client, mock_config):
 def test_get_playlists_delta_without_since(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         mock_db = MockDB.return_value.__enter__.return_value
-        mock_db.conn.execute.return_value.fetchone.return_value = {"t": "2026-04-18 12:00:00"}
+        mock_db.get_current_timestamp.return_value = "2026-04-18 12:00:00"
         mock_db.get_playlists_since.return_value = []
 
         res = client.get('/api/playlists')

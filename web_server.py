@@ -2163,7 +2163,7 @@ def get_catalog():
     since = request.args.get("since") or None
     try:
         with DatabaseManager(config.db_path) as db:
-            as_of = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+            as_of = db.get_current_timestamp()
             rows = db.get_catalog_since(since)
     except Exception as e:
         logger.error(f"Catalog query failed: {e}", exc_info=True)
@@ -2192,9 +2192,7 @@ def get_lyrics_delta():
     since = request.args.get("since") or None
     try:
         with DatabaseManager(config.db_path) as db:
-            as_of = db.conn.execute(
-                "SELECT CURRENT_TIMESTAMP AS t"
-            ).fetchone()["t"]
+            as_of = db.get_current_timestamp()
             rows = db.get_lyrics_since(since)
     except Exception as e:
         logger.error(f"Lyrics delta query failed: {e}", exc_info=True)
@@ -2220,9 +2218,7 @@ def get_artist_tags_delta():
     since = request.args.get("since") or None
     try:
         with DatabaseManager(config.db_path) as db:
-            as_of = db.conn.execute(
-                "SELECT CURRENT_TIMESTAMP AS t"
-            ).fetchone()["t"]
+            as_of = db.get_current_timestamp()
             rows = db.get_artist_tags_since(since)
     except Exception as e:
         logger.error(f"Artist-tag delta query failed: {e}", exc_info=True)
@@ -2251,7 +2247,7 @@ def get_playlists_delta():
     since = request.args.get("since") or None
     try:
         with DatabaseManager(config.db_path) as db:
-            as_of = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
+            as_of = db.get_current_timestamp()
             rows = db.get_playlists_since(since)
     except Exception as e:
         logger.error(f"Playlist delta query failed: {e}", exc_info=True)
