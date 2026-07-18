@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -46,6 +47,8 @@ FEATURE_CREDIT_SEPARATOR = re.compile(
     r"\s+(?:feat\.?|ft\.?|featuring)\s+",
     re.IGNORECASE,
 )
+SLDL_FAILURE_TAIL_LINES = 80
+SLDL_FAILURE_TAIL_CHARS = 12000
 
 
 @dataclass(frozen=True)
@@ -818,17 +821,37 @@ class Downloader:
 
         # Use Popen to stream output
         process = None
+        pty_master_fd = None
+        pty_slave_fd = None
+        output_tail = deque(maxlen=SLDL_FAILURE_TAIL_LINES)
         try:
+            popen_kwargs = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "bufsize": 1,
+                "universal_newlines": True,
+            }
+
+            # sldl v2.6.0 checks ``Console.KeyAvailable`` before checking
+            # ``Console.IsInputRedirected`` while retrieving an album folder.
+            # .NET raises InvalidOperationException for that call when stdin is
+            # redirected, which is always true for our non-interactive Docker
+            # service.  A private pseudo-terminal preserves sldl's normal album
+            # behaviour without granting it the application's real stdin.
+            if os.name == "posix" and hasattr(os, "openpty"):
+                pty_master_fd, pty_slave_fd = os.openpty()
+                popen_kwargs["stdin"] = pty_slave_fd
+
             process = subprocess.Popen(
                 command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,  # Line buffered
-                universal_newlines=True,
+                **popen_kwargs,
             )
+            if pty_slave_fd is not None:
+                os.close(pty_slave_fd)
+                pty_slave_fd = None
 
             output_queue = thread_queue.Queue()
             output_finished = object()
@@ -870,6 +893,7 @@ class Downloader:
                     safe_line = line
                     for secret in secrets_to_redact:
                         safe_line = safe_line.replace(secret, "<redacted>")
+                    output_tail.append(safe_line)
                     logger.debug("SLSK: %s", safe_line)
                     if item_callback:
                         item_callback(safe_line)
@@ -880,8 +904,17 @@ class Downloader:
             process.wait(timeout=remaining)
 
             if process.returncode != 0:
+                failure_output = "\n".join(output_tail)[
+                    -SLDL_FAILURE_TAIL_CHARS:
+                ]
                 raise subprocess.CalledProcessError(
-                    process.returncode, logged_command, output="See logs"
+                    process.returncode,
+                    logged_command,
+                    output=(
+                        failure_output
+                        or f"sldl exited with status {process.returncode} "
+                        "without output"
+                    ),
                 )
 
         except subprocess.TimeoutExpired as exc:
@@ -896,7 +929,10 @@ class Downloader:
             raise subprocess.TimeoutExpired(
                 logged_command,
                 exc.timeout,
-                output="See logs",
+                output=(
+                    "\n".join(output_tail)[-SLDL_FAILURE_TAIL_CHARS:]
+                    or "sldl timed out without output"
+                ),
             ) from None
         except Exception:
             if process is not None and process.poll() is None:
@@ -910,6 +946,13 @@ class Downloader:
                     except (subprocess.TimeoutExpired, OSError):
                         pass
             raise
+        finally:
+            for descriptor in (pty_slave_fd, pty_master_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
 
     def _try_lidarr_album(self, item: DownloadItem, report) -> bool:
         """Hand album-mode downloads off to Lidarr when it's configured.

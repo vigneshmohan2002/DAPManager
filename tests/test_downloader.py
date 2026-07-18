@@ -1,6 +1,7 @@
 import pytest
 import os
 import subprocess
+import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 from mutagen.flac import FLAC
@@ -157,6 +158,16 @@ def test_build_download_command_preserves_album_mode():
     ]
     assert "--no-browse-folder" not in command
     assert command.count("--format") == 1
+
+
+def test_build_download_command_preserves_album_question_mark_as_one_argument():
+    command, album_mode = build_download_command(
+        ["sldl"], "u", "p", "::ALBUM:: Steve Lacy - Oh yeah?",
+        "/downloads", "/music", {}, 10,
+    )
+
+    assert album_mode is True
+    assert command[command.index("--input") + 1] == "Steve Lacy - Oh yeah?"
 
 
 def test_build_download_command_adds_exact_album_track_count_once():
@@ -569,6 +580,63 @@ def test_sldl_command_uses_argv_and_redacts_password_from_logs(
     callback.assert_called_once_with(
         "connected using <redacted> and <redacted>"
     )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX pseudo-terminal workaround")
+@patch("subprocess.Popen")
+def test_sldl_command_receives_private_tty_stdin(mock_popen, downloader):
+    process = MagicMock(stdout=[], returncode=0)
+    observed = {}
+
+    def launch(_command, **kwargs):
+        observed["stdin_is_tty"] = os.isatty(kwargs["stdin"])
+        return process
+
+    mock_popen.side_effect = launch
+
+    downloader._run_sldl_command(["sldl", "--input", "Artist - Album"])
+
+    assert observed == {"stdin_is_tty": True}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX pseudo-terminal workaround")
+def test_sldl_real_child_observes_tty_stdin(downloader):
+    output = []
+
+    downloader._run_sldl_command(
+        [sys.executable, "-c", "import os; print(os.isatty(0))"],
+        output.append,
+    )
+
+    assert output == ["True"]
+
+
+@patch("subprocess.Popen")
+def test_sldl_failure_retains_bounded_redacted_output_tail(
+    mock_popen,
+    downloader,
+):
+    process = MagicMock(
+        stdout=(
+            ["oldest-sentinel\n"]
+            + [f"diagnostic-{index}\n" for index in range(100)]
+            + ["InvalidOperationException top-secret-password\n"]
+            + ["at Program.<Main>(String[] args)\n"]
+        ),
+        returncode=1,
+    )
+    mock_popen.return_value = process
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        downloader._run_sldl_command(
+            ["sldl", "--pass", "top-secret-password", "--input", "Album"]
+        )
+
+    assert "oldest-sentinel" not in exc_info.value.stdout
+    assert "diagnostic-99" in exc_info.value.stdout
+    assert "InvalidOperationException <redacted>" in exc_info.value.stdout
+    assert "at Program.<Main>(String[] args)" in exc_info.value.stdout
+    assert "top-secret-password" not in exc_info.value.stdout
 
 
 @patch("subprocess.Popen")
