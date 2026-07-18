@@ -38,9 +38,10 @@ export async function fetchSyncState(): Promise<SyncState> {
   return decodeSyncState(data.state);
 }
 
-export async function fetchStatus(): Promise<BackendStatus> {
+export async function fetchStatus(scope?: "downloads"): Promise<BackendStatus> {
   const url = await backendUrl();
-  const r = await apiFetch(`${url}/api/status`);
+  const suffix = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+  const r = await apiFetch(`${url}/api/status${suffix}`);
   if (!r.ok) throw new Error(`status: ${r.status}`);
   return decodeBackendStatus(await readJsonRecord(r));
 }

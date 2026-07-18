@@ -64,6 +64,11 @@ export type {
   WantedReleasesResult,
   DownloadQueueItem,
   ClearCompletedResult,
+  AlbumReleaseCandidate,
+  AlbumDownloadStage,
+  AlbumDownloadRequest,
+  AlbumReleaseSearchResult,
+  AlbumDownloadRequestResult,
 } from "./api/types";
 
 export {
@@ -150,6 +155,10 @@ export {
   retryDownload,
   deleteDownload,
   clearCompletedDownloads,
+  searchAlbumReleases,
+  requestAlbumDownload,
+  fetchAlbumDownloadRequests,
+  fetchAlbumDownloadRequest,
 } from "./api/downloads";
 
 export {

@@ -1,6 +1,9 @@
 import pytest
 import json
 import re
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from src.db_manager import DatabaseManager
 import web_server
@@ -47,6 +50,88 @@ def test_browser_pages_load_external_controllers(
     controller = client.get(script_path)
     assert controller.status_code == 200
     assert controller.get_data(as_text=True).startswith("// @ts-check\n")
+
+
+def test_satellite_album_progress_storage_is_scoped_to_configured_master(
+    client,
+    mock_config,
+):
+    script = client.get("/static/js/satellite.js").get_data(as_text=True)
+
+    assert 'api("GET", "/api/config")' in script
+    assert 'parsed.protocol !== "http:" && parsed.protocol !== "https:"' in script
+    assert "parsed.username || parsed.password || parsed.search || parsed.hash" in script
+    assert "return `master:${parsed.origin}${pathname}`" in script
+    assert 'return `master:${rawMasterUrl' not in script
+    assert "`${ALBUM_REQUEST_STORAGE_PREFIX}:${suffix}`" in script
+    assert "`${ALBUM_REQUEST_DISMISSED_STORAGE_PREFIX}:${suffix}`" in script
+    assert "Without a verified authority identity" in script
+
+
+def test_satellite_album_storage_scope_rejects_unsafe_authority_urls():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the satellite controller")
+    source = (
+        Path(web_server.app.static_folder) / "js" / "satellite.js"
+    ).read_text(encoding="utf-8")
+    marker = "function albumRequestMasterScope(config)"
+    start = source.index(marker)
+    brace = source.index("{", start)
+    depth = 0
+    end = None
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    assert end is not None
+    function_source = source[start:end]
+    configs = [
+        {
+            "device_role": "satellite",
+            "master_url": "HTTPS://MASTER.EXAMPLE:443/base/",
+        },
+        {
+            "device_role": "satellite",
+            "master_url": "http://user:secret@master.example:5001",
+        },
+        {
+            "device_role": "satellite",
+            "master_url": "http://master.example:5001?token=secret",
+        },
+        {
+            "device_role": "satellite",
+            "master_url": "http://master.example:5001#token-secret",
+        },
+        {"device_role": "satellite", "master_url": "ftp://master.example"},
+        {"device_role": "satellite", "master_url": "not a URL"},
+    ]
+    javascript = f"""
+"use strict";
+global.window = {{location: {{origin: "http://satellite.local"}}}};
+{function_source}
+const configs = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(configs.map(albumRequestMasterScope)));
+"""
+    completed = subprocess.run(
+        [node, "-e", javascript, json.dumps(configs)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == [
+        "master:https://master.example/base",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ]
 
 def test_api_status(client, mock_config):
     """Test the status endpoint returns correct structure."""
@@ -1886,6 +1971,54 @@ def test_api_status_is_exempt_from_token(client, _token_config):
     assert res.status_code == 200
 
 
+def test_api_status_download_scope_requires_token_before_proxying(
+    client, _token_config,
+):
+    _token_config.is_master = False
+    _token_config.master_url = "http://master.local:5001"
+    _token_config.get.side_effect = lambda key, default=None: (
+        "secret-xyz" if key == "api_token" else default
+    )
+    with patch(
+        "web_server.album_download_request_service.forward_master_json"
+    ) as forward:
+        res = client.get("/api/status?scope=downloads")
+
+    assert res.status_code == 401
+    assert res.get_json()["message"] == "missing bearer token"
+    forward.assert_not_called()
+
+
+def test_api_status_download_scope_proxies_after_token_authentication(
+    client, _token_config,
+):
+    from src.services.album_download_request_service import AlbumRequestResult
+
+    _token_config.is_master = False
+    _token_config.master_url = "http://master.local:5001"
+    _token_config.get.side_effect = lambda key, default=None: (
+        "secret-xyz" if key == "api_token" else default
+    )
+    proxied = AlbumRequestResult({"running": True, "message": "Downloading"})
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward:
+        res = client.get(
+            "/api/status?scope=downloads",
+            headers={"Authorization": "Bearer secret-xyz"},
+        )
+
+    assert res.status_code == 200
+    assert res.get_json() == {"running": True, "message": "Downloading"}
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        "GET",
+        "/api/status",
+        api_token="secret-xyz",
+    )
+
+
 def test_api_open_mode_when_token_empty(client, mock_config):
     """Existing behavior: no token set => no auth enforced."""
     res = client.get('/api/status')
@@ -2307,11 +2440,377 @@ def test_request_download_defaults_playlist_id(client, mock_config):
     assert item.mbid_guess == ""
 
 
-def test_request_download_rejects_non_master(client, mock_config):
+def test_request_download_proxies_from_satellite(client, mock_config):
+    from src.services.album_download_request_service import AlbumRequestResult
+
     mock_config.is_master = False
-    res = client.post('/api/download/request', json={"search_query": "x"})
-    assert res.status_code == 400
-    assert res.get_json()["success"] is False
+    mock_config.master_url = "http://master.local:5001"
+    mock_config.get.return_value = "token"
+    proxied = AlbumRequestResult({"success": True, "queued": True, "item_id": 9})
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward:
+        res = client.post('/api/download/request', json={"search_query": "x"})
+
+    assert res.status_code == 200
+    assert res.get_json()["item_id"] == 9
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        "POST",
+        "/api/download/request",
+        api_token="token",
+        json_body={"search_query": "x"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "route", "upstream_path", "json_body"),
+    [
+        ("GET", "/api/status?scope=downloads", "/api/status", None),
+        (
+            "POST",
+            "/api/catalog/queue-download",
+            "/api/catalog/queue-download",
+            {"mbids": ["recording-1"]},
+        ),
+        ("GET", "/api/downloads/list", "/api/downloads/list", None),
+        ("POST", "/api/downloads/42/retry", "/api/downloads/42/retry", None),
+        ("DELETE", "/api/downloads/42", "/api/downloads/42", None),
+        (
+            "POST",
+            "/api/downloads/clear-completed",
+            "/api/downloads/clear-completed",
+            None,
+        ),
+    ],
+)
+def test_satellite_download_queue_surface_proxies_to_master(
+    client,
+    mock_config,
+    method,
+    route,
+    upstream_path,
+    json_body,
+):
+    from src.services.album_download_request_service import AlbumRequestResult
+
+    mock_config.is_master = False
+    mock_config.master_url = "http://master.local:5001"
+    mock_config.get.return_value = "master-token"
+    proxied = AlbumRequestResult({"success": True, "running": True, "items": []})
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward, patch("web_server.DatabaseManager") as database:
+        request_kwargs = {"json": json_body} if json_body is not None else {}
+        res = client.open(route, method=method, **request_kwargs)
+
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+    expected_kwargs = {"api_token": "master-token"}
+    if json_body is not None:
+        expected_kwargs["json_body"] = json_body
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        method,
+        upstream_path,
+        **expected_kwargs,
+    )
+    database.assert_not_called()
+
+
+def test_unscoped_satellite_status_remains_local_for_sync_tasks(
+    client, mock_config
+):
+    mock_config.is_master = False
+    with patch(
+        "web_server.album_download_request_service.forward_master_json"
+    ) as forward:
+        res = client.get("/api/status")
+
+    assert res.status_code == 200
+    assert "running" in res.get_json()
+    forward.assert_not_called()
+
+
+def test_album_download_search_returns_musicbrainz_release_candidates(
+    client, mock_config
+):
+    mock_config.is_master = True
+    response = {
+        "release-list": [{
+            "id": "95fb59ed-1ece-419b-b62f-aef31e0ebf36",
+            "title": "Album",
+            "artist-credit": [{"artist": {"name": "Artist"}}],
+            "track-count": 9,
+            "release-group": {"primary-type": "Album"},
+        }]
+    }
+    with patch(
+        "src.musicbrainz_client.search_releases",
+        return_value=response,
+    ) as search:
+        res = client.get("/api/download/albums/search?q=Artist+-+Album")
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["success"] is True
+    assert body["ambiguous"] is False
+    assert body["candidates"][0]["track_count"] == 9
+    search.assert_called_once_with(
+        limit=8,
+        artist="Artist",
+        release="Album",
+        primarytype="album",
+    )
+
+
+def test_album_download_request_rechecks_musicbrainz_and_queues_canonical_mbid(
+    client, mock_config
+):
+    mock_config.is_master = True
+    mock_config.get.side_effect = lambda key, default=None: {
+        "auto_tag_downloads": True,
+        "acoustid_api_key": "acoustid-test-key",
+    }.get(key, default)
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    verified = {
+        "release": {
+            "id": release_id.upper(),
+            "title": "Verified Album",
+            "artist-credit": [{"artist": {"name": "Verified Artist"}}],
+            "medium-list": [{
+                "position": 1,
+                "track-count": 2,
+                "track-list": [
+                    {
+                        "id": "10000000-0000-4000-8000-000000000001",
+                        "position": 1,
+                        "number": "1",
+                        "title": "Track 1",
+                        "recording": {
+                            "id": "00000000-0000-4000-8000-000000000001",
+                            "title": "Track 1",
+                        },
+                    },
+                    {
+                        "id": "10000000-0000-4000-8000-000000000002",
+                        "position": 2,
+                        "number": "2",
+                        "title": "Track 2",
+                        "recording": {
+                            "id": "00000000-0000-4000-8000-000000000002",
+                            "title": "Track 2",
+                        },
+                    },
+                ],
+            }],
+            "release-group": {"primary-type": "Album"},
+        }
+    }
+    with patch(
+        "src.musicbrainz_client.get_release_by_id",
+        return_value=verified,
+    ), patch("web_server.DatabaseManager") as MockDB:
+        db = MockDB.return_value.__enter__.return_value
+        db.get_album_download_request_by_release.return_value = None
+        db.count_local_release_tracks.return_value = 0
+        db.create_download_and_album_request.return_value = (41, 6)
+        db.get_album_download_request.return_value = {
+            "id": 6,
+            "queue_item_id": 41,
+            "release_mbid": release_id,
+            "artist": "Verified Artist",
+            "title": "Verified Album",
+            "track_count": 2,
+            "stage": "queued",
+            "detail": "Waiting",
+            "completed_tracks": 0,
+            "queue_status": "pending",
+        }
+        res = client.post(
+            "/api/download/albums/request",
+            json={
+                "release_mbid": release_id,
+                "title": "Client cannot override this",
+                "track_count": 999,
+            },
+        )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["request"]["release_mbid"] == release_id
+    assert body["request"]["track_count"] == 2
+    queued = db.create_download_and_album_request.call_args.kwargs
+    assert queued["search_query"] == "::ALBUM:: Verified Artist - Verified Album"
+    assert queued["release_mbid"] == release_id
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected_message"),
+    [
+        (
+            {"auto_tag_downloads": False, "acoustid_api_key": "configured"},
+            "auto_tag_downloads",
+        ),
+        (
+            {"auto_tag_downloads": True, "acoustid_api_key": "   "},
+            "acoustid_api_key",
+        ),
+    ],
+)
+def test_album_download_request_rejects_unusable_tagging_configuration_before_lookup(
+    client, mock_config, settings, expected_message,
+):
+    mock_config.is_master = True
+    mock_config.get.side_effect = lambda key, default=None: settings.get(key, default)
+    with patch("src.musicbrainz_client.get_release_by_id") as resolve, patch(
+        "web_server.DatabaseManager"
+    ) as database:
+        res = client.post(
+            "/api/download/albums/request",
+            json={"release_mbid": "95fb59ed-1ece-419b-b62f-aef31e0ebf36"},
+        )
+
+    assert res.status_code == 409
+    body = res.get_json()
+    assert body["success"] is False
+    assert expected_message in body["message"]
+    assert "master" in body["message"]
+    resolve.assert_not_called()
+    database.assert_not_called()
+
+
+def test_album_download_request_satellite_safely_relays_master_config_error(
+    client, mock_config,
+):
+    from src.services.album_download_request_service import AlbumRequestResult
+
+    mock_config.is_master = False
+    mock_config.master_url = "http://master.local:5001"
+    mock_config.get.side_effect = lambda key, default=None: (
+        "master-token" if key == "api_token" else default
+    )
+    payload = {
+        "success": False,
+        "message": (
+            "Verified album downloads require acoustid_api_key to be "
+            "configured on the master."
+        ),
+    }
+    proxied = AlbumRequestResult(payload, status_code=409)
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward, patch("src.musicbrainz_client.get_release_by_id") as resolve:
+        res = client.post(
+            "/api/download/albums/request",
+            json={"release_mbid": "95fb59ed-1ece-419b-b62f-aef31e0ebf36"},
+        )
+
+    assert res.status_code == 409
+    assert res.get_json() == payload
+    assert "master-token" not in res.get_data(as_text=True)
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        "POST",
+        "/api/download/albums/request",
+        api_token="master-token",
+        json_body={
+            "release_mbid": "95fb59ed-1ece-419b-b62f-aef31e0ebf36",
+        },
+    )
+    resolve.assert_not_called()
+
+
+def test_album_download_routes_proxy_from_satellite_with_server_token(
+    client, mock_config
+):
+    from src.services.album_download_request_service import AlbumRequestResult
+
+    mock_config.is_master = False
+    mock_config.master_url = "http://master.local:5001"
+    mock_config.get.side_effect = lambda key, default=None: (
+        "master-token" if key == "api_token" else default
+    )
+    proxied = AlbumRequestResult({
+        "success": True,
+        "request": {"id": 12, "stage": "downloading"},
+    })
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward:
+        res = client.get("/api/download/albums/requests/12")
+
+    assert res.status_code == 200
+    assert res.get_json()["request"]["stage"] == "downloading"
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        "GET",
+        "/api/download/albums/requests/12",
+        api_token="master-token",
+    )
+    assert res.headers["Cache-Control"] == "no-store"
+
+
+def test_album_download_request_list_proxies_for_browser_reconciliation(
+    client, mock_config
+):
+    from src.services.album_download_request_service import AlbumRequestResult
+
+    mock_config.is_master = False
+    mock_config.master_url = "http://master.local:5001"
+    mock_config.get.side_effect = lambda key, default=None: (
+        "master-token" if key == "api_token" else default
+    )
+    proxied = AlbumRequestResult({
+        "success": True,
+        "requests": [{"id": 12, "stage": "downloading"}],
+    })
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward:
+        res = client.get("/api/download/albums/requests")
+
+    assert res.status_code == 200
+    assert res.get_json()["requests"][0]["id"] == 12
+    assert res.headers["Cache-Control"] == "no-store"
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        "GET",
+        "/api/download/albums/requests",
+        api_token="master-token",
+    )
+
+
+def test_run_download_queue_proxies_from_satellite_with_server_token(
+    client, mock_config
+):
+    from src.services.album_download_request_service import AlbumRequestResult
+
+    mock_config.is_master = False
+    mock_config.master_url = "http://master.local:5001"
+    mock_config.get.side_effect = lambda key, default=None: (
+        "master-token" if key == "api_token" else default
+    )
+    proxied = AlbumRequestResult({"success": True, "message": "Task started."})
+    with patch(
+        "web_server.album_download_request_service.forward_master_json",
+        return_value=proxied,
+    ) as forward:
+        res = client.post("/api/download")
+
+    assert res.status_code == 200
+    assert res.get_json()["success"] is True
+    forward.assert_called_once_with(
+        "http://master.local:5001",
+        "POST",
+        "/api/download",
+        api_token="master-token",
+    )
 
 
 def test_request_download_rejects_empty_query(client, mock_config):

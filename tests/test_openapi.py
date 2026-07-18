@@ -31,6 +31,10 @@ EXPECTED_API_ROUTES = {
     ("/api/contributions/<int:contribution_id>", "get_contribution_status", ("GET",)),
     ("/api/contributions/<int:contribution_id>/upload", "upload_contribution", ("POST",)),
     ("/api/download", "download", ("POST",)),
+    ("/api/download/albums/request", "request_download_album", ("POST",)),
+    ("/api/download/albums/requests", "list_download_album_requests", ("GET",)),
+    ("/api/download/albums/requests/<int:request_id>", "get_download_album_request", ("GET",)),
+    ("/api/download/albums/search", "search_download_albums", ("GET",)),
     ("/api/download/request", "request_download", ("POST",)),
     ("/api/downloads/<int:item_id>", "delete_download_item", ("DELETE",)),
     ("/api/downloads/<int:item_id>/retry", "retry_download_item", ("POST",)),
@@ -139,8 +143,9 @@ def test_api_route_method_and_endpoint_contract():
 def test_api_auth_exemption_allowlist_is_exact():
     # Expanding this set creates an unauthenticated API surface, so require an
     # explicit contract update rather than allowing an accidental exemption.
+    # Unscoped /api/status is handled separately because scoped status carries
+    # application data and must pass through the normal token gate.
     assert API_AUTH_EXEMPT_PATHS == {
-        "/api/status",
         "/api/healthz",
         "/api/openapi.json",
     }

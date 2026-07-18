@@ -65,6 +65,63 @@ See the header of `scripts/setup-master.ps1` for all parameters (Soulseek /
 Jellyfin creds, ports, etc.) and `docker-compose.example.yml` for the compose
 shape.
 
+### Configure the Windows master remotely over SSH
+
+After the Windows checkout and `viggys-pc` SSH alias are set up, send a
+versioned JSON envelope to `set-master-config.ps1` over standard input. Keep the
+source file outside the repository and readable only by your local account:
+
+```bash
+mkdir -p "$HOME/.config/dapmanager"
+chmod 700 "$HOME/.config/dapmanager"
+touch "$HOME/.config/dapmanager/master-config.json"
+chmod 600 "$HOME/.config/dapmanager/master-config.json"
+```
+
+```json
+{
+  "version": 1,
+  "set": {
+    "slsk_username": "your-user",
+    "slsk_password": "your-password",
+    "api_token": "replace-with-32-or-more-random-characters"
+  },
+  "clear": []
+}
+```
+
+```bash
+ssh -T viggys-pc \
+  powershell.exe -NoLogo -NoProfile -NonInteractive \
+  -ExecutionPolicy Bypass \
+  -File C:/Users/Vignesh/Desktop/DAPManger/scripts/set-master-config.ps1 \
+  -Restart \
+  < "$HOME/.config/dapmanager/master-config.json"
+```
+
+The JSON stays off the SSH command line and is not copied into the checkout.
+Input must be valid UTF-8 JSON and is limited to 128 KiB; `api_token` values
+must contain at least 32 characters. The script is locked to the repository
+that contains it, patches that checkout's bind-mounted `config/config.json`,
+and stores protected rollback copies under `config/.backups`. With `-Restart`,
+it restarts DAPManager and checks its health. Secret removal is disabled unless
+the envelope names the key in `clear` **and** the command includes
+`-AllowClear`; `api_token` can be rotated but not cleared. See
+[the agent operations runbook](docs/agent-operations.md#remote-master-configuration-over-ssh)
+for supported keys and rollback details.
+
+If Jellyfin reads a different host directory from DAPManager's
+`music_library_path`, mount that directory read-write into the `dapmanager`
+container (for example at `/jellyfin-music`) and set
+`jellyfin_music_library_path` to that **container** path. Leave it blank when
+both services already read the same directory. Each completed import is then
+copied to the same `Artist/Album/Track` path before the existing Jellyfin
+refresh. Audio is never downgraded: a better-quality Jellyfin copy keeps its
+audio frames while verified canonical Picard tags are synchronized atomically.
+See
+[the deployment notes](docs/agent-operations.md#optional-post-download-jellyfin-mirror)
+for the Compose mount and remote configuration envelope.
+
 ### 1. Configure in the browser (no terminal needed)
 
 Open **http://localhost:5001/** — a fresh install redirects to **`/setup`**.
@@ -233,6 +290,13 @@ destructive), and how to verify results.
   snapshots pull to satellites during Sync All. Master-side library maintenance
   defaults to a weekly tag refresh followed by Daily Mix regeneration; set
   `library_maintenance_interval_seconds` to `0` to disable it.
+- Fresh queue downloads are Picard-style tagged when `auto_tag_downloads` is
+  enabled (the default) and `acoustid_api_key` is configured. Only green
+  AcoustID matches are auto-applied; FLAC audio frames, artwork, lyrics, ratings,
+  and other user fields are verified before an atomic tag replacement. Existing
+  library files are not swept by this download-time step. Exact satellite album
+  requests additionally require a green match for the selected MusicBrainz
+  release and use its persisted track manifest as the canonical tag source.
 - Live Soulseek, Lidarr, Jellyfin, MusicBrainz and physical-DAP behaviour still
   depends on those external services/devices; the isolated suite mocks those
   boundaries and the Docker E2E suite covers the master/satellite HTTP flow.

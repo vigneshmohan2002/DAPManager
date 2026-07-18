@@ -496,3 +496,58 @@ export type DownloadQueueItem = {
 };
 
 export type ClearCompletedResult = ActionResult & { removed: number };
+
+export type AlbumReleaseCandidate = {
+  release_mbid: string;
+  title: string;
+  artist: string;
+  track_count: number;
+  date: string;
+  country: string;
+  status: string;
+  disambiguation: string;
+  primary_type: string;
+  format: string;
+  label: string;
+  catalog_number: string;
+  barcode: string;
+  cover_url: string;
+  musicbrainz_url: string;
+  score?: number;
+};
+
+export type AlbumDownloadStage =
+  | "queued"
+  | "downloading"
+  | "importing"
+  | "success"
+  | "failed";
+
+export type AlbumDownloadRequest = {
+  id: number;
+  release_mbid: string;
+  title: string;
+  artist: string;
+  track_count: number;
+  stage: AlbumDownloadStage;
+  detail: string;
+  completed_tracks: number;
+  queue_status: string | null;
+  last_attempt: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  cover_url: string;
+};
+
+export type AlbumReleaseSearchResult = {
+  query: string;
+  ambiguous: boolean;
+  candidates: AlbumReleaseCandidate[];
+};
+
+export type AlbumDownloadRequestResult = {
+  success: boolean;
+  queued: boolean;
+  message: string;
+  request?: AlbumDownloadRequest;
+};

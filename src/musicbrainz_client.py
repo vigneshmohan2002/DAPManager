@@ -92,6 +92,17 @@ def search_artists(query: str, limit: int = 1):
     return musicbrainzngs.search_artists(query=query, limit=int(limit))
 
 
+def search_releases(query: str = "", limit: int = 8, **fields):
+    """Search MusicBrainz releases through the shared rate-limited client."""
+    _ensure_configured()
+    _wait_for_slot()
+    return musicbrainzngs.search_releases(
+        query=query,
+        limit=int(limit),
+        **fields,
+    )
+
+
 def get_artist_tags(artist_mbid: str):
     """Fetch an MB artist's tags. Returns the dict's ``artist`` payload,
     which carries a ``tag-list`` of ``{name, count}`` entries; callers

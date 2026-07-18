@@ -11,7 +11,8 @@ class DownloadRepository(SQLiteRepository):
     def has_queued_mbid(self, mbid: str) -> bool:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT 1 FROM download_queue WHERE mbid_guess = ? LIMIT 1",
+            "SELECT 1 FROM download_queue "
+            "WHERE mbid_guess = ? COLLATE NOCASE LIMIT 1",
             (mbid,),
         )
         row = cursor.fetchone()
@@ -29,6 +30,7 @@ class DownloadRepository(SQLiteRepository):
             if mbid:
                 cursor.execute(
                     "SELECT id FROM download_queue WHERE mbid_guess = ? "
+                    "COLLATE NOCASE "
                     "AND status IN ('pending', 'failed') ORDER BY id LIMIT 1",
                     (mbid,),
                 )
@@ -162,6 +164,29 @@ class DownloadRepository(SQLiteRepository):
                 "UPDATE download_queue SET status = 'pending' "
                 "WHERE id = ? AND status = 'failed'",
                 (item_id,),
+            )
+            changed = cursor.rowcount > 0
+            self.conn.commit()
+            return changed
+        finally:
+            cursor.close()
+
+    def claim_for_album_request(
+        self,
+        item_id: int,
+        release_mbid: str,
+        search_query: str,
+        playlist_id: str,
+    ) -> bool:
+        """Convert compatible pending/failed work into a tracked album row."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE download_queue SET search_query = ?, playlist_id = ?, "
+                "status = 'pending' WHERE id = ? AND mbid_guess = ? "
+                "COLLATE NOCASE "
+                "AND status IN ('pending', 'failed')",
+                (search_query, playlist_id, int(item_id), release_mbid),
             )
             changed = cursor.rowcount > 0
             self.conn.commit()

@@ -59,6 +59,13 @@ def _jf_item(
     }
 
 
+def test_trigger_library_scan_posts_refresh_endpoint(jf_client):
+    with patch.object(jf_client, "_post") as post:
+        jf_client.trigger_library_scan()
+
+    post.assert_called_once_with("/Library/Refresh")
+
+
 def test_should_pull_when_no_local_track(jf_client):
     assert jf_client._should_pull(_jf_item(), None) is True
 

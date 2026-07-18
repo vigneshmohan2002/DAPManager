@@ -66,6 +66,41 @@ TABLE_DEFINITIONS: Dict[str, str] = {
             mbid_guess TEXT NOT NULL
         );
     """,
+    "album_download_requests": """
+        CREATE TABLE IF NOT EXISTS album_download_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_item_id INTEGER,
+            release_mbid TEXT NOT NULL UNIQUE,
+            artist TEXT NOT NULL,
+            title TEXT NOT NULL,
+            track_count INTEGER NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'queued'
+                CHECK(stage IN ('queued', 'downloading', 'importing', 'success', 'failed')),
+            detail TEXT NOT NULL DEFAULT '',
+            completed_tracks INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    """,
+    "album_download_request_tracks": """
+        CREATE TABLE IF NOT EXISTS album_download_request_tracks (
+            request_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            recording_mbid TEXT NOT NULL,
+            medium_position INTEGER NOT NULL,
+            track_position INTEGER NOT NULL,
+            track_number TEXT NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            date TEXT NOT NULL,
+            track_total INTEGER NOT NULL,
+            disc_total INTEGER NOT NULL,
+            release_track_mbid TEXT NOT NULL,
+            PRIMARY KEY (request_id, position),
+            FOREIGN KEY (request_id) REFERENCES album_download_requests (id)
+                ON DELETE CASCADE
+        );
+    """,
     "duplicates": """
         CREATE TABLE IF NOT EXISTS duplicates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +187,12 @@ TABLE_DEFINITIONS: Dict[str, str] = {
 
 
 BASE_INDEX_DEFINITIONS: Tuple[str, ...] = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_album_download_requests_queue_item "
+    "ON album_download_requests(queue_item_id) WHERE queue_item_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_album_download_requests_stage_updated "
+    "ON album_download_requests(stage, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_album_download_request_tracks_recording "
+    "ON album_download_request_tracks(recording_mbid)",
     "CREATE INDEX IF NOT EXISTS idx_play_events_played_at "
     "ON play_events(played_at)",
     "CREATE INDEX IF NOT EXISTS idx_play_events_track_mbid "
@@ -245,6 +286,32 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
         if "smart_rules" not in playlist_columns:
             cursor.execute("ALTER TABLE playlists ADD COLUMN smart_rules TEXT")
             logger.info("Added column: playlists.smart_rules")
+
+        album_track_columns = _columns(
+            cursor,
+            "album_download_request_tracks",
+        )
+        album_track_migrations = (
+            ("medium_position", "INTEGER NOT NULL DEFAULT 0"),
+            ("track_position", "INTEGER NOT NULL DEFAULT 0"),
+            ("track_number", "TEXT NOT NULL DEFAULT ''"),
+            ("title", "TEXT NOT NULL DEFAULT ''"),
+            ("artist", "TEXT NOT NULL DEFAULT ''"),
+            ("date", "TEXT NOT NULL DEFAULT ''"),
+            ("track_total", "INTEGER NOT NULL DEFAULT 0"),
+            ("disc_total", "INTEGER NOT NULL DEFAULT 0"),
+            ("release_track_mbid", "TEXT NOT NULL DEFAULT ''"),
+        )
+        for column, definition in album_track_migrations:
+            if column not in album_track_columns:
+                cursor.execute(
+                    "ALTER TABLE album_download_request_tracks "
+                    f"ADD COLUMN {column} {definition}"
+                )
+                logger.info(
+                    "Added column: album_download_request_tracks.%s",
+                    column,
+                )
         conn.commit()
     except sqlite3.Error as error:
         logger.error("Schema migration failed: %s", error)

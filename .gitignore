@@ -31,6 +31,8 @@ desktop/.claude/settings.local.json
 /qbittorrent-config/
 /docker-compose.yml
 /dapmanager-api-token.txt
+/master-config*.json
+/*.master-config.json
 /logs/
 
 # Extra platform icons emitted by `tauri icon`; the bundle uses the tracked

@@ -8,11 +8,12 @@ import os
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple, TypedDict
+from typing import Any, List, Mapping, Optional, Set, Tuple, TypedDict
 from datetime import datetime
 
 from src.db_schema import create_tables, migrate_schema
 from src.db_repositories import (
+    AlbumDownloadRequestRepository,
     AlbumMaintenanceRepository,
     ContributionRepository,
     DownloadRepository,
@@ -170,6 +171,9 @@ class DatabaseManager:
         self._inventory_repository = InventoryRepository(self.conn)
         self._album_maintenance_repository = AlbumMaintenanceRepository(
             self.conn
+        )
+        self._album_download_request_repository = (
+            AlbumDownloadRequestRepository(self.conn)
         )
 
     def _create_tables(self):
@@ -691,6 +695,233 @@ class DatabaseManager:
 
     def remove_from_queue(self, item_id: int):
         self._download_repository.remove(item_id)
+
+    def create_album_download_request(
+        self,
+        *,
+        queue_item_id: Optional[int],
+        release_mbid: str,
+        artist: str,
+        title: str,
+        track_count: int,
+        stage: str = "queued",
+        detail: str = "",
+        completed_tracks: int = 0,
+        recording_mbids: Tuple[str, ...] = (),
+        track_manifest: Tuple[Mapping[str, Any], ...] = (),
+    ) -> int:
+        return self._album_download_request_repository.create(
+            queue_item_id=queue_item_id,
+            release_mbid=release_mbid,
+            artist=artist,
+            title=title,
+            track_count=track_count,
+            stage=stage,
+            detail=detail,
+            completed_tracks=completed_tracks,
+            recording_mbids=recording_mbids,
+            track_manifest=track_manifest,
+        )
+
+    def claim_download_and_create_album_request(
+        self,
+        *,
+        queue_item_id: int,
+        release_mbid: str,
+        search_query: str,
+        playlist_id: str,
+        artist: str,
+        title: str,
+        track_count: int,
+        detail: str,
+        completed_tracks: int,
+        recording_mbids: Tuple[str, ...],
+        track_manifest: Tuple[Mapping[str, Any], ...] = (),
+    ) -> Optional[int]:
+        return self._album_download_request_repository.claim_queue_and_create(
+            queue_item_id=queue_item_id,
+            release_mbid=release_mbid,
+            search_query=search_query,
+            playlist_id=playlist_id,
+            artist=artist,
+            title=title,
+            track_count=track_count,
+            detail=detail,
+            completed_tracks=completed_tracks,
+            recording_mbids=recording_mbids,
+            track_manifest=track_manifest,
+        )
+
+    def create_download_and_album_request(
+        self,
+        *,
+        release_mbid: str,
+        search_query: str,
+        playlist_id: str,
+        artist: str,
+        title: str,
+        track_count: int,
+        detail: str,
+        completed_tracks: int,
+        recording_mbids: Tuple[str, ...],
+        track_manifest: Tuple[Mapping[str, Any], ...] = (),
+    ) -> Tuple[int, int]:
+        return self._album_download_request_repository.create_queue_and_request(
+            release_mbid=release_mbid,
+            search_query=search_query,
+            playlist_id=playlist_id,
+            artist=artist,
+            title=title,
+            track_count=track_count,
+            detail=detail,
+            completed_tracks=completed_tracks,
+            recording_mbids=recording_mbids,
+            track_manifest=track_manifest,
+        )
+
+    def create_download_and_requeue_album_request(
+        self,
+        *,
+        request_id: int,
+        release_mbid: str,
+        search_query: str,
+        playlist_id: str,
+        detail: str,
+        completed_tracks: int,
+    ) -> Optional[int]:
+        return self._album_download_request_repository.create_queue_and_requeue(
+            request_id=request_id,
+            release_mbid=release_mbid,
+            search_query=search_query,
+            playlist_id=playlist_id,
+            detail=detail,
+            completed_tracks=completed_tracks,
+        )
+
+    def get_album_download_request(self, request_id: int):
+        return self._album_download_request_repository.get(request_id)
+
+    def get_album_download_request_by_release(self, release_mbid: str):
+        return self._album_download_request_repository.get_by_release(
+            release_mbid
+        )
+
+    def get_album_download_request_by_queue_item(self, queue_item_id: int):
+        return self._album_download_request_repository.get_by_queue_item(
+            queue_item_id
+        )
+
+    def list_active_album_download_requests(self, limit: int = 30):
+        return self._album_download_request_repository.list_active(limit)
+
+    def get_album_download_request_recording_mbids(self, request_id: int):
+        return (
+            self._album_download_request_repository.get_expected_recording_mbids(
+                request_id
+            )
+        )
+
+    def get_album_download_request_track_manifest(self, request_id: int):
+        return self._album_download_request_repository.get_expected_track_manifest(
+            request_id
+        )
+
+    def get_local_release_recordings(self, release_mbid: str):
+        return self._album_download_request_repository.get_local_release_recordings(
+            release_mbid
+        )
+
+    def update_album_download_request_progress(
+        self,
+        queue_item_id: int,
+        stage: str,
+        detail: str = "",
+        completed_tracks: Optional[int] = None,
+    ) -> bool:
+        return self._album_download_request_repository.update_by_queue_item(
+            queue_item_id,
+            stage,
+            detail,
+            completed_tracks,
+        )
+
+    def complete_album_download_request(
+        self,
+        queue_item_id: int,
+        detail: str,
+        completed_tracks: int,
+    ) -> bool:
+        return (
+            self._album_download_request_repository.complete_and_remove_queue_item(
+                queue_item_id,
+                detail,
+                completed_tracks,
+            )
+        )
+
+    def complete_album_download_request_by_id(
+        self,
+        request_id: int,
+        detail: str,
+        completed_tracks: int,
+    ) -> bool:
+        return self._album_download_request_repository.complete_by_request_id(
+            request_id,
+            detail,
+            completed_tracks,
+        )
+
+    def invalidate_album_download_request(
+        self,
+        request_id: int,
+        detail: str,
+        completed_tracks: int,
+    ) -> bool:
+        return self._album_download_request_repository.invalidate(
+            request_id,
+            detail,
+            completed_tracks,
+        )
+
+    def replace_album_download_request_identity(
+        self,
+        request_id: int,
+        *,
+        artist: str,
+        title: str,
+        track_count: int,
+        recording_mbids: Tuple[str, ...],
+        detail: str,
+        track_manifest: Tuple[Mapping[str, Any], ...] = (),
+    ) -> bool:
+        return self._album_download_request_repository.replace_identity(
+            request_id,
+            artist=artist,
+            title=title,
+            track_count=track_count,
+            recording_mbids=recording_mbids,
+            detail=detail,
+            track_manifest=track_manifest,
+        )
+
+    def requeue_album_download_request(
+        self,
+        request_id: int,
+        queue_item_id: int,
+        detail: str,
+        completed_tracks: int = 0,
+    ) -> bool:
+        return self._album_download_request_repository.requeue(
+            request_id,
+            queue_item_id,
+            detail,
+            completed_tracks,
+        )
+
+    def count_local_release_tracks(self, release_mbid: str) -> int:
+        return self._album_download_request_repository.count_local_release_tracks(
+            release_mbid
+        )
 
     def get_download_queue_count(self) -> int:
         return self._download_repository.active_count()
@@ -1503,6 +1734,20 @@ class DatabaseManager:
         # forensic "last failed at X" stays visible until the actual retry
         # bumps it via update_download_status.
         return self._download_repository.retry(item_id)
+
+    def claim_download_for_album_request(
+        self,
+        item_id: int,
+        release_mbid: str,
+        search_query: str,
+        playlist_id: str,
+    ) -> bool:
+        return self._download_repository.claim_for_album_request(
+            item_id,
+            release_mbid,
+            search_query,
+            playlist_id,
+        )
 
     def get_queued_release_mbids(self) -> set:
         # Distinct mbid_guess values currently in the queue, regardless of

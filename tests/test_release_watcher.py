@@ -28,12 +28,14 @@ def _album(mbid, artist="Boards of Canada", title="Geogaddi"):
 
 
 def test_build_search_query():
-    assert _build_search_query(_album("x")) == "Boards of Canada - Geogaddi"
+    assert _build_search_query(_album("x")) == (
+        "::ALBUM:: Boards of Canada - Geogaddi"
+    )
 
 
 def test_build_search_query_missing_artist_returns_just_title():
     album = {"title": "Geogaddi", "artist": {}}
-    assert _build_search_query(album) == "Geogaddi"
+    assert _build_search_query(album) == "::ALBUM:: Geogaddi"
 
 
 def test_build_search_query_all_empty_is_empty():
@@ -57,6 +59,12 @@ def test_queues_new_albums(db, monkeypatch):
     assert queued == 2
     assert db.has_queued_mbid("mbid-1") is True
     assert db.has_queued_mbid("mbid-2") is True
+    queued_rows = db.get_downloads(status="pending")
+    assert [row.search_query for row in queued_rows] == [
+        "::ALBUM:: A1 - T1",
+        "::ALBUM:: A2 - T2",
+    ]
+    assert [row.mbid_guess for row in queued_rows] == ["mbid-1", "mbid-2"]
 
 
 def test_dedups_across_ticks(db, monkeypatch):

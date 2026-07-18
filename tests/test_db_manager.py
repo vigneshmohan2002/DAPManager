@@ -7,6 +7,16 @@ from src.db_manager import Track, DownloadItem, DatabaseManager, Playlist
 
 
 EXPECTED_SCHEMA_COLUMNS = {
+    "album_download_request_tracks": (
+        "request_id", "position", "recording_mbid", "medium_position",
+        "track_position", "track_number", "title", "artist", "date",
+        "track_total", "disc_total", "release_track_mbid",
+    ),
+    "album_download_requests": (
+        "id", "queue_item_id", "release_mbid", "artist", "title",
+        "track_count", "stage", "detail", "completed_tracks",
+        "created_at", "updated_at",
+    ),
     "albums": ("release_mbid", "album_title", "total_tracks"),
     "artist_tags": ("artist_name", "mbid", "tag", "weight", "fetched_at"),
     "contributed": ("mbid", "contribution_id", "status", "updated_at"),
@@ -73,6 +83,15 @@ def test_database_schema_table_column_and_index_contract(db):
         )
 
     assert indexes == {
+        "idx_album_download_request_tracks_recording": (
+            "album_download_request_tracks", ("recording_mbid",), False,
+        ),
+        "idx_album_download_requests_queue_item": (
+            "album_download_requests", ("queue_item_id",), True,
+        ),
+        "idx_album_download_requests_stage_updated": (
+            "album_download_requests", ("stage", "updated_at"), False,
+        ),
         "idx_artist_tags_tag": ("artist_tags", ("tag",), False),
         "idx_play_events_played_at": ("play_events", ("played_at",), False),
         "idx_play_events_track_mbid": ("play_events", ("track_mbid",), False),
@@ -172,6 +191,34 @@ def test_retry_download_only_flips_failed_rows(db):
     # Unknown id is also a no-op (no rows matched) — same return shape so
     # the API can 404 without a separate exists-check.
     assert db.retry_download(99999) is False
+
+
+def test_claim_download_for_album_request_canonicalizes_compatible_queue_row(db):
+    item_id = db.queue_download(DownloadItem(
+        "Artist - Album",
+        "COMPLETER",
+        "95FB59ED-1ECE-419B-B62F-AEF31E0EBF36",
+        status="pending",
+    ))
+    db.update_download_status(item_id, "failed")
+
+    assert db.claim_download_for_album_request(
+        item_id,
+        "95fb59ed-1ece-419b-b62f-aef31e0ebf36",
+        "::ALBUM:: Artist - Album",
+        "SATELLITE_ALBUM",
+    ) is True
+
+    claimed = next(row for row in db.get_all_downloads() if row.id == item_id)
+    assert claimed.search_query == "::ALBUM:: Artist - Album"
+    assert claimed.playlist_id == "SATELLITE_ALBUM"
+    assert claimed.status == "pending"
+    assert db.claim_download_for_album_request(
+        item_id,
+        "different-release",
+        "::ALBUM:: Wrong - Album",
+        "SATELLITE_ALBUM",
+    ) is False
 
 
 def test_delete_succeeded_downloads_only_removes_success_rows(db):
@@ -2265,3 +2312,54 @@ def test_list_playlists_with_counts_specialises_liked_songs_count(db):
     rows = db.list_playlists_with_counts()
     liked = next(r for r in rows if r["playlist_id"] == "liked_songs")
     assert liked["track_count"] == 2
+
+
+def test_album_identity_replacement_is_transactionally_blocked_while_active(db):
+    release = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    first_recording = "00000000-0000-4000-8000-000000000001"
+    second_recording = "00000000-0000-4000-8000-000000000002"
+    queue_id, request_id = db.create_download_and_album_request(
+        release_mbid=release,
+        search_query="::ALBUM:: Artist - Original",
+        playlist_id="SATELLITE_ALBUM",
+        artist="Artist",
+        title="Original",
+        track_count=1,
+        detail="Waiting",
+        completed_tracks=0,
+        recording_mbids=(first_recording,),
+    )
+
+    assert not db.replace_album_download_request_identity(
+        request_id,
+        artist="Artist",
+        title="Corrected",
+        track_count=1,
+        recording_mbids=(second_recording,),
+        detail="Corrected manifest",
+    )
+    active = db.get_album_download_request(request_id)
+    assert active["title"] == "Original"
+    assert db.get_album_download_request_recording_mbids(request_id) == [
+        first_recording
+    ]
+
+    assert db.update_album_download_request_progress(
+        queue_id,
+        "failed",
+        "Attempt ended",
+    )
+    assert db.replace_album_download_request_identity(
+        request_id,
+        artist="Artist",
+        title="Corrected",
+        track_count=1,
+        recording_mbids=(second_recording,),
+        detail="Corrected manifest",
+    )
+    terminal = db.get_album_download_request(request_id)
+    assert terminal["title"] == "Corrected"
+    assert terminal["stage"] == "failed"
+    assert db.get_album_download_request_recording_mbids(request_id) == [
+        second_recording
+    ]

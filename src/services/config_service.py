@@ -24,6 +24,7 @@ FIRST_RUN_FIELDS = frozenset({
     "master_url", "public_master_url", "api_token", "device_name",
     "slsk_username", "slsk_password",
     "jellyfin_url", "jellyfin_api_key", "jellyfin_user_id",
+    "jellyfin_music_library_path",
     "lidarr_url", "lidarr_api_key", "lidarr_enabled",
     "acoustid_api_key", "contact_email",
     "report_inventory_to_host", "contribute_to_host",

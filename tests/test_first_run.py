@@ -59,6 +59,7 @@ def test_master_payload_flags_master_and_keeps_creds():
     assert cfg["master_url"] == ""
     assert cfg["report_inventory_to_host"] is True
     assert cfg["artist_tag_max_age_days"] == 30
+    assert cfg["auto_tag_downloads"] is True
     assert cfg["library_maintenance_interval_seconds"] == 604800
     assert cfg["library_maintenance_on_startup"] is False
 

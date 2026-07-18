@@ -32,7 +32,9 @@ SECRET_KEYS: Final[FrozenSet[str]] = frozenset({
 # already had a config.json. The config endpoint overlays these without
 # rewriting the user's file; saving Settings persists any explicit changes.
 DEFAULT_VALUES: Final[Dict[str, ConfigValue]] = {
+    "auto_tag_downloads": True,
     "artist_tag_max_age_days": 30,
+    "jellyfin_music_library_path": "",
     "library_maintenance_interval_seconds": 604800,
     "library_maintenance_on_startup": False,
 }
@@ -52,6 +54,7 @@ EDITABLE_KEYS: Final[FrozenSet[str]] = frozenset({
     "jellyfin_url",
     "jellyfin_api_key",
     "jellyfin_user_id",
+    "jellyfin_music_library_path",
     "master_url",
     "public_master_url",
     "device_id",
@@ -63,6 +66,7 @@ EDITABLE_KEYS: Final[FrozenSet[str]] = frozenset({
     "sync_on_startup",
     "api_token",
     "acoustid_api_key",
+    "auto_tag_downloads",
     "contact_email",
     "library_maintenance_interval_seconds",
     "library_maintenance_on_startup",
@@ -81,6 +85,7 @@ BOOL_KEYS: Final[FrozenSet[str]] = frozenset({
     "remove_ft",
     "desperate_mode",
     "strict_quality",
+    "auto_tag_downloads",
     "report_inventory_to_host",
     "contribute_to_host",
     "sync_on_startup",
@@ -113,6 +118,7 @@ GROUPS: Final[List[ConfigGroup]] = [
         "jellyfin_url",
         "jellyfin_api_key",
         "jellyfin_user_id",
+        "jellyfin_music_library_path",
     ]),
     ("Multi-Device Sync", [
         "device_id",
@@ -127,6 +133,7 @@ GROUPS: Final[List[ConfigGroup]] = [
         "api_token",
     ]),
     ("Tagging (AcoustID / MusicBrainz)", [
+        "auto_tag_downloads",
         "acoustid_api_key",
         "contact_email",
         "artist_tag_max_age_days",

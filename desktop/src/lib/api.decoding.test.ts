@@ -58,6 +58,7 @@ describe("desktop API runtime decoding", () => {
         },
       }),
       jsonResponse({ running: 1, message: "Busy" }),
+      jsonResponse({ running: 0, message: "Master idle" }),
     );
 
     await expect(api.fetchSyncState()).resolves.toEqual({
@@ -72,6 +73,16 @@ describe("desktop API runtime decoding", () => {
       message: "Busy",
       detail: null,
     });
+    await expect(api.fetchStatus("downloads")).resolves.toEqual({
+      running: false,
+      task: null,
+      message: "Master idle",
+      detail: null,
+    });
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenLastCalledWith(
+      "http://localhost:5001/api/status?scope=downloads",
+      {},
+    );
   });
 
   it("keeps create and queue failures as typed results on non-2xx responses", async () => {
@@ -236,6 +247,123 @@ describe("desktop API runtime decoding", () => {
     await expect(api.fetchWrapped(2026)).resolves.toEqual({
       ...expected,
       longest_streak_days: 0,
+    });
+  });
+
+  it("validates MusicBrainz release candidates and persistent album progress", async () => {
+    const releaseMbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36";
+    const request = {
+      id: 12,
+      release_mbid: releaseMbid,
+      title: "Album",
+      artist: "Artist",
+      track_count: 10,
+      stage: "downloading",
+      detail: "Searching lossless sources",
+      completed_tracks: 2,
+      queue_status: "pending",
+      last_attempt: null,
+      created_at: "2026-07-18 10:00:00",
+      updated_at: "2026-07-18 10:01:00",
+      cover_url: "https://coverartarchive.org/front.jpg",
+    };
+    const api = await loadApiWithResponses(
+      jsonResponse({
+        success: true,
+        query: "Artist - Album",
+        ambiguous: true,
+        candidates: [
+          {
+            release_mbid: releaseMbid,
+            title: "Album",
+            artist: "Artist",
+            track_count: 10,
+            format: "CD",
+            label: "Label",
+            score: 99,
+          },
+          {
+            release_mbid: "not-an-mbid",
+            title: "Unsafe",
+            artist: "Artist",
+            track_count: 10,
+          },
+        ],
+      }),
+      jsonResponse({ success: true, queued: true, message: "queued", request }),
+      jsonResponse({ success: true, requests: [request, { ...request, stage: "bogus" }] }),
+      jsonResponse({ success: true, request: { ...request, stage: "importing" } }),
+    );
+
+    await expect(api.searchAlbumReleases("Artist - Album")).resolves.toEqual({
+      query: "Artist - Album",
+      ambiguous: true,
+      candidates: [
+        {
+          release_mbid: releaseMbid,
+          title: "Album",
+          artist: "Artist",
+          track_count: 10,
+          date: "",
+          country: "",
+          status: "",
+          disambiguation: "",
+          primary_type: "",
+          format: "CD",
+          label: "Label",
+          catalog_number: "",
+          barcode: "",
+          cover_url: "",
+          musicbrainz_url: "",
+          score: 99,
+        },
+      ],
+    });
+    await expect(api.requestAlbumDownload(releaseMbid)).resolves.toMatchObject({
+      success: true,
+      queued: true,
+      request: { id: 12, stage: "downloading", completed_tracks: 2 },
+    });
+    await expect(api.fetchAlbumDownloadRequests()).resolves.toHaveLength(1);
+    await expect(api.fetchAlbumDownloadRequest(12)).resolves.toMatchObject({
+      id: 12,
+      stage: "importing",
+    });
+  });
+
+  it("surfaces the master message when an album request is rejected", async () => {
+    const api = await loadApiWithResponses(
+      jsonResponse(
+        { success: false, message: "The selected release is not an album" },
+        400,
+      ),
+    );
+
+    await expect(
+      api.requestAlbumDownload("95fb59ed-1ece-419b-b62f-aef31e0ebf36"),
+    ).resolves.toEqual({
+      success: false,
+      queued: false,
+      message: "The selected release is not an album",
+    });
+  });
+
+  it("queues wanted releases with an explicit album identity marker", async () => {
+    const releaseMbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36";
+    const api = await loadApiWithResponses(
+      jsonResponse({ success: true, message: "queued" }),
+    );
+
+    await expect(api.queueWantedRelease({
+      mbid: releaseMbid,
+      artist: "Boards of Canada",
+      title: "Geogaddi",
+    })).resolves.toEqual({ success: true, message: "queued" });
+
+    const [, init] = vi.mocked(globalThis.fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      search_query: "::ALBUM:: Boards of Canada - Geogaddi",
+      mbid_guess: releaseMbid,
     });
   });
 });

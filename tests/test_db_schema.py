@@ -40,6 +40,9 @@ def test_schema_functions_are_idempotent_and_preserve_existing_rows():
         )
     }
     assert indexes == {
+        "idx_album_download_request_tracks_recording",
+        "idx_album_download_requests_queue_item",
+        "idx_album_download_requests_stage_updated",
         "idx_artist_tags_tag",
         "idx_play_events_played_at",
         "idx_play_events_track_mbid",

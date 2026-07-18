@@ -6,6 +6,7 @@ from flask import Flask, render_template, jsonify, request, redirect, url_for, R
 
 from src.config_paths import resolve_config_path
 from src.services import album_task_service
+from src.services import album_download_request_service
 from src.services import contribution_service
 from src.services import download_discovery_service
 from src.services import fleet_service
@@ -398,7 +399,7 @@ from src.config_keys import (
 )
 from src.config_manager import normalize_device_role
 
-API_AUTH_EXEMPT_PATHS = {"/api/status", "/api/healthz", "/api/openapi.json"}
+API_AUTH_EXEMPT_PATHS = {"/api/healthz", "/api/openapi.json"}
 AUTH_COOKIE_NAME = "dapmanager_auth"
 TAURI_API_ORIGINS = frozenset({
     "tauri://localhost",
@@ -493,6 +494,8 @@ def _add_tauri_cors_headers(response):
         response.headers["Access-Control-Expose-Headers"] = (
             "Accept-Ranges, Content-Length, Content-Range"
         )
+    if request.path.startswith("/api/download/albums"):
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -575,14 +578,18 @@ def _check_api_token():
 
     Open mode (no token in config) keeps current behavior for LAN-only setups;
     a warning is logged at init time so the operator knows it's unauthenticated.
-    /api/status is exempt so health checks don't need the header.  Authenticated
-    GET/HEAD URLs may also carry ``?token=`` because browser media elements
-    (album art and audio) cannot set an Authorization header.  Mutating routes
-    remain header-only so tokens do not get copied into action URLs.
+    Unscoped /api/status is exempt so health checks don't need the header.
+    Scoped status surfaces are application data and use normal authentication.
+    Authenticated GET/HEAD URLs may also carry ``?token=`` because browser
+    media elements (album art and audio) cannot set an Authorization header.
+    Mutating routes remain header-only so tokens do not get copied into action
+    URLs.
     """
     if not request.path.startswith("/api/"):
         return None
     if request.path in API_AUTH_EXEMPT_PATHS:
+        return None
+    if request.path == "/api/status" and not request.args.get("scope", "").strip():
         return None
     if config is None:
         return None
@@ -1634,6 +1641,22 @@ def healthz():
 
 @app.route("/api/status")
 def status():
+    # Sync/audit work runs on a satellite itself, so the unscoped status must
+    # remain local. Download queue controls, however, are master-owned. Give
+    # download UIs an explicit scope that follows the same authority as the
+    # queue/list/mutation endpoints below.
+    if (
+        config
+        and not config.is_master
+        and request.args.get("scope", "").strip().lower() == "downloads"
+    ):
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            "/api/status",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
     if not task_manager:
         return jsonify({"running": False, "message": "Not initialized"})
     with task_manager.lock:
@@ -1659,12 +1682,186 @@ def scan():
 
 @app.route("/api/download", methods=["POST"])
 def download():
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/download",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
     if not task_manager:
         return jsonify({"success": False, "message": "Not initialized"})
     success, msg = task_manager.start_task(
         run_download, (config.db_path, config), "Download Queue"
     )
     return jsonify({"success": success, "message": msg})
+
+
+@app.route("/api/download/albums/search", methods=["GET"])
+def search_download_albums():
+    """Search canonical MusicBrainz album releases on the master."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    query = request.args.get("q", "")
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            "/api/download/albums/search",
+            api_token=config.get("api_token") or "",
+            params={"q": query},
+        )
+        return jsonify(result.payload), result.status_code
+
+    from src import musicbrainz_client
+
+    try:
+        result = album_download_request_service.search_album_releases(
+            query,
+            search_releases=musicbrainz_client.search_releases,
+        )
+    except Exception as exc:
+        logger.warning("MusicBrainz album search failed: %s", exc)
+        return jsonify({
+            "success": False,
+            "message": "MusicBrainz album search is temporarily unavailable",
+        }), 502
+    return jsonify(result.payload), result.status_code
+
+
+@app.route("/api/download/albums/request", methods=["POST"])
+def request_download_album():
+    """Resolve one exact release again, then queue its canonical album query."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "body must be an object"}), 400
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/download/albums/request",
+            api_token=config.get("api_token") or "",
+            json_body=data,
+        )
+        return jsonify(result.payload), result.status_code
+
+    if config.get(
+        "auto_tag_downloads",
+        CONFIG_DEFAULT_VALUES["auto_tag_downloads"],
+    ) is False:
+        return jsonify({
+            "success": False,
+            "message": (
+                "Verified album downloads require auto_tag_downloads to be "
+                "enabled on the master."
+            ),
+        }), 409
+    acoustid_api_key = config.get("acoustid_api_key", "")
+    if not isinstance(acoustid_api_key, str) or not acoustid_api_key.strip():
+        return jsonify({
+            "success": False,
+            "message": (
+                "Verified album downloads require acoustid_api_key to be "
+                "configured on the master."
+            ),
+        }), 409
+
+    from src import musicbrainz_client
+
+    try:
+        resolved = album_download_request_service.resolve_album_release(
+            data.get("release_mbid"),
+            get_release_by_id=musicbrainz_client.get_release_by_id,
+        )
+    except Exception as exc:
+        logger.warning("MusicBrainz album resolution failed: %s", exc)
+        return jsonify({
+            "success": False,
+            "message": "MusicBrainz could not verify that release",
+        }), 502
+    if isinstance(
+        resolved,
+        album_download_request_service.AlbumRequestResult,
+    ):
+        return jsonify(resolved.payload), resolved.status_code
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            result = album_download_request_service.queue_album_request(
+                db,
+                resolved,
+                item_factory=DownloadItem,
+                music_library_dir=config.music_library,
+            )
+    except Exception as exc:
+        logger.error("Could not queue verified album request: %s", exc, exc_info=True)
+        return jsonify({
+            "success": False,
+            "message": "Could not persist the verified album request",
+        }), 500
+    return jsonify(result.payload), result.status_code
+
+
+@app.route("/api/download/albums/requests", methods=["GET"])
+def list_download_album_requests():
+    """Reconcile active server-persistent requests on any satellite browser."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            "/api/download/albums/requests",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
+    try:
+        with DatabaseManager(config.db_path) as db:
+            result = album_download_request_service.list_album_requests(
+                db,
+                music_library_dir=config.music_library,
+            )
+    except Exception as exc:
+        logger.error("Could not list album requests: %s", exc, exc_info=True)
+        return jsonify({
+            "success": False,
+            "message": "Could not list album requests",
+        }), 500
+    return jsonify(result.payload), result.status_code
+
+
+@app.route("/api/download/albums/requests/<int:request_id>", methods=["GET"])
+def get_download_album_request(request_id):
+    """Return persistent per-request progress, proxying from a satellite."""
+    if not config:
+        return jsonify({"success": False, "message": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            f"/api/download/albums/requests/{request_id}",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
+    try:
+        with DatabaseManager(config.db_path) as db:
+            result = album_download_request_service.album_request_status(
+                db,
+                request_id,
+                music_library_dir=config.music_library,
+            )
+    except Exception as exc:
+        logger.error("Could not read album request status: %s", exc, exc_info=True)
+        return jsonify({
+            "success": False,
+            "message": "Could not read album request status",
+        }), 500
+    return jsonify(result.payload), result.status_code
 
 
 @app.route("/api/download/request", methods=["POST"])
@@ -1678,13 +1875,24 @@ def request_download():
     """
     if not config:
         return jsonify({"success": False, "message": "Not initialized"}), 503
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "body must be an object"}), 400
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/download/request",
+            api_token=config.get("api_token") or "",
+            json_body=data,
+        )
+        return jsonify(result.payload), result.status_code
     authority_error = download_discovery_service.validate_download_authority(
         config.is_master
     )
     if authority_error is not None:
         return jsonify(authority_error.payload), authority_error.status_code
 
-    data = request.json or {}
     prepared = download_discovery_service.prepare_download_request(data)
     if isinstance(
         prepared,
@@ -2500,6 +2708,15 @@ def catalog_queue_download():
         download_discovery_service.DownloadDiscoveryResult,
     ):
         return jsonify(validated.payload), validated.status_code
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/catalog/queue-download",
+            api_token=config.get("api_token") or "",
+            json_body=data,
+        )
+        return jsonify(result.payload), result.status_code
 
     try:
         with DatabaseManager(config.db_path) as db:
@@ -2832,6 +3049,14 @@ def get_stats():
 def get_downloads_list():
     if not config:
         return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            "/api/downloads/list",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
     try:
         with DatabaseManager(config.db_path) as db:
             items = db.get_all_downloads()
@@ -2859,6 +3084,14 @@ def get_downloads_list():
 def retry_download_item(item_id):
     if not config:
         return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            f"/api/downloads/{item_id}/retry",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
     try:
         with DatabaseManager(config.db_path) as db:
             changed = db.retry_download(item_id)
@@ -2876,6 +3109,14 @@ def retry_download_item(item_id):
 def delete_download_item(item_id):
     if not config:
         return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "DELETE",
+            f"/api/downloads/{item_id}",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
     try:
         with DatabaseManager(config.db_path) as db:
             db.remove_from_queue(item_id)
@@ -2890,6 +3131,14 @@ def clear_completed_downloads():
     # underlying schema state is "success" (see db_manager).
     if not config:
         return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/downloads/clear-completed",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
     try:
         with DatabaseManager(config.db_path) as db:
             removed = db.delete_succeeded_downloads()

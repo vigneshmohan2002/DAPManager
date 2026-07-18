@@ -23,6 +23,12 @@ services:
     volumes:
       - ./config:/config
       - ./data:/data
+      # Optional when Jellyfin reads a separate host music directory. Mount
+      # that directory read-write here, then set
+      # jellyfin_music_library_path=/jellyfin-music in DAPManager config.
+      # - type: bind
+      #   source: C:/Users/you/Music Library
+      #   target: /jellyfin-music
     environment:
       DAPMANAGER_DEBUG: "0"
       # Optional: change the app's listening port inside the container.

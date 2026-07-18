@@ -12,6 +12,7 @@ import {
   type DownloadQueueItem,
 } from "../lib/api";
 import { relativeTime } from "../lib/time";
+import AlbumRequestPanel from "./downloads/AlbumRequestPanel";
 
 type Props = { ready: boolean };
 
@@ -58,7 +59,7 @@ export default function DownloadsScreen({ ready }: Props) {
     let cancelled = false;
     const tick = async () => {
       try {
-        const s = await fetchStatus();
+        const s = await fetchStatus("downloads");
         if (cancelled) return;
         setStatus(s);
         if (wasRunning.current && !s.running) load();
@@ -162,6 +163,8 @@ export default function DownloadsScreen({ ready }: Props) {
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar title="Downloads" subtitle={subtitle} />
       <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6">
+        <AlbumRequestPanel ready={ready} onQueueChanged={() => void load()} />
+
         <section className="flex items-center gap-3">
           <button
             onClick={onRunDownloader}

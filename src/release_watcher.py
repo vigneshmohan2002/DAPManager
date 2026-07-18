@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 def _build_search_query(album: Dict[str, Any]) -> str:
     artist = (album.get("artist") or {}).get("artistName") or ""
     title = album.get("title") or ""
-    return f"{artist} - {title}".strip(" -")
+    query = f"{artist} - {title}".strip(" -")
+    return f"::ALBUM:: {query}" if query else ""
 
 
 def run_watch_tick(

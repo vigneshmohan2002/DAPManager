@@ -65,6 +65,7 @@ class InitialConfigBase(TypedDict):
     remove_ft: bool
     desperate_mode: bool
     strict_quality: bool
+    auto_tag_downloads: bool
     is_master: bool
     device_role: DeviceRole
     acoustid_api_key: str
@@ -88,6 +89,7 @@ class InitialConfig(InitialConfigBase, total=False):
     jellyfin_url: str
     jellyfin_api_key: str
     jellyfin_user_id: str
+    jellyfin_music_library_path: str
     lidarr_enabled: bool
     lidarr_url: str
     lidarr_api_key: str
@@ -226,10 +228,13 @@ class TagMetadata(TypedDict, total=False):
     album: str
     title: str
     date: str
-    track_number: str
+    track_number: Union[str, int]
+    track_total: Union[str, int]
     disc_number: Union[str, int]
+    disc_total: Union[str, int]
     mbid: str
     release_mbid: str
+    release_track_mbid: str
 
 
 class TagCandidate(TypedDict):
