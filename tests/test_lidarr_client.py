@@ -171,6 +171,27 @@ def test_search_album_posts_command(client):
     assert kwargs["json"] == {"name": "AlbumSearch", "albumIds": [5]}
 
 
+def test_rescan_folders_posts_conservative_command(client):
+    post = MagicMock(return_value=_resp(201, {"id": 100}, text='{"id": 100}'))
+    with patch.object(client.session, "post", post):
+        result = client.rescan_folders([" /music ", "/music", ""])
+
+    assert result == {"id": 100}
+    _, kwargs = post.call_args
+    assert kwargs["json"] == {
+        "name": "RescanFolders",
+        "folders": ["/music"],
+        "filter": "known",
+        "addNewArtists": False,
+        "artistIds": [],
+    }
+
+
+def test_rescan_folders_requires_a_path(client):
+    with pytest.raises(ValueError):
+        client.rescan_folders(["", "  "])
+
+
 def test_ensure_album_monitored_adds_artist_and_searches(client):
     lookup_album = [
         {

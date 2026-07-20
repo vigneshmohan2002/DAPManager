@@ -49,6 +49,7 @@ FEATURE_CREDIT_SEPARATOR = re.compile(
 )
 SLDL_FAILURE_TAIL_LINES = 80
 SLDL_FAILURE_TAIL_CHARS = 12000
+DEFAULT_LIDARR_MUSIC_ROOT = "/music"
 
 
 @dataclass(frozen=True)
@@ -448,7 +449,16 @@ class Downloader:
 
         self.lidarr = lidarr_client
         self.lidarr_quality_profile_id = lidarr_quality_profile_id
-        self.lidarr_root_folder_path = lidarr_root_folder_path
+        self.lidarr_root_folder_path = (
+            str(lidarr_root_folder_path or "").strip() or None
+        )
+        # Rescanning an existing shared library does not opt queue items into
+        # Lidarr acquisition.  Keep the explicit handoff setting above
+        # separate, while using the compose-visible music root as the
+        # conservative rescan default.
+        self.lidarr_rescan_root_folder_path = (
+            self.lidarr_root_folder_path or DEFAULT_LIDARR_MUSIC_ROOT
+        )
         self.jellyfin_client = jellyfin_client
         self.jellyfin_music_library_dir = (
             (jellyfin_music_library_dir or "").strip() or None
@@ -646,6 +656,23 @@ class Downloader:
                     self._finish_item_staging_dir(item_staging_dir)
 
         report(f"Download queue finished. Success: {success_count}, Failed: {fail_count}")
+
+        if changed_file_count > 0 and self.lidarr:
+            report("Refreshing Lidarr library index...")
+            try:
+                self.lidarr.rescan_folders(
+                    [self.lidarr_rescan_root_folder_path],
+                    add_new_artists=False,
+                )
+            except Exception as e:
+                # Lidarr is an observer for files imported by DAPManager.  A
+                # failed sidecar refresh must not hide a successful import or
+                # prevent Jellyfin from seeing the same files.
+                logger.warning(
+                    "Lidarr library refresh failed: %s",
+                    e,
+                    exc_info=True,
+                )
 
         if changed_file_count > 0 and self.jellyfin_client:
             report("Triggering Jellyfin library scan...")

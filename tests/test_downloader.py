@@ -2517,6 +2517,98 @@ def test_run_queue_skips_sldl_when_lidarr_accepts(db, mock_scanner, temp_dirs):
     assert db.get_downloads(status="pending") == []
 
 
+def test_run_queue_rescans_lidarr_once_after_local_imports(
+    db, mock_scanner, temp_dirs
+):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="playlist",
+        mbid_guess="",
+    ))
+
+    with patch.object(dl, "_attempt_download", return_value=True), \
+         patch.object(dl, "_process_success", return_value=1):
+        dl.run_queue()
+
+    lidarr.rescan_folders.assert_called_once_with(
+        ["/music"],
+        add_new_artists=False,
+    )
+
+
+def test_lidarr_rescan_failure_does_not_block_jellyfin_refresh(
+    db, mock_scanner, temp_dirs
+):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    jellyfin = MagicMock()
+    dl.jellyfin_client = jellyfin
+    lidarr.rescan_folders.side_effect = RuntimeError("scan unavailable")
+    db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="playlist",
+        mbid_guess="",
+    ))
+
+    with patch.object(dl, "_attempt_download", return_value=True), \
+         patch.object(dl, "_process_success", return_value=1):
+        dl.run_queue()
+
+    lidarr.rescan_folders.assert_called_once_with(
+        ["/music"],
+        add_new_artists=False,
+    )
+    jellyfin.trigger_library_scan.assert_called_once_with()
+
+
+def test_run_queue_skips_lidarr_rescan_without_media_changes(
+    db, mock_scanner, temp_dirs
+):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="playlist",
+        mbid_guess="",
+    ))
+
+    with patch.object(dl, "_attempt_download", return_value=True), \
+         patch.object(dl, "_process_success", return_value=0):
+        dl.run_queue()
+
+    lidarr.rescan_folders.assert_not_called()
+
+
+def test_default_rescan_root_does_not_enable_lidarr_handoff(
+    db, mock_scanner, temp_dirs
+):
+    lidarr = MagicMock()
+    dl = Downloader(
+        db=db,
+        scanner=mock_scanner,
+        slsk_cmd_base=["slsk-batchdl"],
+        downloads_dir=temp_dirs["downloads"],
+        music_library_dir=temp_dirs["music_library"],
+        slsk_username="u",
+        slsk_password="p",
+        lidarr_client=lidarr,
+    )
+    db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="COMPLETER",
+        mbid_guess="release-group-mbid",
+    ))
+
+    with patch.object(dl, "_attempt_download", return_value=True), \
+         patch.object(dl, "_process_success", return_value=1):
+        dl.run_queue()
+
+    lidarr.ensure_album_monitored.assert_not_called()
+    lidarr.rescan_folders.assert_called_once_with(
+        ["/music"],
+        add_new_artists=False,
+    )
+
+
 # --- main_run_downloader / Lidarr client wiring ---------------------
 
 def test_build_lidarr_client_skipped_on_satellite():

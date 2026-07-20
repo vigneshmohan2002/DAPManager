@@ -247,6 +247,39 @@ class LidarrClient:
             {"name": "ArtistSearch", "artistId": artist_id},
         )
 
+    def rescan_folders(
+        self,
+        folders: List[str],
+        *,
+        add_new_artists: bool = False,
+    ) -> dict:
+        """Refresh Lidarr's catalog after another service changes its library.
+
+        DAPManager imports Soulseek files directly into the shared music
+        volume, outside Lidarr's download-client pipeline.  ``RescanFolders``
+        makes those on-disk changes visible to Lidarr.  New-artist discovery
+        is disabled by default so this notification cannot silently expand
+        Lidarr's monitored library; DAPManager keeps ownership of that choice.
+        """
+        normalized_folders = []
+        for folder in folders:
+            normalized = str(folder or "").strip()
+            if normalized and normalized not in normalized_folders:
+                normalized_folders.append(normalized)
+        if not normalized_folders:
+            raise ValueError("At least one Lidarr folder is required for a rescan")
+
+        return self._post(
+            "/command",
+            {
+                "name": "RescanFolders",
+                "folders": normalized_folders,
+                "filter": "known",
+                "addNewArtists": bool(add_new_artists),
+                "artistIds": [],
+            },
+        )
+
     # ---------- High-level helpers ----------
 
     def ensure_album_monitored(
