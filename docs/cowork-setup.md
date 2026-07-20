@@ -24,7 +24,9 @@ mint a one-hour, download-only URL rather than putting the API bearer in the QR.
 
 ## In the browser (human or computer-use)
 
-- Open `http://<host>:5001/` → a fresh install redirects to **`/setup`**.
+- On the master host, open `http://localhost:5001/`. From another tailnet
+  device, use the configured Tailscale Serve HTTPS URL. A fresh install
+  redirects to **`/setup`**.
 - The wizard: pick a **role** (Master / Satellite / Standalone), fill paths, and
   (satellite) the **Master URL**. Save → you land on the Dashboard.
 - **Settings** card (Dashboard) edits any config key — it renders from

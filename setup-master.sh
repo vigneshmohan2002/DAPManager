@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command master install for Linux / macOS hosts.
-# Detects Tailscale URL, starts all containers, wires Prowlarr → Lidarr,
+# Detects an existing Tailscale Serve URL, starts all containers, wires Prowlarr → Lidarr,
 # sets Lidarr root folder, and pushes credentials into DAPManager —
 # no browser tabs required for the core setup.
 #
@@ -10,7 +10,7 @@
 #
 # Override / tune via env:
 #   MASTER_PUBLIC_URL   skip Tailscale detection, use this URL
-#   MASTER_PORT         port in the composed URL           (default 5001)
+#   MASTER_PORT         local DAPManager port matched in Serve (default 5001)
 #   SLSK_USERNAME       Soulseek username
 #   SLSK_PASSWORD       Soulseek password
 #   JELLYFIN_URL        Jellyfin server URL                (optional)
@@ -64,21 +64,27 @@ ok "prerequisites OK"
 detect_tailscale_url() {
     command -v tailscale >/dev/null 2>&1 || { warn "tailscale CLI not on PATH"; return 1; }
     local json
-    json=$(tailscale status --json 2>/dev/null) || { warn "'tailscale status --json' failed (daemon down?)"; return 1; }
-    local host
-    host=$(printf '%s' "$json" | python3 -c '
+    json=$(tailscale serve status --json 2>/dev/null) || { warn "'tailscale serve status --json' failed"; return 1; }
+    local public_url
+    public_url=$(printf '%s' "$json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
-self_ = data.get("Self") or {}
-dns = (self_.get("DNSName") or "").rstrip(".")
-if dns:
-    print(dns); sys.exit(0)
-for ip in (self_.get("TailscaleIPs") or []):
-    if ":" not in ip:
-        print(ip); sys.exit(0)
+port = sys.argv[1]
+targets = {
+    f"http://127.0.0.1:{port}",
+    f"http://localhost:{port}",
+}
+for authority, site in sorted((data.get("Web") or {}).items()):
+    root = ((site or {}).get("Handlers") or {}).get("/") or {}
+    if str(root.get("Proxy") or "").rstrip("/") in targets:
+        print(f"https://{authority}")
+        sys.exit(0)
 sys.exit(1)
-') || { warn "no usable Tailscale identity (MagicDNS off and no IPv4?)"; return 1; }
-    printf 'http://%s:%s\n' "$host" "$MASTER_PORT"
+' "$MASTER_PORT") || {
+        warn "no root Tailscale Serve route proxies to http://127.0.0.1:$MASTER_PORT"
+        return 1
+    }
+    printf '%s\n' "$public_url"
 }
 
 if [ -z "${MASTER_PUBLIC_URL:-}" ]; then

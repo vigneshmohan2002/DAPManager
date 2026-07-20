@@ -53,13 +53,20 @@ prints if it's missing.
 ### Option B — Docker (recommended for a full master)
 
 Requires **Docker Desktop**. One command brings up DAPManager + Lidarr +
-Prowlarr, wires them together, and pushes credentials:
+Prowlarr, wires them together, and pushes credentials. The Compose topology
+publishes DAPManager on loopback only; first give it a tailnet-only HTTPS
+frontend on any unused Tailscale Serve port:
 
 ```powershell
-.\scripts\setup-master.ps1                       # auto-detects Tailscale URL
-# or, if Tailscale isn't detected:
-.\scripts\setup-master.ps1 -MasterPublicUrl http://yourhost:5001
+tailscale serve --bg --yes --https=10000 http://127.0.0.1:5001
+.\scripts\setup-master.ps1                       # detects the Serve URL
+# or provide that HTTPS URL explicitly:
+.\scripts\setup-master.ps1 -MasterPublicUrl https://yourhost.example.ts.net:10000
 ```
+
+Use an unused HTTPS port and keep this as **Serve**, not Funnel. The setup
+scripts accept any Serve port whose root route targets
+`http://127.0.0.1:5001`; ports 443 and 8443 are not assumed to be free.
 
 See the header of `scripts/setup-master.ps1` for all parameters (Soulseek /
 Jellyfin creds, ports, etc.) and `docker-compose.example.yml` for the compose

@@ -4,14 +4,13 @@
     can be onboarded without typing the master's address.
 
 .DESCRIPTION
-    Detects the host's Tailscale URL via 'tailscale status --json'
-    (Self.DNSName, then the IPv4 fallback), composes
-    http://<host>:<port>, exports MASTER_PUBLIC_URL into the process
-    env, and runs 'docker compose up -d' from the current directory.
+    Detects the host's Tailscale HTTPS URL from an existing root Serve route
+    that proxies to the loopback DAPManager port, exports MASTER_PUBLIC_URL
+    into the process env, and runs 'docker compose up -d'.
 
     Override env vars:
       MASTER_PUBLIC_URL   skip detection, use this URL verbatim
-      MASTER_PORT         listen port baked into the URL  (default 5001)
+      MASTER_PORT         local DAPManager port matched in Serve (default 5001)
       COMPOSE_FILE        compose file to launch          (default docker-compose.yml)
 
     POSIX hosts: use scripts/bootstrap-master.sh.
@@ -50,13 +49,13 @@ function Get-TailscaleUrl {
         return $null
     }
     try {
-        $raw = & $cli status --json 2>$null
+        $raw = & $cli serve status --json 2>$null
     } catch {
-        Write-Log "'tailscale status --json' failed (daemon down?)"
+        Write-Log "'tailscale serve status --json' failed"
         return $null
     }
     if (-not $raw) {
-        Write-Log "'tailscale status --json' returned nothing (daemon down?)"
+        Write-Log "'tailscale serve status --json' returned nothing"
         return $null
     }
     try {
@@ -65,20 +64,21 @@ function Get-TailscaleUrl {
         Write-Log "could not parse tailscale JSON output"
         return $null
     }
-    $self = $status.Self
-    if (-not $self) {
-        Write-Log "tailscale status missing Self block"
-        return $null
-    }
-    $dns = $self.DNSName
-    if ($dns) { $dns = $dns.TrimEnd('.') }
-    if ($dns) { return "http://$dns`:$MasterPort" }
-    foreach ($ip in @($self.TailscaleIPs)) {
-        if ($ip -and $ip -notmatch ':') {
-            return "http://$ip`:$MasterPort"
+    $targets = @(
+        "http://127.0.0.1:${MasterPort}",
+        "http://localhost:${MasterPort}"
+    )
+    if ($null -ne $status.Web) {
+        foreach ($site in @($status.Web.PSObject.Properties | Sort-Object Name)) {
+            $handlers = $site.Value.Handlers
+            if ($null -eq $handlers) { continue }
+            $root = $handlers.PSObject.Properties['/']
+            if ($null -eq $root) { continue }
+            $proxy = ([string]$root.Value.Proxy).TrimEnd('/')
+            if ($targets -contains $proxy) { return "https://$($site.Name)" }
         }
     }
-    Write-Log "no usable Tailscale identity (MagicDNS off + no IPv4?)"
+    Write-Log "no root Tailscale Serve route proxies to http://127.0.0.1:${MasterPort}"
     return $null
 }
 
@@ -92,8 +92,8 @@ if (-not $env:MASTER_PUBLIC_URL) {
 
 if (-not $env:MASTER_PUBLIC_URL) {
     Write-Log "MASTER_PUBLIC_URL is unset and Tailscale detection failed."
-    Write-Log "Set it manually and re-run, e.g.:"
-    Write-Log "  `$env:MASTER_PUBLIC_URL='http://your-host:$MasterPort'; .\scripts\bootstrap-master.ps1"
+    Write-Log "Configure Tailscale Serve for 127.0.0.1:$MasterPort or set the HTTPS URL manually, e.g.:"
+    Write-Log "  `$env:MASTER_PUBLIC_URL='https://your-host.example.ts.net:PORT'; .\scripts\bootstrap-master.ps1"
     exit 1
 }
 

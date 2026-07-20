@@ -4,9 +4,16 @@ Status: **shipped** (all six sub-stages, 9a–9f). This document is the retained
 design and delivery record; subsequent desktop work is tracked in
 [`desktop-rewrite.md`](desktop-rewrite.md).
 
+> **Current deployment security:** the Docker master now publishes port 5001
+> on `127.0.0.1` only and trusts one explicitly enabled local proxy hop. Remote
+> devices use a root Tailscale Serve HTTPS route targeting
+> `http://127.0.0.1:5001`. The historical HTTP/Tailscale-detection discussion
+> below records the original Stage 9 design; current bootstrap scripts discover
+> an existing Serve route instead of advertising the loopback port directly.
+
 The goal is a two-click satellite onboarding flow:
 
-1. On a fresh Mac, visit `http://<master-tailscale>:5001/` in a
+1. On a fresh Mac, visit the master's Tailscale Serve HTTPS URL in a
    browser. The download page hands you a `.app.zip` and a copy-link.
 2. Drag `DAPManager.app` into `/Applications`, right-click → Open the
    first time (unsigned). The app launches, finds itself already

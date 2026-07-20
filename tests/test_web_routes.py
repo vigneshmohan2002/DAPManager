@@ -1954,6 +1954,108 @@ def test_browser_login_cookie_authenticates_ui_and_api(
     assert api.status_code == 200
 
 
+def test_proxy_trust_requires_explicit_literal_one():
+    assert web_server._trust_one_proxy_hop({}) is False
+    assert web_server._trust_one_proxy_hop({"DAPMANAGER_TRUST_PROXY": ""}) is False
+    assert web_server._trust_one_proxy_hop({"DAPMANAGER_TRUST_PROXY": "true"}) is False
+    assert web_server._trust_one_proxy_hop({"DAPMANAGER_TRUST_PROXY": "1"}) is True
+
+
+def test_https_proxy_login_sets_secure_cookie(
+    client, _token_config, monkeypatch
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    original_wsgi_app = web_server.app.wsgi_app
+    web_server.app.wsgi_app = web_server._proxy_aware_wsgi_app(original_wsgi_app)
+    try:
+        login = client.post(
+            '/auth',
+            data={'token': 'secret-xyz', 'next': '/satellite'},
+            headers={
+                'X-Forwarded-Proto': 'https',
+                'X-Forwarded-Host': 'master.example.ts.net:10000',
+                'X-Forwarded-Port': '10000',
+            },
+            follow_redirects=False,
+        )
+    finally:
+        web_server.app.wsgi_app = original_wsgi_app
+
+    assert login.status_code == 302
+    assert login.headers['Location'] == '/satellite'
+    cookie = login.headers['Set-Cookie']
+    assert 'Secure' in cookie
+    assert 'HttpOnly' in cookie
+    assert 'SameSite=Strict' in cookie
+
+
+def test_cookie_mutation_accepts_same_https_origin_behind_one_proxy(
+    client, _token_config, monkeypatch
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    original_wsgi_app = web_server.app.wsgi_app
+    web_server.app.wsgi_app = web_server._proxy_aware_wsgi_app(original_wsgi_app)
+    forwarded = {
+        'X-Forwarded-Proto': 'https',
+        'X-Forwarded-Host': 'master.example.ts.net:10000',
+        'X-Forwarded-Port': '10000',
+    }
+    try:
+        login = client.post(
+            '/auth',
+            data={'token': 'secret-xyz', 'next': '/'},
+            headers=forwarded,
+            follow_redirects=False,
+        )
+        assert login.status_code == 302
+
+        response = client.post(
+            '/api/suggestions',
+            json={'items': []},
+            headers={
+                **forwarded,
+                'Origin': 'https://master.example.ts.net:10000',
+            },
+        )
+    finally:
+        web_server.app.wsgi_app = original_wsgi_app
+
+    assert response.status_code == 200
+    assert response.get_json()['success'] is True
+
+
+def test_cookie_mutation_still_rejects_cross_origin_behind_one_proxy(
+    client, _token_config, monkeypatch
+):
+    monkeypatch.setattr('web_server.config_exists', lambda: True)
+    original_wsgi_app = web_server.app.wsgi_app
+    web_server.app.wsgi_app = web_server._proxy_aware_wsgi_app(original_wsgi_app)
+    forwarded = {
+        'X-Forwarded-Proto': 'https',
+        'X-Forwarded-Host': 'master.example.ts.net:10000',
+        'X-Forwarded-Port': '10000',
+    }
+    try:
+        login = client.post(
+            '/auth',
+            data={'token': 'secret-xyz', 'next': '/'},
+            headers=forwarded,
+            follow_redirects=False,
+        )
+        assert login.status_code == 302
+
+        response = client.post(
+            '/api/suggestions',
+            json={'items': []},
+            headers={**forwarded, 'Origin': 'https://evil.example'},
+        )
+    finally:
+        web_server.app.wsgi_app = original_wsgi_app
+
+    assert response.status_code == 403
+    assert 'same-origin' in response.get_json()['message']
+
+
 def test_ui_query_token_bootstraps_cookie_then_strips_secret(
     client, _token_config, monkeypatch
 ):

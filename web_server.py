@@ -3,6 +3,7 @@ import json
 import logging
 from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.config_paths import resolve_config_path
 from src.services import album_task_service
@@ -62,7 +63,36 @@ logger = logging.getLogger(__name__)
 # ... (Previous imports are fine, but imports that depend on config might fail if config is missing)
 # We need to wrap imports or loading of config-dependent modules
 
+TRUST_PROXY_ENV = "DAPMANAGER_TRUST_PROXY"
+
+
+def _trust_one_proxy_hop(environment=None) -> bool:
+    """Whether this deployment explicitly trusts one local reverse proxy.
+
+    Proxy headers are a deployment trust boundary, not an end-user setting.
+    Keep the opt-in deliberately strict: only the literal value ``1`` enables
+    it.  The Docker topology that sets this flag publishes the backend on
+    127.0.0.1 only, so an untrusted network client cannot send forged
+    X-Forwarded-* headers directly to Flask.
+    """
+    values = os.environ if environment is None else environment
+    return values.get(TRUST_PROXY_ENV) == "1"
+
+
+def _proxy_aware_wsgi_app(wsgi_app):
+    """Trust exactly one hop for the fields Tailscale Serve supplies."""
+    return ProxyFix(
+        wsgi_app,
+        x_for=1,
+        x_proto=1,
+        x_host=1,
+        x_port=1,
+    )
+
+
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
+if _trust_one_proxy_hop():
+    app.wsgi_app = _proxy_aware_wsgi_app(app.wsgi_app)
 
 # Check if config exists
 CONFIG_FILE = resolve_config_path()

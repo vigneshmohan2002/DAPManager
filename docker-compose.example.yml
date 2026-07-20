@@ -19,7 +19,11 @@ services:
     container_name: dapmanager
     restart: unless-stopped
     ports:
-      - "5001:5001"
+      # The web app trusts one hop of X-Forwarded-* headers below, so its
+      # unproxied HTTP port must not be reachable from the LAN/tailnet.
+      # Point a local reverse proxy (for example Tailscale Serve) at
+      # http://127.0.0.1:5001 and publish that proxy's HTTPS URL instead.
+      - "127.0.0.1:5001:5001"
     volumes:
       - ./config:/config
       - ./data:/data
@@ -31,12 +35,15 @@ services:
       #   target: /jellyfin-music
     environment:
       DAPMANAGER_DEBUG: "0"
+      # Safe only with the loopback-only port publication above. This lets
+      # Flask issue Secure cookies and compare HTTPS browser origins correctly
+      # after TLS is terminated by one local reverse proxy.
+      DAPMANAGER_TRUST_PROXY: "1"
       # Optional: change the app's listening port inside the container.
       # DAPMANAGER_PORT: "5001"
-      # Public URL satellites use to reach this master. Populated by
-      # scripts/bootstrap-master.{sh,ps1} from the host's Tailscale
-      # state; passes through empty if unset, in which case the setup
-      # wizard prompts for it manually.
+      # Public HTTPS URL satellites use to reach this master. The bootstrap
+      # scripts can discover it from an existing root Tailscale Serve route;
+      # otherwise pass MASTER_PUBLIC_URL explicitly.
       MASTER_PUBLIC_URL: ${MASTER_PUBLIC_URL:-}
 
   # Lidarr + Prowlarr ride the `arr` profile: they only start when you

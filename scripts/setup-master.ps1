@@ -8,7 +8,7 @@
     native PowerShell script that works on any Windows host with Docker Desktop.
 
     What it does (in order):
-      1. Detect the host's Tailscale URL (or accept one via -MasterPublicUrl).
+      1. Detect an existing Tailscale Serve HTTPS URL (or accept one via -MasterPublicUrl).
       2. Copy docker-compose.example.yml → docker-compose.yml on first run.
       3. Start all containers: dapmanager + lidarr + prowlarr (--profile arr).
       4. Wait for every service to pass its health/ping endpoint.
@@ -30,11 +30,11 @@
                                when not provided so the wizard path stays clean)
 
 .PARAMETER MasterPublicUrl
-    Override the Tailscale-detected URL, e.g. http://mybox:5001.
-    Mandatory when Tailscale isn't installed or detection fails.
+    Override the Tailscale Serve URL, e.g. https://mybox.example.ts.net:10000.
+    Mandatory when no root Serve route targets the local DAPManager port.
 
 .PARAMETER MasterPort
-    Port used when composing the Tailscale URL. Default 5001.
+    Local DAPManager port matched in the Tailscale Serve config. Default 5001.
 
 .PARAMETER SlskUsername
     Soulseek username. Falls back to $env:SLSK_USERNAME, then prompts.
@@ -88,7 +88,7 @@
     .\scripts\setup-master.ps1
 
 .EXAMPLE
-    .\scripts\setup-master.ps1 -MasterPublicUrl "http://100.99.1.2:5001" -SkipArr
+    .\scripts\setup-master.ps1 -MasterPublicUrl "https://mybox.example.ts.net:10000" -SkipArr
 #>
 
 [CmdletBinding()]
@@ -143,19 +143,25 @@ function Get-TailscaleUrl {
     }
     if (-not $cli) { Warn "tailscale CLI not found — set -MasterPublicUrl manually"; return $null }
 
-    try { $raw = & $cli status --json 2>$null } catch { Warn "tailscale status failed"; return $null }
-    if (-not $raw) { Warn "tailscale status returned nothing (daemon down?)"; return $null }
-    try { $status = $raw | ConvertFrom-Json -ErrorAction Stop } catch { Warn "could not parse tailscale JSON"; return $null }
+    try { $raw = & $cli serve status --json 2>$null } catch { Warn "tailscale serve status failed"; return $null }
+    if (-not $raw) { Warn "tailscale serve status returned nothing"; return $null }
+    try { $status = $raw | ConvertFrom-Json -ErrorAction Stop } catch { Warn "could not parse Tailscale Serve JSON"; return $null }
 
-    $self = $status.Self
-    if (-not $self) { Warn "tailscale Self block missing"; return $null }
-
-    $dns = ($self.DNSName -replace '\.$', '')
-    if ($dns) { return "http://${dns}:${MasterPort}" }
-    foreach ($ip in @($self.TailscaleIPs)) {
-        if ($ip -and $ip -notmatch ':') { return "http://${ip}:${MasterPort}" }
+    $targets = @(
+        "http://127.0.0.1:${MasterPort}",
+        "http://localhost:${MasterPort}"
+    )
+    if ($null -ne $status.Web) {
+        foreach ($site in @($status.Web.PSObject.Properties | Sort-Object Name)) {
+            $handlers = $site.Value.Handlers
+            if ($null -eq $handlers) { continue }
+            $root = $handlers.PSObject.Properties['/']
+            if ($null -eq $root) { continue }
+            $proxy = ([string]$root.Value.Proxy).TrimEnd('/')
+            if ($targets -contains $proxy) { return "https://$($site.Name)" }
+        }
     }
-    Warn "no usable Tailscale identity (MagicDNS off and no IPv4?)"
+    Warn "no root Tailscale Serve route proxies to http://127.0.0.1:${MasterPort}"
     return $null
 }
 
