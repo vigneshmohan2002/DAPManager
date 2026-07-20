@@ -14,6 +14,7 @@ from src.services.album_download_request_service import (
     inspect_release_inventory,
     queue_album_request,
     resolve_album_release,
+    resolve_exact_release,
     search_album_releases,
 )
 
@@ -48,6 +49,7 @@ def _release(
     artist="Artist",
     tracks=10,
     primary_type="Album",
+    status="Official",
 ):
     recording_mbids = MANIFEST[:tracks]
     return {
@@ -80,7 +82,7 @@ def _release(
         }] if tracks else []),
         "date": "2026-01-02",
         "country": "XW",
-        "status": "Official",
+        "status": status,
         "release-group": {"primary-type": primary_type},
         "ext:score": "99",
     }
@@ -179,6 +181,72 @@ def test_resolve_rechecks_exact_release_and_rejects_non_album_or_no_tracks():
     assert isinstance(repeated, AlbumRequestResult)
     assert repeated.status_code == 409
     assert "repeats" in repeated.payload["message"]
+
+
+def test_exact_release_accepts_official_album_ep_and_single_types():
+    for primary_type in ("Album", "EP", "Single"):
+        resolved = resolve_exact_release(
+            RELEASE_ID,
+            get_release_by_id=lambda *a, primary_type=primary_type, **k: {
+                "release": _release(primary_type=primary_type)
+            },
+        )
+        assert isinstance(resolved, ResolvedAlbum)
+        assert resolved.primary_type == primary_type
+
+
+def test_exact_release_requires_official_but_album_web_flow_preserves_status_policy():
+    lookup = lambda *a, **k: {
+        "release": _release(status="Promotion")
+    }
+
+    exact = resolve_exact_release(RELEASE_ID, get_release_by_id=lookup)
+    assert exact == AlbumRequestResult(
+        {"success": False, "message": "The selected release is not official"},
+        400,
+    )
+
+    explicit_nonofficial = resolve_exact_release(
+        RELEASE_ID,
+        get_release_by_id=lookup,
+        require_official=False,
+    )
+    assert isinstance(explicit_nonofficial, ResolvedAlbum)
+
+    web_album = resolve_album_release(RELEASE_ID, get_release_by_id=lookup)
+    assert isinstance(web_album, ResolvedAlbum)
+
+
+def test_exact_release_type_policy_is_explicit_and_album_wrapper_stays_album_only():
+    ep_lookup = lambda *a, **k: {
+        "release": _release(primary_type="EP")
+    }
+    exact_ep = resolve_exact_release(
+        RELEASE_ID,
+        get_release_by_id=ep_lookup,
+        allowed_primary_types=(" ep ",),
+    )
+    assert isinstance(exact_ep, ResolvedAlbum)
+
+    album_only = resolve_album_release(
+        RELEASE_ID,
+        get_release_by_id=ep_lookup,
+    )
+    assert album_only == AlbumRequestResult(
+        {"success": False, "message": "The selected release is not an album"},
+        400,
+    )
+
+    try:
+        resolve_exact_release(
+            RELEASE_ID,
+            get_release_by_id=ep_lookup,
+            allowed_primary_types=("Broadcast",),
+        )
+    except ValueError as exc:
+        assert "unsupported" in str(exc)
+    else:
+        raise AssertionError("unsupported release types must fail closed")
 
 
 def test_queue_uses_only_resolved_identity_and_returns_persistent_tracker():

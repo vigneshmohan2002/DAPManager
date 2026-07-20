@@ -41,6 +41,7 @@ ALBUM_QUERY_PREFIX = "::ALBUM::"
 MAX_SEARCH_RESULTS = 8
 MAX_TRACKED_REQUESTS = 30
 LIDARR_IMPORT_STALE_SECONDS = 6 * 60 * 60
+EXACT_RELEASE_PRIMARY_TYPES = frozenset({"album", "ep", "single"})
 _SEARCH_SPLIT_RE = re.compile(r"\s+(?:-|\N{EN DASH}|\N{EM DASH})\s+", re.UNICODE)
 
 
@@ -573,11 +574,40 @@ def search_album_releases(
     })
 
 
-def resolve_album_release(
+def _allowed_primary_types(values: Sequence[str]) -> frozenset[str]:
+    if isinstance(values, str):
+        values = (values,)
+    normalized = frozenset(
+        str(value or "").strip().casefold()
+        for value in values
+        if str(value or "").strip()
+    )
+    if not normalized:
+        raise ValueError("allowed_primary_types cannot be empty")
+    unsupported = normalized - EXACT_RELEASE_PRIMARY_TYPES
+    if unsupported:
+        raise ValueError(
+            "unsupported exact release primary type(s): "
+            + ", ".join(sorted(unsupported))
+        )
+    return normalized
+
+
+def resolve_exact_release(
     raw_release_mbid: Any,
     *,
     get_release_by_id: GetRelease,
+    allowed_primary_types: Sequence[str] = ("Album", "EP", "Single"),
+    require_official: bool = True,
 ) -> Union[ResolvedAlbum, AlbumRequestResult]:
+    """Resolve one exact MusicBrainz release and validate its full manifest.
+
+    Exact operational migrations can safely include official albums, EPs, and
+    singles.  The normal browser request remains album-only through
+    :func:`resolve_album_release` below.  Callers that deliberately handle a
+    non-official release must opt out explicitly.
+    """
+    allowed_types = _allowed_primary_types(allowed_primary_types)
     mbid = canonical_release_mbid(raw_release_mbid)
     if not mbid:
         return AlbumRequestResult(
@@ -595,9 +625,18 @@ def resolve_album_release(
             {"success": False, "message": "MusicBrainz release was incomplete"},
             502,
         )
-    if album.primary_type.casefold() != "album":
+    if album.primary_type.casefold() not in allowed_types:
+        if allowed_types == {"album"}:
+            message = "The selected release is not an album"
+        else:
+            message = "The selected release type is not allowed"
         return AlbumRequestResult(
-            {"success": False, "message": "The selected release is not an album"},
+            {"success": False, "message": message},
+            400,
+        )
+    if require_official and album.status.casefold() != "official":
+        return AlbumRequestResult(
+            {"success": False, "message": "The selected release is not official"},
             400,
         )
     if album.track_count <= 0:
@@ -662,6 +701,22 @@ def resolve_album_release(
             409,
         )
     return album
+
+
+def resolve_album_release(
+    raw_release_mbid: Any,
+    *,
+    get_release_by_id: GetRelease,
+) -> Union[ResolvedAlbum, AlbumRequestResult]:
+    """Resolve the album-only release type accepted by the public web flow."""
+    return resolve_exact_release(
+        raw_release_mbid,
+        get_release_by_id=get_release_by_id,
+        allowed_primary_types=("Album",),
+        # Preserve existing web behavior: exact release requests historically
+        # accepted MusicBrainz statuses other than Official.
+        require_official=False,
+    )
 
 
 def _manifest_signature(
