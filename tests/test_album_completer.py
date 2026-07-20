@@ -8,6 +8,7 @@ from src.album_completer import (
     _build_album_queue_plan,
     _build_missing_album_details,
     _execute_album_discovery_plan,
+    _select_release,
     fetch_album_tracklist,
     get_missing_tracks_for_album,
     queue_missing_tracks_for_album,
@@ -298,6 +299,86 @@ def test_queue_skips_already_queued(db):
 # discover_album_for_track
 # ---------------------------------------------------------------------------
 
+def test_select_release_matches_normalized_album_title():
+    matching = {
+        "id": "album-release",
+        "title": "We’re Here – Deluxe",
+        "status": "Promotion",
+    }
+    releases = [
+        {
+            "id": "unrelated-official",
+            "title": "We're Here (Live)",
+            "status": "Official",
+        },
+        matching,
+    ]
+
+    assert _select_release(
+        releases,
+        "  WE'RE   HERE - DELUXE  ",
+    ) is matching
+
+
+def test_select_release_rejects_unrelated_candidates_when_hint_present():
+    releases = [
+        {
+            "id": "unrelated-single",
+            "title": "Lead Single",
+            "status": "Official",
+        },
+        {
+            "id": "unrelated-live",
+            "title": "Album Name: Live at Home",
+            "status": "Official",
+        },
+    ]
+
+    assert _select_release(releases, "Album Name") is None
+
+
+def test_select_release_rejects_ambiguous_same_title_candidates():
+    releases = [
+        {
+            "id": "album-edition",
+            "title": "Shared Name",
+            "status": "Official",
+        },
+        {
+            "id": "same-named-single",
+            "title": "shared name",
+            "status": "Official",
+        },
+    ]
+
+    assert _select_release(releases, "Shared Name") is None
+
+
+def test_select_release_does_not_fallback_for_punctuation_only_hint():
+    releases = [
+        {"id": "unrelated", "title": "Official Album", "status": "Official"}
+    ]
+
+    assert _select_release(releases, "---") is None
+
+
+def test_select_release_without_hint_keeps_legacy_official_fallback():
+    official = {"id": "official", "title": "Album", "status": "Official"}
+    releases = [
+        {"id": "bootleg", "title": "Bootleg", "status": "Bootleg"},
+        official,
+    ]
+
+    assert _select_release(releases) is official
+    assert _select_release(releases, "   ") is official
+
+
+def test_select_release_without_hint_uses_first_when_none_are_official():
+    first = {"id": "first", "title": "First", "status": "Promotion"}
+
+    assert _select_release([first, {"id": "second"}]) is first
+
+
 def test_discover_album_success(db):
     with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb:
         mock_mb.get_recording_by_id.return_value = {
@@ -323,6 +404,36 @@ def test_discover_album_no_releases(db):
             "recording": {"release-list": []}
         }
         assert discover_album_for_track(db, "rec_1") is None
+
+
+def test_discover_album_rejects_unmatched_hint_without_writes(db):
+    with patch("src.musicbrainz_client.musicbrainzngs") as mock_mb, \
+         patch.object(db, "update_album_metadata") as update_album:
+        mock_mb.get_recording_by_id.return_value = {
+            "recording": {
+                "release-list": [
+                    {
+                        "id": "single-release",
+                        "title": "Unrelated Single",
+                        "status": "Official",
+                    },
+                    {
+                        "id": "live-release",
+                        "title": "Unrelated Live",
+                        "status": "Official",
+                    },
+                ]
+            }
+        }
+
+        assert discover_album_for_track(
+            db,
+            "rec_1",
+            album_hint="Expected Album",
+        ) is None
+
+    mock_mb.get_release_by_id.assert_not_called()
+    update_album.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

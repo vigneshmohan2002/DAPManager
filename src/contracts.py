@@ -91,6 +91,7 @@ class InitialConfig(InitialConfigBase, total=False):
     jellyfin_user_id: str
     jellyfin_music_library_path: str
     lidarr_enabled: bool
+    lidarr_acquisition_handoff_enabled: bool
     lidarr_url: str
     lidarr_api_key: str
 

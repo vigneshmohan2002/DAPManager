@@ -1424,11 +1424,14 @@ def test_get_config_redacts_secrets(client, mock_config, tmp_path, monkeypatch):
     # Legacy files are presented through canonical role semantics.
     assert data["config"]["device_role"] == "master"
     assert data["config"]["is_master"] is True
+    assert data["config"]["lidarr_acquisition_handoff_enabled"] is False
     assert "slsk_password" in data["secret_keys"]
     # bool_keys + groups shipped so the desktop Settings dialog reads
     # them from the single config_keys.py source rather than drifting
     # like the web dashboard's hardcoded JS copy did.
     assert "report_inventory_to_host" in data["bool_keys"]
+    assert "lidarr_acquisition_handoff_enabled" in data["bool_keys"]
+    assert "lidarr_acquisition_handoff_enabled" in data["editable_keys"]
     assert "is_master" not in data["editable_keys"]
     assert "is_master" not in data["bool_keys"]
     assert isinstance(data["groups"], list) and data["groups"]

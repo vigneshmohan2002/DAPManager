@@ -153,6 +153,11 @@ def test_script_validates_the_versioned_envelope_before_writing():
         source,
         re.IGNORECASE | re.DOTALL,
     )
+    assert re.search(
+        r"\$BooleanKeys\s*=.*?['\"]lidarr_acquisition_handoff_enabled['\"]",
+        source,
+        re.IGNORECASE | re.DOTALL,
+    )
 
 
 def test_script_uses_atomic_bom_free_replace_with_a_backup():

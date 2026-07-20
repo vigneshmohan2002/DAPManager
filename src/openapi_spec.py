@@ -465,6 +465,13 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                         "lidarr_url": {"type": "string"},
                         "lidarr_api_key": {"type": "string"},
                         "lidarr_enabled": {"type": "boolean"},
+                        "lidarr_acquisition_handoff_enabled": {
+                            "type": "boolean",
+                            "description": (
+                                "Explicitly allow non-satellite album queue "
+                                "entries to be handed to Lidarr for acquisition"
+                            ),
+                        },
                         "acoustid_api_key": {"type": "string"},
                         "contact_email": {"type": "string"},
                     },

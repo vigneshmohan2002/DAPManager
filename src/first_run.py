@@ -107,6 +107,7 @@ def build_initial_config(
     lidarr_url: str = "",
     lidarr_api_key: str = "",
     lidarr_enabled: bool = False,
+    lidarr_acquisition_handoff_enabled: bool = False,
     acoustid_api_key: str = "",
     contact_email: str = "",
     report_inventory_to_host: bool = False,
@@ -155,6 +156,9 @@ def build_initial_config(
             "jellyfin_user_id": jellyfin_user_id,
             "jellyfin_music_library_path": jellyfin_music_library_path,
             "lidarr_enabled": bool(lidarr_enabled),
+            "lidarr_acquisition_handoff_enabled": (
+                lidarr_acquisition_handoff_enabled is True
+            ),
             "lidarr_url": lidarr_url,
             "lidarr_api_key": lidarr_api_key,
             "master_url": "",

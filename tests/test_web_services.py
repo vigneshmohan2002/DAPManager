@@ -86,6 +86,18 @@ def test_build_public_config_applies_defaults_and_redacts_secrets():
     assert payload["config"]["slsk_password"] == ""
     assert payload["config"]["device_role"] == "master"
     assert "library_maintenance_interval_seconds" in payload["config"]
+    assert payload["config"]["lidarr_acquisition_handoff_enabled"] is False
+    assert "lidarr_acquisition_handoff_enabled" in payload["editable_keys"]
+    assert "lidarr_acquisition_handoff_enabled" in payload["bool_keys"]
+    lidarr_groups = [
+        group for group in payload["groups"]
+        if group["label"] == "Lidarr Sidecar (master only)"
+    ]
+    assert len(lidarr_groups) == 1
+    assert (
+        "lidarr_acquisition_handoff_enabled"
+        in lidarr_groups[0]["keys"]
+    )
     assert "slsk_password" in payload["secret_keys"]
 
 
@@ -126,6 +138,7 @@ def test_build_first_run_config_filters_fields_and_owns_database_path(tmp_path):
         {
             "role": " SATELLITE ",
             "music_library_path": "/music",
+            "lidarr_acquisition_handoff_enabled": True,
             "database_file": "/client-selected.db",
         },
         builder,
@@ -135,6 +148,7 @@ def test_build_first_run_config_filters_fields_and_owns_database_path(tmp_path):
         "satellite",
         database_file=str(target.with_name("dap_library.db")),
         music_library_path="/music",
+        lidarr_acquisition_handoff_enabled=True,
     )
     assert result["device_role"] == "satellite"
     assert result["is_master"] is False

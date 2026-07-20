@@ -4,6 +4,7 @@ incomplete albums, and queues missing songs for download.
 """
 
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -128,27 +129,49 @@ def fetch_album_tracklist(release_mbid: str) -> AlbumTracklist:
         return {}
 
 
+def _normalize_album_title(value: Any) -> str:
+    """Normalize title presentation without broadening semantic identity."""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    punctuation_spaced = "".join(
+        " "
+        if character.isspace()
+        or unicodedata.category(character).startswith("P")
+        else character
+        for character in normalized
+    )
+    return " ".join(punctuation_spaced.split())
+
+
 def _select_release(
     releases: List[dict], album_hint: str = ""
 ) -> Optional[dict]:
-    """Choose the same preferred release without performing any writes."""
-    target = None
-    clean_hint = (album_hint or "").strip().lower()
-    if clean_hint:
-        for release in releases:
-            if release.get("title", "").strip().lower() == clean_hint:
-                target = release
-                break
+    """Choose a release only when it is trustworthy for the supplied hint.
 
-    if not target:
-        for release in releases:
-            if release.get("status", "").lower() == "official":
-                target = release
-                break
+    A non-empty album tag is an identity constraint: if none of the recording's
+    releases has the same normalized title, selecting an arbitrary official
+    release can attach the track to an unrelated single, live release, or
+    compilation.  The official/first fallback remains only for legacy orphan
+    files with no usable album tag, where there is no title constraint.
+    """
+    raw_hint = str(album_hint or "").strip()
+    if raw_hint:
+        clean_hint = _normalize_album_title(raw_hint)
+        matches = [
+            release
+            for release in releases
+            if clean_hint
+            and _normalize_album_title(release.get("title", "")) == clean_hint
+        ]
+        # A title alone cannot distinguish editions, or a same-named single
+        # from an album.  Refuse to seed an arbitrary release identity when
+        # MusicBrainz gives us more than one candidate.
+        return matches[0] if len(matches) == 1 else None
 
-    if not target and releases:
-        target = releases[0]
-    return target
+    for release in releases:
+        if str(release.get("status") or "").casefold() == "official":
+            return release
+
+    return releases[0] if releases else None
 
 
 def _build_album_discovery_plan(

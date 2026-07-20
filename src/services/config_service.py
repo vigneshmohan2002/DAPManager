@@ -26,6 +26,7 @@ FIRST_RUN_FIELDS = frozenset({
     "jellyfin_url", "jellyfin_api_key", "jellyfin_user_id",
     "jellyfin_music_library_path",
     "lidarr_url", "lidarr_api_key", "lidarr_enabled",
+    "lidarr_acquisition_handoff_enabled",
     "acoustid_api_key", "contact_email",
     "report_inventory_to_host", "contribute_to_host",
     "fast_search", "remove_ft", "desperate_mode", "strict_quality",

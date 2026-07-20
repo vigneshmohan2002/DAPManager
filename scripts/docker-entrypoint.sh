@@ -29,6 +29,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
     "jellyfin_api_key": "",
     "jellyfin_user_id": "",
     "lidarr_enabled": false,
+    "lidarr_acquisition_handoff_enabled": false,
     "lidarr_url": "",
     "lidarr_api_key": "",
     "lidarr_quality_profile_id": null,

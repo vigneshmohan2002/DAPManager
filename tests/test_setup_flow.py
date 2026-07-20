@@ -36,6 +36,7 @@ def test_save_config_master_matches_build_initial_config(client, fresh_config):
         "jellyfin_api_key": "jk",
         "jellyfin_user_id": "ju",
         "lidarr_enabled": True,
+        "lidarr_acquisition_handoff_enabled": True,
         "lidarr_url": "http://lidarr:8686",
         "lidarr_api_key": "lk",
         "acoustid_api_key": "ak",
@@ -61,6 +62,9 @@ def test_save_config_master_matches_build_initial_config(client, fresh_config):
         jellyfin_api_key=payload["jellyfin_api_key"],
         jellyfin_user_id=payload["jellyfin_user_id"],
         lidarr_enabled=payload["lidarr_enabled"],
+        lidarr_acquisition_handoff_enabled=(
+            payload["lidarr_acquisition_handoff_enabled"]
+        ),
         lidarr_url=payload["lidarr_url"],
         lidarr_api_key=payload["lidarr_api_key"],
         acoustid_api_key=payload["acoustid_api_key"],

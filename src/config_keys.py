@@ -35,6 +35,7 @@ DEFAULT_VALUES: Final[Dict[str, ConfigValue]] = {
     "auto_tag_downloads": True,
     "artist_tag_max_age_days": 30,
     "jellyfin_music_library_path": "",
+    "lidarr_acquisition_handoff_enabled": False,
     "library_maintenance_interval_seconds": 604800,
     "library_maintenance_on_startup": False,
 }
@@ -72,6 +73,7 @@ EDITABLE_KEYS: Final[FrozenSet[str]] = frozenset({
     "library_maintenance_on_startup",
     "artist_tag_max_age_days",
     "lidarr_enabled",
+    "lidarr_acquisition_handoff_enabled",
     "lidarr_url",
     "lidarr_api_key",
     "lidarr_quality_profile_id",
@@ -91,6 +93,7 @@ BOOL_KEYS: Final[FrozenSet[str]] = frozenset({
     "sync_on_startup",
     "library_maintenance_on_startup",
     "lidarr_enabled",
+    "lidarr_acquisition_handoff_enabled",
     "lidarr_watch_enabled",
 })
 
@@ -142,6 +145,7 @@ GROUPS: Final[List[ConfigGroup]] = [
     ]),
     ("Lidarr Sidecar (master only)", [
         "lidarr_enabled",
+        "lidarr_acquisition_handoff_enabled",
         "lidarr_url",
         "lidarr_api_key",
         "lidarr_quality_profile_id",

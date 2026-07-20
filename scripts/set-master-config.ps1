@@ -55,7 +55,11 @@ $StringKeys = @(
     'lidarr_url',
     'lidarr_api_key'
 )
-$BooleanKeys = @('lidarr_enabled', 'auto_tag_downloads')
+$BooleanKeys = @(
+    'lidarr_enabled',
+    'lidarr_acquisition_handoff_enabled',
+    'auto_tag_downloads'
+)
 $SecretKeys = @(
     'slsk_password',
     'jellyfin_api_key',

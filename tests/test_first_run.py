@@ -62,6 +62,7 @@ def test_master_payload_flags_master_and_keeps_creds():
     assert cfg["auto_tag_downloads"] is True
     assert cfg["library_maintenance_interval_seconds"] == 604800
     assert cfg["library_maintenance_on_startup"] is False
+    assert cfg["lidarr_acquisition_handoff_enabled"] is False
 
 
 def test_database_file_default_remains_compatible_for_direct_callers():
@@ -174,14 +175,27 @@ def test_master_carries_lidarr_and_acoustid_fields():
         lidarr_url="http://lidarr:8686",
         lidarr_api_key="lk",
         lidarr_enabled=True,
+        lidarr_acquisition_handoff_enabled=True,
         acoustid_api_key="ak",
         contact_email="me@example.com",
     )
     assert cfg["lidarr_url"] == "http://lidarr:8686"
     assert cfg["lidarr_api_key"] == "lk"
     assert cfg["lidarr_enabled"] is True
+    assert cfg["lidarr_acquisition_handoff_enabled"] is True
     assert cfg["acoustid_api_key"] == "ak"
     assert cfg["contact_email"] == "me@example.com"
+
+
+def test_master_lidarr_handoff_requires_literal_boolean_true():
+    cfg = build_initial_config(
+        "master",
+        music_library_path="/m",
+        downloads_path="/d",
+        lidarr_acquisition_handoff_enabled="true",  # type: ignore[arg-type]
+    )
+
+    assert cfg["lidarr_acquisition_handoff_enabled"] is False
 
 
 def test_advanced_sldl_flags_propagate():

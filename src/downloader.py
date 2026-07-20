@@ -428,6 +428,7 @@ class Downloader:
         lidarr_root_folder_path: Optional[str] = None,
         jellyfin_client: Optional["JellyfinClient"] = None,
         jellyfin_music_library_dir: Optional[str] = None,
+        lidarr_acquisition_handoff_enabled: bool = False,
     ):
         """
         Initializes the Downloader.
@@ -448,6 +449,13 @@ class Downloader:
         )
 
         self.lidarr = lidarr_client
+        # A reachable Lidarr sidecar is useful for library rescans, but it is
+        # not enough authority to hand queue entries to Lidarr for acquisition.
+        # Require the JSON Boolean true specifically so strings/numbers from a
+        # malformed config cannot silently opt legacy jobs into a lossy path.
+        self.lidarr_acquisition_handoff_enabled = (
+            lidarr_acquisition_handoff_enabled is True
+        )
         self.lidarr_quality_profile_id = lidarr_quality_profile_id
         self.lidarr_root_folder_path = (
             str(lidarr_root_folder_path or "").strip() or None
@@ -984,12 +992,13 @@ class Downloader:
     def _try_lidarr_album(self, item: DownloadItem, report) -> bool:
         """Hand album-mode downloads off to Lidarr when it's configured.
 
-        Only fires on the master — satellites never get a Lidarr client
-        in the first place. Returns True if Lidarr accepted the release
-        and is now monitoring + searching for it; the caller should then
-        clear the queue entry and move on. Returns False for anything we
-        don't want Lidarr to try (single-track items, items with no
-        release MBID, Lidarr not configured), so sldl stays the fallback.
+        Only fires on the master when the separate acquisition-handoff flag
+        is the literal Boolean true — satellites never get a Lidarr client in
+        the first place. Returns True if Lidarr accepted the release and is
+        now monitoring + searching for it; the caller should then clear the
+        queue entry and move on. Returns False for anything we don't want
+        Lidarr to try (exact satellite albums, single-track items, items with
+        no release MBID, or Lidarr not configured), so sldl stays the fallback.
         """
         if item.playlist_id == "SATELLITE_ALBUM":
             # Satellite requests select one concrete MusicBrainz release and
@@ -997,6 +1006,8 @@ class Downloader:
             # on release groups and an accepted search is not proof that the
             # selected pressing or a FLAC result was imported, so these jobs
             # must stay on the verified Soulseek pipeline.
+            return False
+        if not self.lidarr_acquisition_handoff_enabled:
             return False
         if not self.lidarr:
             return False
@@ -1763,6 +1774,10 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
         slsk_password=config.get("slsk_password"),
         slsk_config=config,  # Pass entire config dict
         lidarr_client=lidarr_client,
+        lidarr_acquisition_handoff_enabled=config.get(
+            "lidarr_acquisition_handoff_enabled",
+            False,
+        ),
         lidarr_quality_profile_id=config.get("lidarr_quality_profile_id"),
         lidarr_root_folder_path=config.get("lidarr_root_folder_path"),
         jellyfin_client=jellyfin_client,

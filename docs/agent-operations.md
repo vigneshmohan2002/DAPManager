@@ -73,9 +73,10 @@ ssh -T viggys-pc \
 Supported string keys in `set` are `slsk_username`, `slsk_password`,
 `jellyfin_url`, `jellyfin_api_key`, `jellyfin_user_id`, `acoustid_api_key`,
 `contact_email`, `api_token`, `lidarr_url`, `lidarr_api_key`, and
-`jellyfin_music_library_path`. Supported Boolean keys are `lidarr_enabled` and
-`auto_tag_downloads`. The dedicated Jellyfin mirror path is the only path this
-helper edits; it deliberately does not edit the primary library/download
+`jellyfin_music_library_path`. Supported Boolean keys are `lidarr_enabled`,
+`lidarr_acquisition_handoff_enabled`, and `auto_tag_downloads`. The dedicated
+Jellyfin mirror path is the only path this helper edits; it deliberately does
+not edit the primary library/download
 paths, device role or identity, public/master URLs, scheduler settings, or
 Prowlarr/qBittorrent/Rutracker configuration. Unknown keys and wrong value
 types are rejected before the live file is changed. A new `api_token` must
@@ -101,6 +102,14 @@ non-empty `clear` list is rejected. `clear` accepts `slsk_username`,
 can only be rotated to another non-empty value in `set`, after which every
 satellite and API caller needs the replacement. Disable Lidarr with
 `"set": {"lidarr_enabled": false}` rather than `clear`.
+
+`lidarr_enabled` makes the sidecar available for release watching and library
+rescans. It does not authorize acquisition handoff from the DAPManager queue.
+That separate path is disabled by default and requires the literal JSON
+Boolean `"lidarr_acquisition_handoff_enabled": true`. Exact
+`SATELLITE_ALBUM` requests always remain on DAPManager's verified Soulseek
+pipeline even when the handoff flag is enabled. Lidarr folder rescans after a
+local import remain active with the acquisition handoff disabled.
 
 The helper reads raw standard-input bytes, rejects input over 128 KiB, and uses
 a strict UTF-8 decoder before parsing JSON. It has no payload-file or secret

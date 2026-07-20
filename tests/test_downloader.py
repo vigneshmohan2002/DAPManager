@@ -2421,6 +2421,12 @@ def test_main_run_downloader(db, temp_dirs):
             ]
             == "/jellyfin-music"
         )
+        assert (
+            mock_downloader_class.call_args.kwargs[
+                "lidarr_acquisition_handoff_enabled"
+            ]
+            is False
+        )
         mock_downloader.run_queue.assert_called_once()
 
 
@@ -2435,7 +2441,9 @@ def _album_item(release_mbid="rel-mb", query="::ALBUM:: Artist - Album", item_id
     )
 
 
-def _lidarr_ready_downloader(db, mock_scanner, temp_dirs):
+def _lidarr_ready_downloader(
+    db, mock_scanner, temp_dirs, *, handoff_enabled=True
+):
     lidarr = MagicMock()
     return Downloader(
         db=db,
@@ -2446,6 +2454,7 @@ def _lidarr_ready_downloader(db, mock_scanner, temp_dirs):
         slsk_username="u",
         slsk_password="p",
         lidarr_client=lidarr,
+        lidarr_acquisition_handoff_enabled=handoff_enabled,
         lidarr_quality_profile_id=3,
         lidarr_root_folder_path="/music",
     ), lidarr
@@ -2453,6 +2462,50 @@ def _lidarr_ready_downloader(db, mock_scanner, temp_dirs):
 
 def test_try_lidarr_no_client_returns_false(downloader):
     assert downloader._try_lidarr_album(_album_item(), report=lambda m: None) is False
+
+
+def test_try_lidarr_requires_explicit_acquisition_handoff_flag(
+    db, mock_scanner, temp_dirs
+):
+    dl, lidarr = _lidarr_ready_downloader(
+        db,
+        mock_scanner,
+        temp_dirs,
+        handoff_enabled=False,
+    )
+
+    assert dl._try_lidarr_album(_album_item(), report=lambda m: None) is False
+    lidarr.ensure_album_monitored.assert_not_called()
+
+
+@pytest.mark.parametrize("configured_value", [1, "true", "True"])
+def test_try_lidarr_handoff_requires_literal_boolean_true(
+    db, mock_scanner, temp_dirs, configured_value
+):
+    dl, lidarr = _lidarr_ready_downloader(
+        db,
+        mock_scanner,
+        temp_dirs,
+        handoff_enabled=configured_value,
+    )
+
+    assert dl._try_lidarr_album(_album_item(), report=lambda m: None) is False
+    lidarr.ensure_album_monitored.assert_not_called()
+
+
+def test_try_lidarr_never_hands_off_exact_satellite_album(
+    db, mock_scanner, temp_dirs
+):
+    dl, lidarr = _lidarr_ready_downloader(db, mock_scanner, temp_dirs)
+    item = DownloadItem(
+        id=7,
+        search_query="::ALBUM:: Artist - Exact Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess="exact-release-mbid",
+    )
+
+    assert dl._try_lidarr_album(item, report=lambda m: None) is False
+    lidarr.ensure_album_monitored.assert_not_called()
 
 
 def test_try_lidarr_requires_profile_and_root(db, mock_scanner, temp_dirs):
@@ -2531,6 +2584,32 @@ def test_run_queue_rescans_lidarr_once_after_local_imports(
          patch.object(dl, "_process_success", return_value=1):
         dl.run_queue()
 
+    lidarr.rescan_folders.assert_called_once_with(
+        ["/music"],
+        add_new_artists=False,
+    )
+
+
+def test_disabled_acquisition_handoff_keeps_lidarr_rescan_active(
+    db, mock_scanner, temp_dirs
+):
+    dl, lidarr = _lidarr_ready_downloader(
+        db,
+        mock_scanner,
+        temp_dirs,
+        handoff_enabled=False,
+    )
+    db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="COMPLETER",
+        mbid_guess="release-mbid",
+    ))
+
+    with patch.object(dl, "_attempt_download", return_value=True), \
+         patch.object(dl, "_process_success", return_value=1):
+        dl.run_queue()
+
+    lidarr.ensure_album_monitored.assert_not_called()
     lidarr.rescan_folders.assert_called_once_with(
         ["/music"],
         add_new_artists=False,
