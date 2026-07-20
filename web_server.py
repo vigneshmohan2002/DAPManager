@@ -352,6 +352,7 @@ def check_setup():
         "static",
         "api_docs",
         "openapi_spec",
+        "service_worker",
     ):
         return redirect(url_for("setup"))
 
@@ -511,7 +512,13 @@ def _protect_web_ui():
     """
     if request.path.startswith("/api/"):
         return None
-    if request.endpoint in {"static", "setup", "download_mac", "auth_login"}:
+    if request.endpoint in {
+        "static",
+        "setup",
+        "download_mac",
+        "auth_login",
+        "service_worker",
+    }:
         return None
     token = _configured_api_token()
     if not token:
@@ -570,6 +577,21 @@ def auth_login():
     return render_template("auth.html", next_url=next_url, error=error), (
         401 if error else 200
     )
+
+
+@app.route("/service-worker.js")
+def service_worker():
+    """Serve the PWA worker at the origin root so it can control every UI.
+
+    The worker is deliberately public like the other static assets, but the
+    script itself must never be served from a browser cache: a stale worker
+    could otherwise retain an obsolete cache policy after an application
+    update.
+    """
+    response = app.send_static_file("service-worker.js")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
 
 
 @app.before_request

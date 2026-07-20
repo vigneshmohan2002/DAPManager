@@ -10,6 +10,7 @@
     "test:watch": "vitest",
     "preview": "vite preview",
     "tauri": "tauri",
+    "icons": "tauri icon ../assets/branding/dapmanager-logo.png",
     "build:web": "tailwindcss -i src/master-web.css -o ../web/static/tailwind.css --minify",
     "watch:web": "tailwindcss -i src/master-web.css -o ../web/static/tailwind.css --watch"
   },
