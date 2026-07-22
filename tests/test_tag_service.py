@@ -305,6 +305,162 @@ def test_identify_file_none_when_recording_has_no_releases(tmp_path):
     assert result is None
 
 
+def _release_with_recording(release_id, recording_id):
+    return {"release": {
+        "id": release_id,
+        "title": "Selected Edition",
+        "date": "2026-07-18",
+        "artist-credit": [{"artist": {"name": "Album Artist"}}],
+        "medium-list": [{
+            "position": 1,
+            "track-count": 1,
+            "track-list": [{
+                "id": "10000000-0000-4000-8000-000000000001",
+                "position": 1,
+                "title": "Canonical Track",
+                "artist-credit": [{"artist": {"name": "Track Artist"}}],
+                "recording": {
+                    "id": recording_id,
+                    "title": "Recording Title",
+                },
+            }],
+        }],
+    }}
+
+
+def test_release_bound_identification_accepts_expected_recording_when_acoustid_omits_release(
+    tmp_path,
+):
+    path = tmp_path / "selected.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    recording_id = "00000000-0000-4000-8000-000000000002"
+    other_release_id = "461eac33-7edd-481a-a7d1-089ec6fc01af"
+    response = {"results": [{
+        "score": 0.96,
+        "recordings": [{
+            "id": recording_id,
+            "releases": [{"id": other_release_id}],
+        }],
+    }]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recording(release_id, recording_id),
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path), "key", release_id, recording_id,
+        )
+
+    assert candidate is not None
+    assert candidate["score"] == 0.96
+    assert candidate["meta"]["mbid"] == recording_id
+    assert candidate["meta"]["release_mbid"] == release_id
+    get_release.assert_called_once_with(
+        release_id,
+        includes=["artists", "recordings", "release-groups"],
+    )
+
+
+def test_release_bound_identification_rejects_wrong_expected_recording(
+    tmp_path,
+):
+    path = tmp_path / "wrong-recording.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    expected_recording = "00000000-0000-4000-8000-000000000002"
+    wrong_recording = "00000000-0000-4000-8000-000000000003"
+    response = {"results": [{
+        "score": 0.99,
+        "recordings": [{
+            "id": wrong_recording,
+            "releases": [{"id": release_id}],
+        }],
+    }]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path), "key", release_id, expected_recording,
+        )
+
+    assert candidate is None
+    get_release.assert_not_called()
+
+
+def test_release_bound_identification_rejects_recording_absent_from_exact_release(
+    tmp_path,
+):
+    path = tmp_path / "wrong-edition.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    expected_recording = "00000000-0000-4000-8000-000000000002"
+    other_recording = "00000000-0000-4000-8000-000000000003"
+    response = {"results": [{
+        "score": 0.96,
+        "recordings": [{"id": expected_recording, "releases": []}],
+    }]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recording(release_id, other_recording),
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path), "key", release_id, expected_recording,
+        )
+
+    assert candidate is None
+    get_release.assert_called_once()
+
+
+def test_release_bound_identification_without_expected_recording_requires_release_mapping(
+    tmp_path,
+):
+    path = tmp_path / "unbound.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    recording_id = "00000000-0000-4000-8000-000000000002"
+    response = {"results": [{
+        "score": 0.96,
+        "recordings": [{"id": recording_id, "releases": []}],
+    }]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path), "key", release_id,
+        )
+
+    assert candidate is None
+    get_release.assert_not_called()
+
+
 def test_release_bound_identification_ignores_higher_scoring_wrong_edition(
     tmp_path,
 ):

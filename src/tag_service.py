@@ -529,11 +529,12 @@ def identify_file_for_release(
 ) -> Optional[TagCandidate]:
     """Identify audio while binding the result to one selected release.
 
-    AcoustID commonly returns one recording on many releases. Selecting the
-    first release is unsafe for a satellite request whose user chose a precise
-    MusicBrainz edition. This variant considers every AcoustID result but only
-    accepts the selected release (and, when supplied, recording), then builds
-    metadata from that exact release payload.
+    AcoustID commonly returns one recording on many releases, and its release
+    list is not exhaustive. When a persisted recording is supplied, AcoustID
+    must identify that recording; the fetched exact MusicBrainz release then
+    independently proves that it belongs to the selected edition. Without a
+    persisted recording, AcoustID must explicitly map the candidate to the
+    selected release. Metadata always comes from that exact release payload.
     """
     expected_release = _canonical_uuid(release_mbid)
     expected_recording = _canonical_uuid(recording_mbid)
@@ -579,18 +580,21 @@ def identify_file_for_release(
             candidate_recording = _canonical_uuid(recording.get("id"))
             if not candidate_recording:
                 continue
-            if expected_recording and candidate_recording != expected_recording:
-                continue
-            release_ids = {
-                _canonical_uuid(release.get("id"))
-                for release in (recording.get("releases") or [])
-                if isinstance(release, Mapping)
-            }
-            if expected_release in release_ids:
-                candidate_scores[candidate_recording] = max(
-                    score,
-                    candidate_scores.get(candidate_recording, -1.0),
-                )
+            if expected_recording:
+                if candidate_recording != expected_recording:
+                    continue
+            else:
+                release_ids = {
+                    _canonical_uuid(release.get("id"))
+                    for release in (recording.get("releases") or [])
+                    if isinstance(release, Mapping)
+                }
+                if expected_release not in release_ids:
+                    continue
+            candidate_scores[candidate_recording] = max(
+                score,
+                candidate_scores.get(candidate_recording, -1.0),
+            )
     if not candidate_scores:
         return None
     ranked_candidates = sorted(
