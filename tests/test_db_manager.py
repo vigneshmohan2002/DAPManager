@@ -28,7 +28,9 @@ EXPECTED_SCHEMA_COLUMNS = {
     "device_inventory": ("device_id", "mbid", "local_path", "reported_at"),
     "download_queue": (
         "id", "search_query", "playlist_id", "status", "last_attempt",
-        "mbid_guess",
+        "mbid_guess", "attempt_count", "max_attempts", "next_attempt_at",
+        "claim_owner", "claim_expires_at", "claim_heartbeat_at",
+        "is_paused", "is_quarantined", "last_error",
     ),
     "duplicates": ("id", "mbid", "file_path"),
     "lyrics": ("track_mbid", "lrc", "synced", "source", "fetched_at"),
@@ -93,6 +95,14 @@ def test_database_schema_table_column_and_index_contract(db):
             "album_download_requests", ("stage", "updated_at"), False,
         ),
         "idx_artist_tags_tag": ("artist_tags", ("tag",), False),
+        "idx_download_queue_claimable": (
+            "download_queue",
+            (
+                "status", "is_paused", "is_quarantined", "next_attempt_at",
+                "claim_expires_at", "id",
+            ),
+            False,
+        ),
         "idx_play_events_played_at": ("play_events", ("played_at",), False),
         "idx_play_events_track_mbid": ("play_events", ("track_mbid",), False),
         "idx_tracks_is_liked": ("tracks", ("is_liked",), True),

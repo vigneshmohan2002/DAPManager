@@ -1,8 +1,16 @@
 """Persistent progress records for MusicBrainz-backed album requests."""
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .base import SQLiteRepository
+
+
+def _claim_timestamp(value: Optional[datetime] = None) -> str:
+    resolved = value or datetime.now(timezone.utc)
+    if resolved.tzinfo is not None:
+        resolved = resolved.astimezone(timezone.utc).replace(tzinfo=None)
+    return resolved.isoformat(sep=" ", timespec="microseconds")
 
 
 def _manifest_rows(
@@ -417,6 +425,59 @@ class AlbumDownloadRequestRepository(SQLiteRepository):
         finally:
             cursor.close()
 
+    def update_claimed_by_queue_item(
+        self,
+        queue_item_id: int,
+        owner: str,
+        stage: str,
+        detail: str = "",
+        completed_tracks: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Publish progress only while ``owner`` holds the queue lease."""
+        if stage not in self._STAGES:
+            raise ValueError(f"invalid album request stage: {stage}")
+        assignments = [
+            "stage = ?",
+            "detail = ?",
+            "updated_at = CURRENT_TIMESTAMP",
+        ]
+        params: List[Any] = [stage, str(detail or "")]
+        if completed_tracks is not None:
+            assignments.append("completed_tracks = ?")
+            params.append(max(0, int(completed_tracks)))
+        stage_guard = {
+            "queued": "stage IN ('queued', 'failed')",
+            "downloading": "stage IN ('queued', 'downloading', 'failed')",
+            "importing": (
+                "stage IN ('queued', 'downloading', 'importing', 'failed')"
+            ),
+            "failed": "stage != 'success'",
+            "success": "stage != 'success'",
+        }[stage]
+        params.extend((
+            int(queue_item_id),
+            int(queue_item_id),
+            str(owner or ""),
+            _claim_timestamp(now),
+        ))
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE album_download_requests SET "
+                + ", ".join(assignments)
+                + f" WHERE queue_item_id = ? AND {stage_guard} "
+                "AND EXISTS (SELECT 1 FROM download_queue q "
+                "WHERE q.id = ? AND q.claim_owner = ? "
+                "AND q.claim_expires_at > ?)",
+                params,
+            )
+            changed = cursor.rowcount > 0
+            self.conn.commit()
+            return changed
+        finally:
+            cursor.close()
+
     def invalidate(
         self,
         request_id: int,
@@ -523,6 +584,163 @@ class AlbumDownloadRequestRepository(SQLiteRepository):
                 "DELETE FROM download_queue WHERE id = ?",
                 (int(queue_item_id),),
             )
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def complete_claimed_and_remove_queue_item(
+        self,
+        queue_item_id: int,
+        owner: str,
+        detail: str,
+        completed_tracks: int,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Owner-fenced tracker success and queue retirement transaction."""
+        completed_timestamp = _claim_timestamp(now)
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT 1 FROM download_queue WHERE id = ? "
+                "AND claim_owner = ? AND claim_expires_at > ?",
+                (
+                    int(queue_item_id),
+                    str(owner or ""),
+                    completed_timestamp,
+                ),
+            )
+            if cursor.fetchone() is None:
+                self.conn.rollback()
+                return False
+            cursor.execute(
+                "UPDATE album_download_requests SET stage = 'success', "
+                "detail = ?, completed_tracks = ?, "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE queue_item_id = ? AND stage != 'success'",
+                (
+                    str(detail or ""),
+                    max(0, int(completed_tracks)),
+                    int(queue_item_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                self.conn.rollback()
+                return False
+            cursor.execute(
+                "DELETE FROM download_queue WHERE id = ? "
+                "AND claim_owner = ? AND claim_expires_at > ?",
+                (
+                    int(queue_item_id),
+                    str(owner or ""),
+                    completed_timestamp,
+                ),
+            )
+            if cursor.rowcount != 1:
+                self.conn.rollback()
+                return False
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def fail_claimed_queue_item(
+        self,
+        queue_item_id: int,
+        owner: str,
+        error_message: str,
+        completed_tracks: int = 0,
+        *,
+        quarantine: bool = False,
+        base_delay_seconds: int = 300,
+        max_delay_seconds: int = 86400,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically fail a tracker and schedule its claimed queue retry."""
+        if base_delay_seconds < 0:
+            raise ValueError("base_delay_seconds must not be negative")
+        if max_delay_seconds < 0:
+            raise ValueError("max_delay_seconds must not be negative")
+
+        failed_at = now or datetime.now(timezone.utc)
+        if failed_at.tzinfo is not None:
+            failed_at = failed_at.astimezone(timezone.utc).replace(tzinfo=None)
+        failed_timestamp = _claim_timestamp(failed_at)
+        bounded_error = str(error_message or "")[-4000:]
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT attempt_count, max_attempts FROM download_queue "
+                "WHERE id = ? AND claim_owner = ? AND claim_expires_at > ?",
+                (
+                    int(queue_item_id),
+                    str(owner or ""),
+                    failed_timestamp,
+                ),
+            )
+            queue_row = cursor.fetchone()
+            if queue_row is None:
+                self.conn.rollback()
+                return False
+
+            attempt_count = max(0, int(queue_row["attempt_count"] or 0))
+            max_attempts = max(1, int(queue_row["max_attempts"] or 1))
+            should_quarantine = bool(
+                quarantine or attempt_count >= max_attempts
+            )
+            next_attempt_timestamp = None
+            if not should_quarantine:
+                exponent = min(max(attempt_count - 1, 0), 30)
+                delay_seconds = min(
+                    max_delay_seconds,
+                    base_delay_seconds * (2 ** exponent),
+                )
+                next_attempt_timestamp = _claim_timestamp(
+                    failed_at + timedelta(seconds=delay_seconds)
+                )
+
+            cursor.execute(
+                "UPDATE album_download_requests SET stage = 'failed', "
+                "detail = ?, completed_tracks = ?, "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE queue_item_id = ? AND stage != 'success'",
+                (
+                    bounded_error,
+                    max(0, int(completed_tracks)),
+                    int(queue_item_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                self.conn.rollback()
+                return False
+            cursor.execute(
+                "UPDATE download_queue SET status = 'failed', "
+                "last_attempt = ?, next_attempt_at = ?, last_error = ?, "
+                "is_quarantined = CASE WHEN ? THEN 1 ELSE is_quarantined END, "
+                "claim_owner = NULL, claim_expires_at = NULL, "
+                "claim_heartbeat_at = NULL WHERE id = ? AND claim_owner = ? "
+                "AND claim_expires_at > ?",
+                (
+                    failed_timestamp,
+                    next_attempt_timestamp,
+                    bounded_error,
+                    int(should_quarantine),
+                    int(queue_item_id),
+                    str(owner or ""),
+                    failed_timestamp,
+                ),
+            )
+            if cursor.rowcount != 1:
+                self.conn.rollback()
+                return False
             self.conn.commit()
             return True
         except Exception:

@@ -44,10 +44,82 @@ def test_schema_functions_are_idempotent_and_preserve_existing_rows():
         "idx_album_download_requests_queue_item",
         "idx_album_download_requests_stage_updated",
         "idx_artist_tags_tag",
+        "idx_download_queue_claimable",
         "idx_play_events_played_at",
         "idx_play_events_track_mbid",
         "idx_tracks_is_liked",
     }
+    conn.close()
+
+
+def test_schema_module_migrates_legacy_download_queue_idempotently():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE download_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            search_query TEXT NOT NULL,
+            playlist_id TEXT NOT NULL,
+            status TEXT DEFAULT 'pending'
+                CHECK(status IN ('pending', 'failed', 'success')),
+            last_attempt TIMESTAMP,
+            mbid_guess TEXT NOT NULL
+        );
+        INSERT INTO download_queue (
+            search_query, playlist_id, status, mbid_guess
+        ) VALUES ('Artist - Album', 'SATELLITE_ALBUM', 'failed', 'release-1');
+        INSERT INTO download_queue (
+            search_query, playlist_id, status, mbid_guess
+        ) VALUES ('New - Album', 'SATELLITE_ALBUM', 'pending', 'release-2');
+        """
+    )
+    logger = logging.getLogger("test.db_schema.download_queue")
+
+    create_tables(conn, logger)
+    migrate_schema(conn, logger)
+    migrate_schema(conn, logger)
+
+    assert _columns(conn, "download_queue") == (
+        "id",
+        "search_query",
+        "playlist_id",
+        "status",
+        "last_attempt",
+        "mbid_guess",
+        "attempt_count",
+        "max_attempts",
+        "next_attempt_at",
+        "claim_owner",
+        "claim_expires_at",
+        "claim_heartbeat_at",
+        "is_paused",
+        "is_quarantined",
+        "last_error",
+    )
+    row = conn.execute(
+        "SELECT * FROM download_queue WHERE status = 'failed'"
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["attempt_count"] == 0
+    assert row["max_attempts"] == 3
+    assert row["is_paused"] == 0
+    assert row["is_quarantined"] == 1
+    assert row["claim_owner"] is None
+    assert row["next_attempt_at"] is None
+    assert row["last_error"] is None
+    pending = conn.execute(
+        "SELECT * FROM download_queue WHERE status = 'pending'"
+    ).fetchone()
+    assert pending["is_quarantined"] == 0
+    assert pending["attempt_count"] == 0
+    indexes = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+    }
+    assert "idx_download_queue_claimable" in indexes
     conn.close()
 
 

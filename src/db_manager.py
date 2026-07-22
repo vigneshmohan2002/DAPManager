@@ -8,7 +8,7 @@ import os
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Set, Tuple, TypedDict
+from typing import Any, Collection, List, Mapping, Optional, Set, Tuple, TypedDict
 from datetime import datetime
 
 from src.db_schema import create_tables, migrate_schema
@@ -129,6 +129,15 @@ class DownloadItem:
     id: Optional[int] = None
     status: str = "pending"
     last_attempt: Optional[datetime] = None
+    attempt_count: int = 0
+    max_attempts: int = 3
+    next_attempt_at: Optional[datetime] = None
+    claim_owner: Optional[str] = None
+    claim_expires_at: Optional[datetime] = None
+    claim_heartbeat_at: Optional[datetime] = None
+    is_paused: bool = False
+    is_quarantined: bool = False
+    last_error: Optional[str] = None
 
 
 class DatabaseManager:
@@ -693,6 +702,118 @@ class DatabaseManager:
     def update_download_status(self, item_id: int, status: str):
         self._download_repository.update_status(item_id, status)
 
+    def claim_next_download(
+        self,
+        owner: str,
+        lease_seconds: int = 900,
+        now: Optional[datetime] = None,
+        *,
+        include_item_ids: Optional[Collection[int]] = None,
+        exclude_item_ids: Collection[int] = (),
+    ) -> Optional[DownloadItem]:
+        """Atomically lease one due queue row to ``owner``.
+
+        ``include_item_ids`` supports a deliberately narrow recovery run;
+        ``exclude_item_ids`` lets one runner process each row at most once.
+        """
+        row = self._download_repository.claim_next(
+            owner,
+            lease_seconds,
+            now,
+            include_item_ids=include_item_ids,
+            exclude_item_ids=exclude_item_ids,
+        )
+        return self._row_to_download_item(row) if row else None
+
+    def recover_stale_download_claims(
+        self,
+        now: Optional[datetime] = None,
+    ) -> List[int]:
+        """Release expired leases and return affected queue IDs."""
+        return self._download_repository.recover_stale_claims(now)
+
+    def count_claimable_downloads(
+        self,
+        now: Optional[datetime] = None,
+        *,
+        include_item_ids: Optional[Collection[int]] = None,
+        exclude_item_ids: Collection[int] = (),
+    ) -> int:
+        return self._download_repository.count_claimable(
+            now,
+            include_item_ids=include_item_ids,
+            exclude_item_ids=exclude_item_ids,
+        )
+
+    def heartbeat_download_claim(
+        self,
+        item_id: int,
+        owner: str,
+        lease_seconds: int = 900,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        return self._download_repository.heartbeat_claim(
+            item_id,
+            owner,
+            lease_seconds,
+            now,
+        )
+
+    def release_download_claim(self, item_id: int, owner: str) -> bool:
+        return self._download_repository.release_claim(item_id, owner)
+
+    def fail_download_claim(
+        self,
+        item_id: int,
+        owner: str,
+        error_message: str = "",
+        *,
+        quarantine: bool = False,
+        base_delay_seconds: int = 300,
+        max_delay_seconds: int = 86400,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Persist an owner-fenced failure, backoff, and retry-cap state."""
+        return self._download_repository.fail_claim(
+            item_id,
+            owner,
+            error_message,
+            quarantine=quarantine,
+            base_delay_seconds=base_delay_seconds,
+            max_delay_seconds=max_delay_seconds,
+            now=now,
+        )
+
+    def complete_download_claim(
+        self,
+        item_id: int,
+        owner: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Remove completed work only while ``owner`` holds a live lease."""
+        return self._download_repository.complete_claim(
+            item_id,
+            owner,
+            now,
+        )
+
+    def set_download_retry_limit(
+        self,
+        item_id: int,
+        max_attempts: int,
+    ) -> bool:
+        return self._download_repository.set_retry_limit(item_id, max_attempts)
+
+    def set_download_paused(self, item_id: int, paused: bool) -> bool:
+        return self._download_repository.set_paused(item_id, paused)
+
+    def set_download_quarantined(
+        self,
+        item_id: int,
+        quarantined: bool,
+    ) -> bool:
+        return self._download_repository.set_quarantined(item_id, quarantined)
+
     def remove_from_queue(self, item_id: int):
         self._download_repository.remove(item_id)
 
@@ -845,6 +966,26 @@ class DatabaseManager:
             completed_tracks,
         )
 
+    def update_claimed_album_download_request_progress(
+        self,
+        queue_item_id: int,
+        owner: str,
+        stage: str,
+        detail: str = "",
+        completed_tracks: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        return (
+            self._album_download_request_repository.update_claimed_by_queue_item(
+                queue_item_id,
+                owner,
+                stage,
+                detail,
+                completed_tracks,
+                now,
+            )
+        )
+
     def complete_album_download_request(
         self,
         queue_item_id: int,
@@ -857,6 +998,50 @@ class DatabaseManager:
                 detail,
                 completed_tracks,
             )
+        )
+
+    def complete_claimed_album_download_request(
+        self,
+        queue_item_id: int,
+        owner: str,
+        detail: str,
+        completed_tracks: int,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically complete tracker and queue under one live lease."""
+        return (
+            self._album_download_request_repository
+            .complete_claimed_and_remove_queue_item(
+                queue_item_id,
+                owner,
+                detail,
+                completed_tracks,
+                now,
+            )
+        )
+
+    def fail_claimed_album_download_request(
+        self,
+        queue_item_id: int,
+        owner: str,
+        error_message: str,
+        completed_tracks: int = 0,
+        *,
+        quarantine: bool = False,
+        base_delay_seconds: int = 300,
+        max_delay_seconds: int = 86400,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically fail an album tracker and its claimed queue row."""
+        return self._album_download_request_repository.fail_claimed_queue_item(
+            queue_item_id,
+            owner,
+            error_message,
+            completed_tracks,
+            quarantine=quarantine,
+            base_delay_seconds=base_delay_seconds,
+            max_delay_seconds=max_delay_seconds,
+            now=now,
         )
 
     def complete_album_download_request_by_id(
@@ -1773,19 +1958,47 @@ class DatabaseManager:
     def _row_to_download_item(self, row):
         if not row:
             return None
-        last_attempt = None
-        if row["last_attempt"]:
+        keys = row.keys() if hasattr(row, "keys") else ()
+
+        def parse_timestamp(column: str) -> Optional[datetime]:
+            if column not in keys or not row[column]:
+                return None
             try:
-                last_attempt = datetime.fromisoformat(str(row["last_attempt"]))
+                return datetime.fromisoformat(str(row[column]))
             except (ValueError, TypeError):
-                pass
+                return None
+
         return DownloadItem(
             id=row["id"],
             search_query=row["search_query"],
             playlist_id=row["playlist_id"],
             mbid_guess=row["mbid_guess"],
             status=row["status"],
-            last_attempt=last_attempt,
+            last_attempt=parse_timestamp("last_attempt"),
+            attempt_count=(
+                int(row["attempt_count"] or 0)
+                if "attempt_count" in keys else 0
+            ),
+            max_attempts=(
+                int(row["max_attempts"] or 3)
+                if "max_attempts" in keys else 3
+            ),
+            next_attempt_at=parse_timestamp("next_attempt_at"),
+            claim_owner=(
+                row["claim_owner"] if "claim_owner" in keys else None
+            ),
+            claim_expires_at=parse_timestamp("claim_expires_at"),
+            claim_heartbeat_at=parse_timestamp("claim_heartbeat_at"),
+            is_paused=(
+                bool(row["is_paused"]) if "is_paused" in keys else False
+            ),
+            is_quarantined=(
+                bool(row["is_quarantined"])
+                if "is_quarantined" in keys else False
+            ),
+            last_error=(
+                row["last_error"] if "last_error" in keys else None
+            ),
         )
 
     def close(self):

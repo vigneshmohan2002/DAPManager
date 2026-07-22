@@ -63,7 +63,16 @@ TABLE_DEFINITIONS: Dict[str, str] = {
             playlist_id TEXT NOT NULL,
             status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'failed', 'success')),
             last_attempt TIMESTAMP,
-            mbid_guess TEXT NOT NULL
+            mbid_guess TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            next_attempt_at TIMESTAMP,
+            claim_owner TEXT,
+            claim_expires_at TIMESTAMP,
+            claim_heartbeat_at TIMESTAMP,
+            is_paused INTEGER NOT NULL DEFAULT 0,
+            is_quarantined INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT
         );
     """,
     "album_download_requests": """
@@ -312,6 +321,51 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
                     "Added column: album_download_request_tracks.%s",
                     column,
                 )
+
+        download_queue_columns = _columns(cursor, "download_queue")
+        # Existing failed rows pre-date retry budgets and may represent large,
+        # retained forensic downloads. Quarantine them exactly once rather
+        # than turning deployment into an automatic retry storm.
+        legacy_download_queue_retry_state = (
+            "is_quarantined" not in download_queue_columns
+        )
+        download_queue_migrations = (
+            ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
+            ("next_attempt_at", "TIMESTAMP"),
+            ("claim_owner", "TEXT"),
+            ("claim_expires_at", "TIMESTAMP"),
+            ("claim_heartbeat_at", "TIMESTAMP"),
+            ("is_paused", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_quarantined", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_error", "TEXT"),
+        )
+        for column, definition in download_queue_migrations:
+            if column not in download_queue_columns:
+                cursor.execute(
+                    "ALTER TABLE download_queue "
+                    f"ADD COLUMN {column} {definition}"
+                )
+                logger.info("Added column: download_queue.%s", column)
+        if legacy_download_queue_retry_state:
+            cursor.execute(
+                "UPDATE download_queue SET is_quarantined = 1 "
+                "WHERE status = 'failed'"
+            )
+            if cursor.rowcount:
+                logger.info(
+                    "Quarantined %d legacy failed download(s)",
+                    cursor.rowcount,
+                )
+        # This index is created after the additive migrations so opening a
+        # pre-lease database cannot fail in ``create_tables`` before the new
+        # columns exist.
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_download_queue_claimable "
+            "ON download_queue("
+            "status, is_paused, is_quarantined, next_attempt_at, "
+            "claim_expires_at, id)"
+        )
         conn.commit()
     except sqlite3.Error as error:
         logger.error("Schema migration failed: %s", error)
