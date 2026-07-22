@@ -533,8 +533,8 @@ def identify_file_for_release(
     list is not exhaustive. When a persisted recording is supplied, AcoustID
     must identify that recording; the fetched exact MusicBrainz release then
     independently proves that it belongs to the selected edition. Without a
-    persisted recording, AcoustID must explicitly map the candidate to the
-    selected release. Metadata always comes from that exact release payload.
+    persisted recording, candidates are filtered and disambiguated against
+    the exact release. Metadata always comes from that exact release payload.
     """
     expected_release = _canonical_uuid(release_mbid)
     expected_recording = _canonical_uuid(recording_mbid)
@@ -570,6 +570,8 @@ def identify_file_for_release(
 
     candidate_scores: Dict[str, float] = {}
     for result in (response or {}).get("results") or []:
+        if not isinstance(result, Mapping):
+            continue
         try:
             score = float(result.get("score", 0.0))
         except (TypeError, ValueError):
@@ -577,28 +579,50 @@ def identify_file_for_release(
         if not math.isfinite(score) or score < 0.0 or score > 1.0:
             continue
         for recording in result.get("recordings") or []:
+            if not isinstance(recording, Mapping):
+                continue
             candidate_recording = _canonical_uuid(recording.get("id"))
             if not candidate_recording:
                 continue
-            if expected_recording:
-                if candidate_recording != expected_recording:
-                    continue
-            else:
-                release_ids = {
-                    _canonical_uuid(release.get("id"))
-                    for release in (recording.get("releases") or [])
-                    if isinstance(release, Mapping)
-                }
-                if expected_release not in release_ids:
-                    continue
+            if expected_recording and candidate_recording != expected_recording:
+                continue
             candidate_scores[candidate_recording] = max(
                 score,
                 candidate_scores.get(candidate_recording, -1.0),
             )
     if not candidate_scores:
         return None
+
+    try:
+        mb_data = mb.get_release_by_id(
+            expected_release,
+            includes=["artists", "recordings", "release-groups"],
+        )
+    except musicbrainzngs.WebServiceError as exc:
+        logger.error("identify_file_for_release: MusicBrainz error: %s", exc)
+        return None
+    release_info = mb_data.get("release") or {}
+    if _canonical_uuid(release_info.get("id")) != expected_release:
+        return None
+
+    release_candidates: list[
+        Tuple[str, float, Mapping[str, Any], Mapping[str, Any]]
+    ] = []
+    for candidate_recording, score in candidate_scores.items():
+        selection = _select_musicbrainz_track_context(
+            release_info,
+            candidate_recording,
+        )
+        if selection is None:
+            continue
+        track_info, medium = selection
+        release_candidates.append(
+            (candidate_recording, score, track_info, medium)
+        )
+    if not release_candidates:
+        return None
     ranked_candidates = sorted(
-        candidate_scores.items(),
+        release_candidates,
         key=lambda item: (-item[1], item[0]),
     )
     if (
@@ -616,25 +640,7 @@ def identify_file_for_release(
         )
         return None
 
-    identified_recording, score = ranked_candidates[0]
-    try:
-        mb_data = mb.get_release_by_id(
-            expected_release,
-            includes=["artists", "recordings", "release-groups"],
-        )
-    except musicbrainzngs.WebServiceError as exc:
-        logger.error("identify_file_for_release: MusicBrainz error: %s", exc)
-        return None
-    release_info = mb_data.get("release") or {}
-    if _canonical_uuid(release_info.get("id")) != expected_release:
-        return None
-    selection = _select_musicbrainz_track_context(
-        release_info,
-        identified_recording,
-    )
-    if selection is None:
-        return None
-    track_info, medium = selection
+    identified_recording, score, track_info, medium = ranked_candidates[0]
     media = [
         item for item in (release_info.get("medium-list") or [])
         if isinstance(item, Mapping)

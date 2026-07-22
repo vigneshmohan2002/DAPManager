@@ -305,7 +305,7 @@ def test_identify_file_none_when_recording_has_no_releases(tmp_path):
     assert result is None
 
 
-def _release_with_recording(release_id, recording_id):
+def _release_with_recordings(release_id, *recording_ids):
     return {"release": {
         "id": release_id,
         "title": "Selected Edition",
@@ -313,19 +313,23 @@ def _release_with_recording(release_id, recording_id):
         "artist-credit": [{"artist": {"name": "Album Artist"}}],
         "medium-list": [{
             "position": 1,
-            "track-count": 1,
+            "track-count": len(recording_ids),
             "track-list": [{
-                "id": "10000000-0000-4000-8000-000000000001",
-                "position": 1,
+                "id": f"10000000-0000-4000-8000-{position:012d}",
+                "position": position,
                 "title": "Canonical Track",
                 "artist-credit": [{"artist": {"name": "Track Artist"}}],
                 "recording": {
                     "id": recording_id,
                     "title": "Recording Title",
                 },
-            }],
+            } for position, recording_id in enumerate(recording_ids, 1)],
         }],
     }}
+
+
+def _release_with_recording(release_id, recording_id):
+    return _release_with_recordings(release_id, recording_id)
 
 
 def test_release_bound_identification_accepts_expected_recording_when_acoustid_omits_release(
@@ -432,7 +436,7 @@ def test_release_bound_identification_rejects_recording_absent_from_exact_releas
     get_release.assert_called_once()
 
 
-def test_release_bound_identification_without_expected_recording_requires_release_mapping(
+def test_release_bound_identification_without_expected_recording_accepts_candidate_in_exact_release(
     tmp_path,
 ):
     path = tmp_path / "unbound.flac"
@@ -452,13 +456,48 @@ def test_release_bound_identification_without_expected_recording_requires_releas
         return_value=response,
     ), patch(
         "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recording(release_id, recording_id),
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path), "key", release_id,
+        )
+
+    assert candidate is not None
+    assert candidate["score"] == 0.96
+    assert candidate["meta"]["mbid"] == recording_id
+    assert candidate["meta"]["release_mbid"] == release_id
+    get_release.assert_called_once()
+
+
+def test_release_bound_identification_without_expected_recording_rejects_candidate_outside_release(
+    tmp_path,
+):
+    path = tmp_path / "outside-release.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    identified_recording = "00000000-0000-4000-8000-000000000002"
+    release_recording = "00000000-0000-4000-8000-000000000003"
+    response = {"results": [{
+        "score": 0.96,
+        "recordings": [{"id": identified_recording, "releases": []}],
+    }]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recording(release_id, release_recording),
     ) as get_release, patch("src.tag_service.mb.configure"):
         candidate = tag_service.identify_file_for_release(
             str(path), "key", release_id,
         )
 
     assert candidate is None
-    get_release.assert_not_called()
+    get_release.assert_called_once()
 
 
 def test_release_bound_identification_ignores_higher_scoring_wrong_edition(
@@ -590,6 +629,11 @@ def test_release_bound_identification_rejects_ambiguous_recordings(tmp_path):
         return_value=response,
     ), patch(
         "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recordings(
+            release_id,
+            first_recording,
+            second_recording,
+        ),
     ) as get_release, patch("src.tag_service.mb.configure"):
         candidate = tag_service.identify_file_for_release(
             str(path),
@@ -598,7 +642,7 @@ def test_release_bound_identification_rejects_ambiguous_recordings(tmp_path):
         )
 
     assert candidate is None
-    get_release.assert_not_called()
+    get_release.assert_called_once()
 
 
 @pytest.mark.parametrize("unsafe_score", [float("inf"), float("nan"), -0.1, 1.1])
