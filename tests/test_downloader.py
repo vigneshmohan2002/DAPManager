@@ -23,6 +23,7 @@ from src.downloader import (
     read_downloaded_metadata,
 )
 from src.db_manager import DatabaseManager, DownloadItem, Track
+from src.exact_album_fallback import ExactAlbumFallbackPlan
 from src import tag_service
 
 
@@ -2118,6 +2119,7 @@ def _exact_album_manifest(release_mbid):
         "release_mbid": release_mbid,
         "artist": "Canonical Album Artist",
         "title": "Canonical Album",
+        "track_count": 1,
         "recording_mbids": SATELLITE_RECORDINGS[:1],
         "tracks": ({
             "position": 1,
@@ -2135,6 +2137,198 @@ def _exact_album_manifest(release_mbid):
             ),
         },),
     }
+
+
+def test_exact_album_fallback_prepares_every_file_before_returning_assignments(
+    db,
+    mock_scanner,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    first = os.path.join(temp_dirs["downloads"], "first.flac")
+    second = os.path.join(temp_dirs["downloads"], "second.flac")
+    os.makedirs(temp_dirs["downloads"], exist_ok=True)
+    for path in (first, second):
+        with open(path, "wb") as handle:
+            handle.write(b"staged")
+    manifest = _exact_album_manifest(release_mbid)
+    second_track = {
+        **manifest["tracks"][0],
+        "position": 2,
+        "track_position": 4,
+        "recording_mbid": SATELLITE_RECORDINGS[1],
+        "title": "Second Track",
+        "release_track_mbid": (
+            "10000000-0000-4000-8000-000000000002"
+        ),
+    }
+    manifest = {
+        **manifest,
+        "recording_mbids": SATELLITE_RECORDINGS,
+        "tracks": (manifest["tracks"][0], second_track),
+    }
+    dl = _downloader_with_key(db, temp_dirs, mock_scanner)
+    plan = ExactAlbumFallbackPlan({
+        first: SATELLITE_RECORDINGS[0],
+        second: SATELLITE_RECORDINGS[1],
+    }, audio_payload_sha256_by_path={
+        first: "a" * 64,
+        second: "b" * 64,
+    }, file_snapshot_by_path={
+        path: tuple(
+            getattr(os.lstat(path), field)
+            for field in (
+                "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns",
+            )
+        )
+        for path in (first, second)
+    })
+    written = []
+
+    with patch(
+        "src.downloader.build_exact_album_fallback_plan",
+        return_value=plan,
+    ) as build_plan, patch(
+        "src.downloader.tag_service.write_tags_atomic_if_unchanged",
+        side_effect=lambda path, _meta, _snapshot: written.append(path),
+    ), patch(
+        "src.downloader.tag_service.flac_audio_payload_digest",
+        side_effect=["a" * 64, "b" * 64],
+    ):
+        prepared = dl._prepare_exact_album_fallback(
+            (first, second),
+            temp_dirs["downloads"],
+            manifest,
+        )
+
+    assert prepared is plan
+    assert written == [first, second]
+    build_plan.assert_called_once_with(
+        (first, second),
+        temp_dirs["downloads"],
+        manifest,
+        "KEY",
+        "me@x",
+    )
+
+
+def test_exact_album_fallback_tag_failure_returns_no_partial_import_plan(
+    db,
+    mock_scanner,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    first = os.path.join(temp_dirs["downloads"], "first.flac")
+    os.makedirs(temp_dirs["downloads"], exist_ok=True)
+    with open(first, "wb") as handle:
+        handle.write(b"staged")
+    manifest = _exact_album_manifest(release_mbid)
+    dl = _downloader_with_key(db, temp_dirs, mock_scanner)
+
+    with patch(
+        "src.downloader.build_exact_album_fallback_plan",
+        return_value=ExactAlbumFallbackPlan({
+            first: SATELLITE_RECORDINGS[0],
+        }, audio_payload_sha256_by_path={first: "a" * 64},
+        file_snapshot_by_path={
+            first: tuple(
+                getattr(os.lstat(first), field)
+                for field in (
+                    "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns",
+                )
+            )
+        }),
+    ), patch(
+        "src.downloader.tag_service.write_tags_atomic_if_unchanged",
+        side_effect=OSError("disk write failed"),
+    ):
+        prepared = dl._prepare_exact_album_fallback(
+            (first,),
+            temp_dirs["downloads"],
+            manifest,
+        )
+
+    assert prepared.accepted is False
+
+
+def test_exact_album_fallback_plan_is_complete_before_first_import(
+    db,
+    mock_scanner,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    manifest = _exact_album_manifest(release_mbid)
+    queue_id = db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Canonical Album Artist - Canonical Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess=release_mbid,
+    ))
+    db.create_album_download_request(
+        queue_item_id=queue_id,
+        release_mbid=release_mbid,
+        artist=manifest["artist"],
+        title=manifest["title"],
+        track_count=1,
+        stage="importing",
+        detail="Validating",
+        completed_tracks=0,
+        recording_mbids=manifest["recording_mbids"],
+        track_manifest=manifest["tracks"],
+    )
+    dl = _downloader_with_key(db, temp_dirs, mock_scanner)
+    staging = tempfile.mkdtemp(dir=temp_dirs["downloads"])
+    staged = os.path.join(staging, "track.flac")
+    with open(staged, "wb") as handle:
+        handle.write(b"staged")
+    item = db.get_downloads(status="pending")[0]
+    events = []
+    empty_inventory = MagicMock(completed_tracks=0, total_tracks=1, exact=False)
+    full_inventory = MagicMock(completed_tracks=1, total_tracks=1, exact=True)
+
+    def prepare(*_args):
+        events.append("whole-set-preflight")
+        return ExactAlbumFallbackPlan(
+            {staged: SATELLITE_RECORDINGS[0]},
+            audio_payload_sha256_by_path={staged: "a" * 64},
+            file_snapshot_by_path={staged: (1, 2, 3, 4, 5)},
+        )
+
+    def process(*args):
+        assert events == ["whole-set-preflight"]
+        assert args[-2] == SATELLITE_RECORDINGS[0]
+        assert args[-1] == "a" * 64
+        events.append("first-import")
+        return ProcessedDownload("/music/imported.flac", True)
+
+    with patch.object(
+        dl,
+        "_prepare_exact_album_fallback",
+        side_effect=prepare,
+    ), patch.object(
+        dl,
+        "_process_downloaded_file",
+        side_effect=process,
+    ), patch.object(
+        dl,
+        "_mirror_to_jellyfin",
+        return_value=False,
+    ), patch(
+        "src.downloader.inspect_release_inventory",
+        side_effect=[empty_inventory, full_inventory, full_inventory],
+    ):
+        result = dl._process_success(
+            item,
+            staging_dir=staging,
+            manage_queue_state=False,
+        )
+
+    assert events == ["whole-set-preflight", "first-import"]
+    assert result == ProcessedQueueItem(
+        changed_file_count=1,
+        completed=True,
+        completed_tracks=1,
+        completion_detail="Imported 1 FLAC file(s) into the master library",
+    )
 
 
 @pytest.mark.parametrize("embedded_recording", [True, False])
@@ -2230,6 +2424,84 @@ def test_exact_album_flow_acoustically_verifies_then_manifest_wins(
     assert audio["musicbrainz_releasetrackid"] == [
         "10000000-0000-4000-8000-000000000001"
     ]
+
+
+def test_exact_album_preverified_fallback_bypasses_per_file_acoustid(
+    db,
+    mock_scanner,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    staged = os.path.join(temp_dirs["downloads"], "03 Source.flac")
+    _write_tagged_flac(staged, SATELLITE_RECORDINGS[0], release_mbid)
+    dl = _downloader_with_key(db, temp_dirs, mock_scanner)
+    item = DownloadItem(
+        id=46,
+        search_query="::ALBUM:: Canonical Album Artist - Canonical Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess=release_mbid,
+    )
+    ingest_result = MagicMock(path=staged, changed=True)
+    audio_digest = tag_service.flac_audio_payload_digest(staged)
+
+    with patch.object(dl, "_auto_tag_file") as auto_tag, patch.object(
+        dl,
+        "_scan_downloaded_file",
+    ), patch(
+        "src.downloader.ingest_downloaded_audio_file_with_result",
+        return_value=ingest_result,
+    ):
+        result = dl._process_downloaded_file(
+            staged,
+            item,
+            is_album_mode=True,
+            album_manifest=_exact_album_manifest(release_mbid),
+            verified_manifest_recording_mbid=SATELLITE_RECORDINGS[0],
+            verified_manifest_audio_digest=audio_digest,
+        )
+
+    assert result == ProcessedDownload(staged, True)
+    auto_tag.assert_not_called()
+    audio = FLAC(staged)
+    assert audio["musicbrainz_trackid"] == [SATELLITE_RECORDINGS[0]]
+    assert audio["musicbrainz_albumid"] == [release_mbid]
+
+
+def test_exact_album_fallback_rejects_audio_changed_after_whole_set_plan(
+    db,
+    mock_scanner,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    staged = os.path.join(temp_dirs["downloads"], "03 Source.flac")
+    _write_tagged_flac(staged, SATELLITE_RECORDINGS[0], release_mbid)
+    dl = _downloader_with_key(db, temp_dirs, mock_scanner)
+    item = DownloadItem(
+        id=47,
+        search_query="::ALBUM:: Canonical Album Artist - Canonical Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess=release_mbid,
+    )
+
+    with patch.object(dl, "_auto_tag_file") as auto_tag, patch.object(
+        dl,
+        "_scan_downloaded_file",
+    ) as scan, patch(
+        "src.downloader.ingest_downloaded_audio_file_with_result",
+    ) as ingest:
+        result = dl._process_downloaded_file(
+            staged,
+            item,
+            is_album_mode=True,
+            album_manifest=_exact_album_manifest(release_mbid),
+            verified_manifest_recording_mbid=SATELLITE_RECORDINGS[0],
+            verified_manifest_audio_digest="f" * 64,
+        )
+
+    assert result is None
+    auto_tag.assert_not_called()
+    scan.assert_not_called()
+    ingest.assert_not_called()
 
 
 @pytest.mark.parametrize("tagging_config", [

@@ -789,6 +789,11 @@ def _flac_audio_payload_digest(filepath: str) -> str:
     return digest.hexdigest()
 
 
+def flac_audio_payload_digest(filepath: str) -> str:
+    """Return a stable digest of FLAC audio frames, excluding mutable tags."""
+    return _flac_audio_payload_digest(filepath)
+
+
 def _file_digest(filepath: str) -> str:
     digest = hashlib.sha256()
     with open(filepath, "rb") as handle:
@@ -1062,6 +1067,19 @@ def _write_tags_atomic_impl(
 def write_tags_atomic(filepath: str, meta: TagMetadata) -> str:
     """Atomically apply and verify canonical tags without changing FLAC frames."""
     return _write_tags_atomic_impl(filepath, meta)
+
+
+def write_tags_atomic_if_unchanged(
+    filepath: str,
+    meta: TagMetadata,
+    expected_snapshot: Tuple[int, int, int, int, int],
+) -> str:
+    """Apply tags only if the file is still the one previously validated."""
+    return _write_tags_atomic_impl(
+        filepath,
+        meta,
+        expected_snapshot=expected_snapshot,
+    )
 
 
 def copy_complete_picard_tags_atomic(

@@ -32,6 +32,15 @@ def test_public_tag_service_signature_contract():
     atomic_write = signature(tag_service.write_tags_atomic).parameters
     assert tuple(atomic_write) == ("filepath", "meta")
 
+    guarded_write = signature(
+        tag_service.write_tags_atomic_if_unchanged
+    ).parameters
+    assert tuple(guarded_write) == (
+        "filepath",
+        "meta",
+        "expected_snapshot",
+    )
+
     atomic_copy = signature(
         tag_service.copy_complete_picard_tags_atomic
     ).parameters
@@ -926,6 +935,38 @@ def test_atomic_flac_write_failure_leaves_original_byte_exact(tmp_path):
 
     assert path.read_bytes() == before
     assert not list(tmp_path.glob(".*.daptag-*.flac"))
+
+
+def test_guarded_atomic_write_rejects_a_file_changed_after_validation(
+    tmp_path,
+):
+    path = tmp_path / "changed.flac"
+    _minimal_flac(str(path))
+    path_stat = os.lstat(path)
+    snapshot = (
+        path_stat.st_dev,
+        path_stat.st_ino,
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+        path_stat.st_ctime_ns,
+    )
+    original_audio = tag_service.flac_audio_payload_digest(str(path))
+    audio = FLAC(str(path))
+    audio["comment"] = "changed after validation"
+    audio.save()
+
+    with pytest.raises(
+        tag_service.TagSynchronizationRace,
+        match="changed after its quality decision",
+    ):
+        tag_service.write_tags_atomic_if_unchanged(
+            str(path),
+            _canonical_meta(),
+            snapshot,
+        )
+
+    assert tag_service.flac_audio_payload_digest(str(path)) == original_audio
+    assert FLAC(str(path))["comment"] == ["changed after validation"]
 
 
 def test_picard_tag_copy_refuses_concurrent_source_inode_replacement(

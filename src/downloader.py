@@ -29,6 +29,10 @@ from .file_ingest import (
     read_embedded_recording_mbid,
 )
 from . import tag_service
+from .exact_album_fallback import (
+    ExactAlbumFallbackPlan,
+    build_exact_album_fallback_plan,
+)
 from .lidarr_client import LidarrClient, LidarrError
 from .jellyfin_client import JellyfinClient
 from .library_mirror import mirror_imported_file
@@ -1770,6 +1774,96 @@ class Downloader:
         )
         return None, tier, score
 
+    def _prepare_exact_album_fallback(
+        self,
+        file_paths: Sequence[str],
+        staging_root: str,
+        album_manifest: Mapping[str, Any],
+    ) -> ExactAlbumFallbackPlan:
+        """Preflight and tag one complete no-AcoustID album before imports.
+
+        The planner is read-only and returns assignments only after every
+        staged FLAC has passed the exact-release checks.  Applying canonical
+        tags to the full set here means a later tag-write failure can change
+        only retained staging; no earlier file from this fallback has reached
+        the library yet.
+        """
+        if not self.auto_tag_downloads or not self.acoustid_api_key:
+            return ExactAlbumFallbackPlan(
+                {},
+                "Automatic exact-album validation is unavailable",
+            )
+        try:
+            plan = build_exact_album_fallback_plan(
+                file_paths,
+                staging_root,
+                album_manifest,
+                self.acoustid_api_key,
+                self.contact_email,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Exact-album fallback preflight failed unexpectedly: %s",
+                exc,
+                exc_info=True,
+            )
+            return ExactAlbumFallbackPlan({}, str(exc))
+        if not plan.accepted:
+            logger.info(
+                "Exact-album metadata fallback not used: %s",
+                plan.reason or "staged album did not satisfy the policy",
+            )
+            return plan
+
+        assignments = dict(plan.recording_mbid_by_path)
+        prepared: Dict[str, str] = {}
+        for file_path in file_paths:
+            self._pulse_active_claim(force=True)
+            recording_mbid = canonical_recording_mbid(
+                assignments.get(file_path)
+            )
+            exact_meta = exact_manifest_tag_metadata(
+                album_manifest,
+                recording_mbid or "",
+            )
+            if not recording_mbid or exact_meta is None:
+                logger.warning(
+                    "Exact-album fallback plan contained an invalid assignment"
+                )
+                return ExactAlbumFallbackPlan(
+                    {},
+                    "Exact-album fallback plan contained an invalid assignment",
+                )
+            try:
+                tag_service.write_tags_atomic_if_unchanged(
+                    file_path,
+                    exact_meta,
+                    plan.file_snapshot_by_path[file_path],
+                )
+                if (
+                    tag_service.flac_audio_payload_digest(file_path)
+                    != plan.audio_payload_sha256_by_path[file_path]
+                ):
+                    raise OSError(
+                        "FLAC audio changed after exact-album validation"
+                    )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Could not prepare exact-album fallback tags for %s: %s",
+                    file_path,
+                    exc,
+                )
+                return ExactAlbumFallbackPlan({}, str(exc))
+            prepared[file_path] = recording_mbid
+
+        self._pulse_active_claim(force=True)
+        logger.info(
+            "Prepared %s exact-release FLAC file(s) using the strict "
+            "whole-album no-AcoustID fallback.",
+            len(prepared),
+        )
+        return plan
+
     def _file_has_embedded_mbid(self, file_path: str) -> bool:
         """Return True iff the audio file already has a MusicBrainz track ID."""
         return file_has_embedded_mbid(file_path)
@@ -1822,6 +1916,8 @@ class Downloader:
         item: DownloadItem,
         is_album_mode: bool,
         album_manifest: Optional[Mapping[str, Any]] = None,
+        verified_manifest_recording_mbid: str = "",
+        verified_manifest_audio_digest: str = "",
     ) -> Optional[ProcessedDownload]:
         # Defence in depth for album jobs: even if a downloader regression or
         # stale staging file bypasses the command filter, never import lossy
@@ -1882,16 +1978,42 @@ class Downloader:
                 )
                 return None
 
+        fallback_recording = canonical_recording_mbid(
+            verified_manifest_recording_mbid
+        )
+        if verified_manifest_recording_mbid and (
+            album_manifest is None
+            or not is_album_mode
+            or fallback_recording not in expected_recordings
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(verified_manifest_audio_digest or ""),
+            )
+        ):
+            logger.warning(
+                "Rejecting invalid exact-album fallback assignment for %s",
+                file_path,
+            )
+            return None
+
         self._update_album_request_progress(
             item,
             "importing",
             f"Checking Picard-style tags for {os.path.basename(file_path)}",
         )
-        tagged_meta, tag_tier, tag_score = self._auto_tag_file(
-            file_path,
-            expected_release_mbid=expected_release,
-            expected_recording_mbid=expected_queue_recording or "",
-        )
+        if fallback_recording:
+            tagged_meta = exact_manifest_tag_metadata(
+                album_manifest or {},
+                fallback_recording,
+            )
+            tag_tier = "green"
+            tag_score = None
+        else:
+            tagged_meta, tag_tier, tag_score = self._auto_tag_file(
+                file_path,
+                expected_release_mbid=expected_release,
+                expected_recording_mbid=expected_queue_recording or "",
+            )
         if album_manifest is not None and tag_tier != "green":
             logger.warning(
                 "Rejecting selected-release file without a green release-bound "
@@ -1929,7 +2051,8 @@ class Downloader:
 
         if album_manifest is not None:
             recording_mbid = (
-                read_embedded_recording_mbid(file_path)
+                fallback_recording
+                or read_embedded_recording_mbid(file_path)
                 or canonical_recording_mbid((tagged_meta or {}).get("mbid"))
             )
             if not recording_mbid or recording_mbid not in expected_recordings:
@@ -2006,10 +2129,35 @@ class Downloader:
                 )
                 return None
 
+        def fallback_audio_is_unchanged() -> bool:
+            if not fallback_recording:
+                return True
+            try:
+                actual_digest = tag_service.flac_audio_payload_digest(
+                    file_path
+                )
+            except (OSError, ValueError):
+                return False
+            return actual_digest == verified_manifest_audio_digest
+
+        if not fallback_audio_is_unchanged():
+            logger.warning(
+                "Rejecting staged FLAC changed after whole-album validation: %s",
+                file_path,
+            )
+            return None
+
         try:
             self._scan_downloaded_file(file_path)
         except Exception as e:
             logger.error(f"Scanner failed for {file_path}: {e}")
+            return None
+
+        if not fallback_audio_is_unchanged():
+            logger.warning(
+                "Rejecting staged FLAC changed while it was being scanned: %s",
+                file_path,
+            )
             return None
 
         # Album queue identity is a *release* MBID.  Route each staged file by
@@ -2020,18 +2168,31 @@ class Downloader:
         if metadata is None:
             logger.warning(f"Could not read tags for moving: {file_path}")
             return None
+        if not fallback_audio_is_unchanged():
+            logger.warning(
+                "Rejecting staged FLAC changed before library ingest: %s",
+                file_path,
+            )
+            return None
 
+        ingest_options: Dict[str, Any] = {
+            "artist": metadata.artist,
+            "title": metadata.title,
+            "album": metadata.album,
+            "track_number": metadata.track_number,
+            "disc_number": metadata.disc_number,
+            "recording_mbid": recording_mbid,
+        }
+        if verified_manifest_audio_digest:
+            ingest_options["expected_audio_payload_sha256"] = (
+                verified_manifest_audio_digest
+            )
         ingest_result = ingest_downloaded_audio_file_with_result(
             self.db,
             self.scanner,
             self.music_library_dir,
             file_path,
-            artist=metadata.artist,
-            title=metadata.title,
-            album=metadata.album,
-            track_number=metadata.track_number,
-            disc_number=metadata.disc_number,
-            recording_mbid=recording_mbid,
+            **ingest_options,
         )
         dest_path = ingest_result.path
         logger.debug(f"Moved to: {dest_path}")
@@ -2101,6 +2262,9 @@ class Downloader:
         album_manifest: Optional[Mapping[str, Any]] = None
         album_inventory = None
         album_tracker: Optional[Mapping[str, Any]] = None
+        fallback_plan = ExactAlbumFallbackPlan({}, "Not evaluated")
+        fallback_recordings: Mapping[str, str] = {}
+        fallback_audio_digests: Mapping[str, str] = {}
         if item.playlist_id == "SATELLITE_ALBUM" and item.id is not None:
             get_request = getattr(
                 self.db,
@@ -2138,6 +2302,7 @@ class Downloader:
                 "release_mbid": album_tracker.get("release_mbid"),
                 "artist": album_tracker.get("artist"),
                 "title": album_tracker.get("title"),
+                "track_count": album_tracker.get("track_count"),
                 "recording_mbids": recording_mbids,
                 "tracks": track_manifest,
             }
@@ -2147,6 +2312,19 @@ class Downloader:
                 track_manifest or recording_mbids,
                 self.music_library_dir,
             )
+            if track_manifest and not incomplete_files:
+                fallback_plan = self._prepare_exact_album_fallback(
+                    found_files,
+                    active_staging_dir,
+                    album_manifest,
+                )
+                if fallback_plan.accepted:
+                    fallback_recordings = (
+                        fallback_plan.recording_mbid_by_path
+                    )
+                    fallback_audio_digests = (
+                        fallback_plan.audio_payload_sha256_by_path
+                    )
         self._update_album_request_progress(
             item,
             "importing",
@@ -2172,12 +2350,23 @@ class Downloader:
                         is_album_mode,
                     )
                 else:
-                    processed = self._process_downloaded_file(
-                        file_path,
-                        item,
-                        is_album_mode,
-                        album_manifest,
-                    )
+                    fallback_recording = fallback_recordings.get(file_path)
+                    if fallback_recording:
+                        processed = self._process_downloaded_file(
+                            file_path,
+                            item,
+                            is_album_mode,
+                            album_manifest,
+                            fallback_recording,
+                            fallback_audio_digests.get(file_path, ""),
+                        )
+                    else:
+                        processed = self._process_downloaded_file(
+                            file_path,
+                            item,
+                            is_album_mode,
+                            album_manifest,
+                        )
                 if processed:
                     # Compatibility for older test doubles and callers of this
                     # private method that returned only the final path.

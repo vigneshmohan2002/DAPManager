@@ -230,6 +230,17 @@ def _fsync_directory(path: str) -> None:
         os.close(directory_fd)
 
 
+def _verify_expected_audio_payload(
+    path: str,
+    expected_sha256: Optional[str],
+    detail: str,
+) -> None:
+    if not expected_sha256:
+        return
+    if tag_service.flac_audio_payload_digest(path) != expected_sha256:
+        raise tag_service.TagSynchronizationRace(detail)
+
+
 def _remove_superseded_source(src_path: str) -> None:
     """Remove a staging candidate after a canonical file satisfied it."""
     try:
@@ -351,6 +362,7 @@ def _atomic_copy_into_place(
     src_path: str,
     dest_path: str,
     music_library_dir: str,
+    expected_audio_payload_sha256: Optional[str] = None,
 ) -> bool:
     """Atomically publish a copy unless a concurrent better copy appeared."""
     destination_dir = os.path.dirname(dest_path)
@@ -376,6 +388,11 @@ def _atomic_copy_into_place(
             shutil.copystat(src_path, temp_path)
         except OSError as exc:
             logger.debug("ingest: could not copy file timestamps: %s", exc)
+        _verify_expected_audio_payload(
+            temp_path,
+            expected_audio_payload_sha256,
+            "downloaded FLAC changed while being copied into the library",
+        )
 
         # A different worker may have published a better file while the
         # candidate was being copied. Re-check immediately before replacement.
@@ -433,6 +450,7 @@ def _move_to_library(
     src_path: str,
     dest_path: str,
     music_library_dir: str,
+    expected_audio_payload_sha256: Optional[str] = None,
 ) -> IngestResult:
     """Publish a candidate without ever downgrading an existing destination."""
     validated = _validated_library_path(
@@ -443,6 +461,11 @@ def _move_to_library(
     )
     assert validated is not None
     dest_path = validated
+    _verify_expected_audio_payload(
+        src_path,
+        expected_audio_payload_sha256,
+        "downloaded FLAC changed before library publication",
+    )
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     # Re-check after directory creation in case a pre-existing parent resolved
     # through a symlink or the final component appeared concurrently.
@@ -491,6 +514,7 @@ def _move_to_library(
         src_path,
         dest_path,
         music_library_dir,
+        expected_audio_payload_sha256,
     )
     _remove_superseded_source(src_path)
     return IngestResult(path=dest_path, changed=changed)
@@ -509,8 +533,14 @@ def _ingest_audio_file(
     track_number: Optional[int] = None,
     disc_number: Optional[int] = None,
     recording_mbid: Optional[str] = None,
+    expected_audio_payload_sha256: Optional[str],
     prefer_scanned_identity: bool,
 ) -> IngestResult:
+    _verify_expected_audio_payload(
+        src_path,
+        expected_audio_payload_sha256,
+        "downloaded FLAC changed before ingest",
+    )
     # Normalize before the scanner sees the file.  Otherwise an upper-case
     # tag can be inserted as a distinct primary key beside the canonical
     # lower-case MusicBrainz UUID already present in the catalog.
@@ -550,6 +580,12 @@ def _ingest_audio_file(
         except Exception as e:
             logger.warning("ingest: scan failed for %s: %s", src_path, e)
         track = db.get_track_by_path(norm_src)
+
+    _verify_expected_audio_payload(
+        src_path,
+        expected_audio_payload_sha256,
+        "downloaded FLAC changed while the scanner inspected it",
+    )
 
     # The scanner may have tagged the file (for example through Picard), so
     # read the recording identity once more before resolving a duplicate.
@@ -637,6 +673,7 @@ def _ingest_audio_file(
         src_path,
         dest_path,
         music_library_dir,
+        expected_audio_payload_sha256,
     )
 
     mbid = track.mbid or identity_mbid
@@ -677,6 +714,7 @@ def ingest_audio_file(
         track_number=track_number,
         disc_number=disc_number,
         recording_mbid=recording_mbid,
+        expected_audio_payload_sha256=None,
         prefer_scanned_identity=True,
     ).path
 
@@ -693,6 +731,7 @@ def ingest_downloaded_audio_file(
     track_number: int,
     disc_number: int = 1,
     recording_mbid: Optional[str] = None,
+    expected_audio_payload_sha256: Optional[str] = None,
 ) -> str:
     """Ingest a downloader file while preserving its legacy sort identity.
 
@@ -712,6 +751,7 @@ def ingest_downloaded_audio_file(
         track_number=track_number,
         disc_number=disc_number,
         recording_mbid=recording_mbid,
+        expected_audio_payload_sha256=expected_audio_payload_sha256,
     ).path
 
 
@@ -727,6 +767,7 @@ def ingest_downloaded_audio_file_with_result(
     track_number: int,
     disc_number: int = 1,
     recording_mbid: Optional[str] = None,
+    expected_audio_payload_sha256: Optional[str] = None,
 ) -> IngestResult:
     """Downloaded-file ingest including whether canonical audio changed."""
     return _ingest_audio_file(
@@ -740,5 +781,6 @@ def ingest_downloaded_audio_file_with_result(
         track_number=track_number,
         disc_number=disc_number,
         recording_mbid=recording_mbid,
+        expected_audio_payload_sha256=expected_audio_payload_sha256,
         prefer_scanned_identity=False,
     )

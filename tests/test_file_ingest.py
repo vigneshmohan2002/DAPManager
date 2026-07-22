@@ -340,6 +340,53 @@ def _encoded_flac_frame_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def test_download_ingest_verifies_the_payload_copied_to_publication(
+    tmp_path,
+):
+    db = DatabaseManager(":memory:")
+    source = tmp_path / "downloads" / "guarded.flac"
+    source.parent.mkdir()
+    source.write_bytes(b"candidate-audio")
+    scanner = FakeScanner(db, Track(
+        mbid="guarded-mbid",
+        title="Track",
+        artist="Artist",
+        album="Album",
+        track_number=1,
+    ))
+    expected_digest = "a" * 64
+
+    with patch(
+        "src.file_ingest.tag_service.flac_audio_payload_digest",
+        side_effect=[
+            expected_digest,
+            expected_digest,
+            expected_digest,
+            "b" * 64,
+        ],
+    ):
+        with pytest.raises(
+            tag_service.TagSynchronizationRace,
+            match="changed while being copied",
+        ):
+            ingest_downloaded_audio_file_with_result(
+                db,
+                scanner,
+                str(tmp_path / "music"),
+                str(source),
+                artist="Artist",
+                album="Album",
+                title="Track",
+                track_number=1,
+                expected_audio_payload_sha256=expected_digest,
+            )
+
+    destination = tmp_path / "music" / "Artist" / "Album" / "01 Track.flac"
+    assert source.is_file()
+    assert not destination.exists()
+    db.close()
+
+
 def _prepare_real_primary_collision(tmp_path, *, stale_destination: bool):
     db = DatabaseManager(":memory:")
     source = tmp_path / "downloads" / "candidate.flac"
