@@ -3001,6 +3001,13 @@ def test_exact_album_already_present_completes_without_staging_or_network(
         release_mbid=release_mbid,
         local_path=target,
     ))
+    stale_owner_staging = tempfile.mkdtemp(
+        prefix=f".dap-queue-{queue_id}-",
+        dir=temp_dirs["downloads"],
+    )
+    stale_artifact = os.path.join(stale_owner_staging, "still-active.flac")
+    with open(stale_artifact, "wb") as handle:
+        handle.write(b"flac")
 
     with patch.object(downloader, "_attempt_download") as network:
         summary = downloader.run_queue(
@@ -3013,6 +3020,7 @@ def test_exact_album_already_present_completes_without_staging_or_network(
     assert summary.network_attempt_count == 0
     assert db.get_download_status(queue_id) is None
     assert db.get_album_download_request(request_id)["stage"] == "success"
+    assert os.path.isfile(stale_artifact)
 
 
 @patch("subprocess.Popen")

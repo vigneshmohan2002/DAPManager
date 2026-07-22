@@ -746,36 +746,6 @@ class Downloader:
                 return False
         return False
 
-    def _finish_sibling_staging_dirs(
-        self,
-        item: DownloadItem,
-        *,
-        exclude: Sequence[str] = (),
-    ) -> int:
-        """Quarantine or remove every older attempt after proven success."""
-        if item.id is None:
-            return 0
-        excluded = {os.path.abspath(path) for path in exclude}
-        prefix = f".dap-queue-{item.id}-"
-        try:
-            paths = [
-                entry.path
-                for entry in os.scandir(self.downloads_dir)
-                if entry.is_dir(follow_symlinks=False)
-                and entry.name.startswith(prefix)
-                and os.path.abspath(entry.path) not in excluded
-            ]
-        except OSError:
-            logger.warning(
-                "Could not inspect sibling staging for queue item %s",
-                item.id,
-                exc_info=True,
-            )
-            return 0
-        return sum(
-            self._finish_item_staging_dir(item, path) for path in paths
-        )
-
     def _pulse_active_claim(self, *, force: bool = False) -> None:
         heartbeat = self._active_claim_heartbeat
         if heartbeat is not None:
@@ -1077,9 +1047,6 @@ class Downloader:
                         item,
                         owner,
                     ):
-                        quarantined_staging_count += (
-                            self._finish_sibling_staging_dirs(item)
-                        )
                         success_count += 1
                         continue
                     self._update_album_request_progress(
@@ -1119,14 +1086,6 @@ class Downloader:
                             raise DownloadClaimLostError(
                                 f"download claim lost for queue item {item.id}"
                             )
-                        quarantined_staging_count += (
-                            self._finish_sibling_staging_dirs(
-                                item,
-                                exclude=(item_staging_dir,)
-                                if item_staging_dir
-                                else (),
-                            )
-                        )
                         success_count += 1
                         continue
 
@@ -1216,12 +1175,6 @@ class Downloader:
                             raise DownloadClaimLostError(
                                 f"download claim lost for queue item {item.id}"
                             )
-                        quarantined_staging_count += (
-                            self._finish_sibling_staging_dirs(
-                                item,
-                                exclude=(item_staging_dir,),
-                            )
-                        )
                         success_count += 1
                     else:
                         if not self._fail_claimed_item(
