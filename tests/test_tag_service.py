@@ -70,6 +70,104 @@ def test_tier_red_below_half():
     assert tag_service._tier(float("nan")) == "red"
 
 
+def test_acoustid_coverage_probe_accepts_only_an_explicit_empty_result_list(
+    tmp_path,
+):
+    path = tmp_path / "unknown.flac"
+    path.write_bytes(b"fingerprint input")
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(123.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value={"status": "ok", "results": []},
+    ) as lookup:
+        coverage = tag_service.probe_acoustid_coverage(str(path), "key")
+
+    assert coverage == tag_service.AcoustIDCoverage("no_results")
+    lookup.assert_called_once_with(
+        "key",
+        "FP",
+        123.0,
+        meta=[
+            "recordings",
+            "releases",
+            "tracks",
+            "usermeta",
+            "releasegroups",
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "ok", "results": [{"score": 0.1}]},
+        {"status": "ok"},
+        {"status": "ok", "results": None},
+        {"status": "ok", "results": {}},
+        {"status": "error", "results": []},
+        None,
+    ],
+)
+def test_acoustid_coverage_probe_never_treats_results_or_malformed_payloads_as_empty(
+    tmp_path,
+    response,
+):
+    path = tmp_path / "covered.flac"
+    path.write_bytes(b"fingerprint input")
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(123.0, "FP"),
+    ), patch("src.tag_service.acoustid.lookup", return_value=response):
+        coverage = tag_service.probe_acoustid_coverage(str(path), "key")
+
+    expected = "has_results" if isinstance(response, dict) and response.get(
+        "results"
+    ) else "unavailable"
+    assert coverage.state == expected
+
+
+@pytest.mark.parametrize("failure_stage", ["fingerprint", "lookup"])
+def test_acoustid_coverage_probe_treats_failures_as_unavailable(
+    tmp_path,
+    failure_stage,
+):
+    path = tmp_path / "unavailable.flac"
+    path.write_bytes(b"fingerprint input")
+    fingerprint = MagicMock(return_value=(123.0, "FP"))
+    lookup = MagicMock(return_value={"status": "ok", "results": []})
+    if failure_stage == "fingerprint":
+        fingerprint.side_effect = RuntimeError("fingerprint failed")
+    else:
+        lookup.side_effect = RuntimeError("service failed")
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        fingerprint,
+    ), patch("src.tag_service.acoustid.lookup", lookup):
+        coverage = tag_service.probe_acoustid_coverage(str(path), "key")
+
+    assert coverage == tag_service.AcoustIDCoverage("unavailable")
+
+
+def test_acoustid_coverage_probe_requires_key_and_regular_file(tmp_path):
+    path = tmp_path / "audio.flac"
+    path.write_bytes(b"audio")
+
+    with patch("src.tag_service.acoustid.fingerprint_file") as fingerprint:
+        assert tag_service.probe_acoustid_coverage(
+            str(path), ""
+        ).state == "unavailable"
+        assert tag_service.probe_acoustid_coverage(
+            str(tmp_path / "missing.flac"), "key"
+        ).state == "unavailable"
+
+    fingerprint.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Pure identification helpers
 # ---------------------------------------------------------------------------

@@ -23,7 +23,8 @@ import shutil
 import stat
 import tempfile
 import uuid
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Literal, Mapping, Optional, Sequence, Tuple
 
 import acoustid
 import musicbrainzngs
@@ -46,6 +47,25 @@ TAGGABLE_EXTENSIONS = {".flac", ".mp3", ".ogg", ".m4a", ".mp4"}
 CONFIDENCE_GREEN = 0.90
 CONFIDENCE_YELLOW = 0.50
 ACOUSTID_AMBIGUITY_MARGIN = 0.05
+
+AcoustIDCoverageState = Literal[
+    "no_results",
+    "has_results",
+    "unavailable",
+]
+
+
+@dataclass(frozen=True)
+class AcoustIDCoverage:
+    """Strict evidence about whether AcoustID knows one audio fingerprint.
+
+    The exact-album fallback may use only ``no_results``.  In particular,
+    transport failures, malformed payloads, and unusable result objects stay
+    distinct from a successful lookup whose result list is genuinely empty.
+    """
+
+    state: AcoustIDCoverageState
+    result_count: int = 0
 
 _CANONICAL_FLAC_TAGS = frozenset({
     "title",
@@ -407,6 +427,67 @@ def is_safe_auto_candidate(
         and disc_number
         and disc_total >= disc_number
     )
+
+
+def probe_acoustid_coverage(
+    filepath: str,
+    api_key: str,
+) -> AcoustIDCoverage:
+    """Return strict AcoustID coverage evidence without inferring identity.
+
+    ``identify_file_for_release`` intentionally retains its long-standing
+    ``Optional[TagCandidate]`` contract, where many failure modes collapse to
+    ``None``.  This narrower probe exists so a whole-album validator can tell
+    a valid, explicitly empty AcoustID response from an outage or conflicting
+    result.  Any non-empty result list counts as coverage even when its entries
+    are malformed or low-confidence; those cases must use the normal acoustic
+    validation path and can never enable a metadata fallback.
+    """
+    if not api_key or not filepath or not os.path.isfile(filepath):
+        return AcoustIDCoverage("unavailable")
+
+    try:
+        duration, fingerprint = acoustid.fingerprint_file(filepath)
+    except Exception as exc:
+        logger.warning(
+            "probe_acoustid_coverage: fingerprint failed on %s: %s",
+            os.path.basename(filepath),
+            exc,
+        )
+        return AcoustIDCoverage("unavailable")
+
+    try:
+        response = acoustid.lookup(
+            api_key,
+            fingerprint,
+            duration,
+            meta=[
+                "recordings",
+                "releases",
+                "tracks",
+                "usermeta",
+                "releasegroups",
+            ],
+        )
+    except Exception as exc:
+        logger.error(
+            "probe_acoustid_coverage: lookup failed for %s: %s",
+            os.path.basename(filepath),
+            exc,
+        )
+        return AcoustIDCoverage("unavailable")
+
+    if (
+        not isinstance(response, Mapping)
+        or response.get("status") != "ok"
+    ):
+        return AcoustIDCoverage("unavailable")
+    results = response.get("results")
+    if not isinstance(results, list):
+        return AcoustIDCoverage("unavailable")
+    if not results:
+        return AcoustIDCoverage("no_results")
+    return AcoustIDCoverage("has_results", len(results))
 
 
 def identify_file(
