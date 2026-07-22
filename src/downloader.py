@@ -7,13 +7,16 @@ import logging
 import os
 import queue as thread_queue
 import re
+import shutil
+import socket
 import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from collections import deque
-from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .db_manager import DatabaseManager, DownloadItem, Track
 from .library_scanner import LibraryScanner
@@ -50,6 +53,9 @@ FEATURE_CREDIT_SEPARATOR = re.compile(
 SLDL_FAILURE_TAIL_LINES = 80
 SLDL_FAILURE_TAIL_CHARS = 12000
 DEFAULT_LIDARR_MUSIC_ROOT = "/music"
+DEFAULT_DOWNLOAD_MIN_FREE_GIB = 20
+DOWNLOAD_CLAIM_LEASE_SECONDS = 5 * 60
+DOWNLOAD_CLAIM_HEARTBEAT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,146 @@ class ProcessedQueueItem:
 
     changed_file_count: int
     completed: bool
+    error_message: str = field(default="", compare=False)
+    completed_tracks: int = field(default=0, compare=False)
+    completion_detail: str = field(default="", compare=False)
+
+
+@dataclass(frozen=True)
+class DownloadRunSummary:
+    """Truthful, typed result returned by one bounded queue run."""
+
+    eligible_count: int = 0
+    attempted_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    changed_file_count: int = 0
+    claim_lost_count: int = 0
+    reused_staging_count: int = 0
+    quarantined_staging_count: int = 0
+    network_attempt_count: int = 0
+    configuration_error: str = ""
+
+    @property
+    def task_success(self) -> bool:
+        return not self.configuration_error and self.failure_count == 0
+
+    @property
+    def task_message(self) -> str:
+        if self.configuration_error:
+            return f"Download queue could not start: {self.configuration_error}"
+        if self.attempted_count == 0:
+            return "Download queue finished: no eligible items."
+        outcome = (
+            "completed successfully"
+            if self.task_success
+            else "finished with failures"
+        )
+        message = (
+            f"Download queue {outcome}. Success: {self.success_count}, "
+            f"Failed: {self.failure_count}."
+        )
+        if self.claim_lost_count:
+            message += f" Lost claims: {self.claim_lost_count}."
+        return message
+
+
+class DownloadClaimLostError(RuntimeError):
+    """The queue row is no longer owned by this downloader run."""
+
+
+class _DownloadClaimHeartbeat:
+    """Keep one live queue lease renewed while blocking work is in flight."""
+
+    def __init__(
+        self,
+        db: DatabaseManager,
+        item_id: int,
+        owner: str,
+        *,
+        lease_seconds: int = DOWNLOAD_CLAIM_LEASE_SECONDS,
+        interval_seconds: int = DOWNLOAD_CLAIM_HEARTBEAT_SECONDS,
+    ) -> None:
+        self.db = db
+        self.item_id = item_id
+        self.owner = owner
+        self.lease_seconds = lease_seconds
+        self.interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._last_pulse = 0.0
+
+    def __enter__(self) -> "_DownloadClaimHeartbeat":
+        self.pulse(force=True)
+        db_path = str(getattr(self.db, "db_path", "") or "")
+        if db_path and db_path != ":memory:":
+            self._thread = threading.Thread(
+                target=self._background_loop,
+                args=(db_path,),
+                name=f"download-claim-{self.item_id}",
+                daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _background_loop(self, db_path: str) -> None:
+        try:
+            with DatabaseManager(db_path) as heartbeat_db:
+                while not self._stop.wait(self.interval_seconds):
+                    try:
+                        owned = heartbeat_db.heartbeat_download_claim(
+                            self.item_id,
+                            self.owner,
+                            self.lease_seconds,
+                        )
+                    except Exception:
+                        # SQLite may be briefly busy while the foreground
+                        # commits an import. Retry the next pulse; only an
+                        # explicit owner-fence miss proves this lease was lost.
+                        logger.warning(
+                            "Background heartbeat was temporarily blocked for "
+                            "queue item %s",
+                            self.item_id,
+                            exc_info=True,
+                        )
+                        continue
+                    if not owned:
+                        self._lost.set()
+                        return
+        except Exception:
+            # The foreground pulse remains authoritative and will fail closed
+            # if the lease can no longer be renewed. A transient SQLite lock
+            # in this convenience thread is not by itself proof of lost work.
+            logger.warning(
+                "Background heartbeat stopped for queue item %s",
+                self.item_id,
+                exc_info=True,
+            )
+
+    def pulse(self, *, force: bool = False) -> None:
+        if self._lost.is_set():
+            raise DownloadClaimLostError(
+                f"download claim lost for queue item {self.item_id}"
+            )
+        now = time.monotonic()
+        if not force and now - self._last_pulse < self.interval_seconds:
+            return
+        if not self.db.heartbeat_download_claim(
+            self.item_id,
+            self.owner,
+            self.lease_seconds,
+        ):
+            self._lost.set()
+            raise DownloadClaimLostError(
+                f"download claim lost for queue item {self.item_id}"
+            )
+        self._last_pulse = now
 
 
 def parse_download_query(search_query: str) -> Tuple[str, bool]:
@@ -471,6 +617,7 @@ class Downloader:
         self.jellyfin_music_library_dir = (
             (jellyfin_music_library_dir or "").strip() or None
         )
+        self._active_claim_heartbeat: Optional[_DownloadClaimHeartbeat] = None
 
         # Ensure directories exist
         os.makedirs(self.downloads_dir, exist_ok=True)
@@ -493,18 +640,168 @@ class Downloader:
             dir=self.downloads_dir,
         )
 
-    def _finish_item_staging_dir(self, staging_dir: str) -> None:
-        """Remove an empty attempt directory or retain isolated residue safely."""
+    def _find_reusable_item_staging_dir(
+        self,
+        item: DownloadItem,
+    ) -> Optional[str]:
+        """Return the newest unconsumed retained attempt containing audio."""
+        if item.id is None:
+            return None
+        prefix = f".dap-queue-{item.id}-"
+        try:
+            candidates = [
+                entry.path
+                for entry in os.scandir(self.downloads_dir)
+                if entry.is_dir(follow_symlinks=False)
+                and entry.name.startswith(prefix)
+                and (
+                    discover_downloaded_audio(entry.path)
+                    or _discover_incomplete_audio(entry.path)
+                )
+            ]
+        except OSError:
+            logger.warning(
+                "Could not inspect retained staging for queue item %s",
+                item.id,
+                exc_info=True,
+            )
+            return None
+        if not candidates:
+            return None
+        expected_track_count = 0
+        if item.playlist_id == "SATELLITE_ALBUM":
+            get_request = getattr(
+                self.db,
+                "get_album_download_request_by_queue_item",
+                None,
+            )
+            tracker = get_request(item.id) if callable(get_request) else None
+            try:
+                expected_track_count = int((tracker or {}).get("track_count") or 0)
+            except (AttributeError, TypeError, ValueError):
+                expected_track_count = 0
+
+        def candidate_rank(path: str) -> Tuple[int, int]:
+            audio = discover_downloaded_audio(path)
+            flac_count = sum(
+                file_path.lower().endswith(".flac") for file_path in audio
+            )
+            exact_complete_set = int(
+                expected_track_count > 0
+                and flac_count == expected_track_count
+                and not _discover_incomplete_audio(path)
+            )
+            return exact_complete_set, os.stat(path).st_mtime_ns
+
+        return max(candidates, key=candidate_rank)
+
+    def _quarantine_item_staging_dir(
+        self,
+        item: DownloadItem,
+        staging_dir: str,
+    ) -> str:
+        """Rename residue on the same filesystem without deleting evidence."""
+        item_id = item.id if item.id is not None else "new"
+        source_name = os.path.basename(os.path.normpath(staging_dir))
+        suffix = source_name.partition(f".dap-queue-{item_id}-")[2]
+        suffix = suffix or uuid.uuid4().hex[:8]
+        base_name = f".dap-quarantine-{item_id}-{suffix}"
+        destination = os.path.join(self.downloads_dir, base_name)
+        collision = 1
+        while os.path.exists(destination):
+            destination = os.path.join(
+                self.downloads_dir,
+                f"{base_name}-{collision}",
+            )
+            collision += 1
+        os.rename(staging_dir, destination)
+        logger.warning(
+            "Retained queue residue in quarantine: %s",
+            destination,
+        )
+        return destination
+
+    def _finish_item_staging_dir(
+        self,
+        item: DownloadItem,
+        staging_dir: str,
+    ) -> bool:
+        """Remove an empty attempt directory or quarantine all residue."""
         cleanup_empty_download_directories(staging_dir)
         try:
             os.rmdir(staging_dir)
         except FileNotFoundError:
-            return
+            return False
+        except OSError:
+            try:
+                self._quarantine_item_staging_dir(item, staging_dir)
+                return True
+            except OSError:
+                logger.error(
+                    "Could not quarantine staging residue; leaving it in "
+                    "place: %s",
+                    staging_dir,
+                    exc_info=True,
+                )
+                return False
+        return False
+
+    def _finish_sibling_staging_dirs(
+        self,
+        item: DownloadItem,
+        *,
+        exclude: Sequence[str] = (),
+    ) -> int:
+        """Quarantine or remove every older attempt after proven success."""
+        if item.id is None:
+            return 0
+        excluded = {os.path.abspath(path) for path in exclude}
+        prefix = f".dap-queue-{item.id}-"
+        try:
+            paths = [
+                entry.path
+                for entry in os.scandir(self.downloads_dir)
+                if entry.is_dir(follow_symlinks=False)
+                and entry.name.startswith(prefix)
+                and os.path.abspath(entry.path) not in excluded
+            ]
         except OSError:
             logger.warning(
-                "Retaining isolated staging residue for inspection: %s",
-                staging_dir,
+                "Could not inspect sibling staging for queue item %s",
+                item.id,
+                exc_info=True,
             )
+            return 0
+        return sum(
+            self._finish_item_staging_dir(item, path) for path in paths
+        )
+
+    def _pulse_active_claim(self, *, force: bool = False) -> None:
+        heartbeat = self._active_claim_heartbeat
+        if heartbeat is not None:
+            heartbeat.pulse(force=force)
+
+    def _minimum_acquisition_free_bytes(self) -> int:
+        """Return the configured floor below which fresh downloads stop."""
+        raw_bytes = self.slsk_config.get("download_min_free_bytes")
+        if raw_bytes is not None:
+            try:
+                return max(0, int(raw_bytes))
+            except (TypeError, ValueError):
+                pass
+        try:
+            gibibytes = float(self.slsk_config.get(
+                "download_min_free_gib",
+                DEFAULT_DOWNLOAD_MIN_FREE_GIB,
+            ))
+        except (TypeError, ValueError):
+            gibibytes = float(DEFAULT_DOWNLOAD_MIN_FREE_GIB)
+        return max(0, int(gibibytes * 1024 ** 3))
+
+    def _has_acquisition_disk_space(self) -> Tuple[bool, int, int]:
+        required = self._minimum_acquisition_free_bytes()
+        available = int(shutil.disk_usage(self.downloads_dir).free)
+        return available >= required, available, required
 
     def _update_album_request_progress(
         self,
@@ -512,20 +809,51 @@ class Downloader:
         stage: str,
         detail: str = "",
         completed_tracks: Optional[int] = None,
+        *,
+        claim_owner: Optional[str] = None,
     ) -> None:
         """Best-effort progress for satellite-originated album requests."""
         if item.playlist_id != "SATELLITE_ALBUM" or item.id is None:
             return
-        update = getattr(self.db, "update_album_download_request_progress", None)
-        if not callable(update):
-            return
-        try:
-            update(
+        if claim_owner is None and self._active_claim_heartbeat is not None:
+            claim_owner = self._active_claim_heartbeat.owner
+        update = None
+        update_args: Tuple[Any, ...]
+        if claim_owner:
+            update = getattr(
+                self.db,
+                "update_claimed_album_download_request_progress",
+                None,
+            )
+            update_args = (
+                item.id,
+                claim_owner,
+                stage,
+                str(detail or "")[-2000:],
+                completed_tracks,
+            )
+        else:
+            update = getattr(
+                self.db,
+                "update_album_download_request_progress",
+                None,
+            )
+            update_args = (
                 item.id,
                 stage,
                 str(detail or "")[-2000:],
                 completed_tracks,
             )
+        if not callable(update):
+            return
+        try:
+            updated = update(*update_args)
+            if claim_owner and updated is False:
+                raise DownloadClaimLostError(
+                    f"download claim lost for queue item {item.id}"
+                )
+        except DownloadClaimLostError:
+            raise
         except Exception:
             # Progress visibility must never turn a valid media import into a
             # failed download attempt.
@@ -535,135 +863,436 @@ class Downloader:
                 exc_info=True,
             )
 
-    def run_queue(self, progress_callback=None):
-        """
-        Fetches all 'pending' and 'failed' downloads and attempts to process them.
-        :param progress_callback: func(str) -> None, called with status updates
-        """
+    def _fail_claimed_item(
+        self,
+        item: DownloadItem,
+        owner: str,
+        error_message: str,
+        *,
+        completed_tracks: int = 0,
+        quarantine: bool = False,
+    ) -> bool:
+        """Persist one failure only while this run still owns the item."""
+        if item.id is None:
+            return False
+        if item.playlist_id == "SATELLITE_ALBUM":
+            fail_album = getattr(
+                self.db,
+                "fail_claimed_album_download_request",
+                None,
+            )
+            if callable(fail_album):
+                return bool(fail_album(
+                    item.id,
+                    owner,
+                    error_message,
+                    completed_tracks,
+                    quarantine=quarantine,
+                ))
+        failed = self.db.fail_download_claim(
+            item.id,
+            owner,
+            error_message,
+            quarantine=quarantine,
+        )
+        if failed:
+            self._update_album_request_progress(
+                item,
+                "failed",
+                error_message,
+                completed_tracks,
+            )
+        return bool(failed)
+
+    def _complete_claimed_item(
+        self,
+        item: DownloadItem,
+        owner: str,
+        detail: str,
+        completed_tracks: int,
+    ) -> bool:
+        """Publish success using an owner-fenced database operation."""
+        if item.id is None:
+            return False
+        if item.playlist_id == "SATELLITE_ALBUM":
+            complete_album = getattr(
+                self.db,
+                "complete_claimed_album_download_request",
+                None,
+            )
+            if callable(complete_album):
+                return bool(complete_album(
+                    item.id,
+                    owner,
+                    detail,
+                    completed_tracks,
+                ))
+        completed = self.db.complete_download_claim(item.id, owner)
+        if completed:
+            self._update_album_request_progress(
+                item,
+                "success",
+                detail,
+                completed_tracks,
+            )
+        return bool(completed)
+
+    def _complete_claimed_album_if_already_present(
+        self,
+        item: DownloadItem,
+        owner: str,
+    ) -> bool:
+        """Recover a crash after import but before queue completion."""
+        if item.playlist_id != "SATELLITE_ALBUM" or item.id is None:
+            return False
+        get_request = getattr(
+            self.db,
+            "get_album_download_request_by_queue_item",
+            None,
+        )
+        tracker = get_request(item.id) if callable(get_request) else None
+        if not tracker:
+            return False
+        recording_mbids = tuple(
+            self.db.get_album_download_request_recording_mbids(
+                int(tracker["id"])
+            )
+        )
+        get_manifest = getattr(
+            self.db,
+            "get_album_download_request_track_manifest",
+            None,
+        )
+        track_manifest = usable_exact_track_manifest(tuple(
+            get_manifest(int(tracker["id"]))
+            if callable(get_manifest)
+            else ()
+        ))
+        expected = track_manifest or recording_mbids
+        if not expected:
+            return False
+        inventory = inspect_release_inventory(
+            self.db,
+            str(tracker.get("release_mbid") or ""),
+            expected,
+            self.music_library_dir,
+        )
+        if not inventory.exact:
+            return False
+        detail = (
+            "Recovered completed exact release already present in the master "
+            "library"
+        )
+        if not self._complete_claimed_item(
+            item,
+            owner,
+            detail,
+            inventory.completed_tracks,
+        ):
+            raise DownloadClaimLostError(
+                f"download claim lost for queue item {item.id}"
+            )
+        return True
+
+    def run_queue(
+        self,
+        progress_callback=None,
+        *,
+        include_item_ids: Optional[Sequence[int]] = None,
+        allow_network: bool = True,
+    ) -> DownloadRunSummary:
+        """Process one fixed snapshot, atomically leasing each item once."""
         def report(msg):
             logger.info(msg)
             if progress_callback:
                 progress_callback({"message": msg})
 
         report("Starting download queue run...")
-
-        pending_items = self.db.get_downloads(status="pending")
-        failed_items = self.db.get_downloads(status="failed")
-
-        queue = pending_items + failed_items
-
-        if not queue:
-            report("Download queue is empty")
-            return
-
-        report(
-            f"Processing {len(queue)} items "
-            f"({len(pending_items)} pending, {len(failed_items)} failed)"
+        requested_ids = (
+            {int(item_id) for item_id in include_item_ids}
+            if include_item_ids is not None
+            else None
         )
+        snapshot_items = (
+            self.db.get_downloads(status="pending")
+            + self.db.get_downloads(status="failed")
+        )
+        snapshot_ids: Set[int] = {
+            int(item.id)
+            for item in snapshot_items
+            if item.id is not None
+            and (requested_ids is None or int(item.id) in requested_ids)
+        }
+        if not snapshot_ids:
+            summary = DownloadRunSummary()
+            report(summary.task_message)
+            return summary
 
+        eligible_count = self.db.count_claimable_downloads(
+            include_item_ids=snapshot_ids,
+        )
+        if eligible_count == 0:
+            summary = DownloadRunSummary(eligible_count=0)
+            report(summary.task_message)
+            return summary
+
+        report(f"Processing {eligible_count} eligible queue item(s)")
+        owner = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
+        attempted_ids: Set[int] = set()
         success_count = 0
         fail_count = 0
         changed_file_count = 0
+        claim_lost_count = 0
+        reused_staging_count = 0
+        quarantined_staging_count = 0
+        network_attempt_count = 0
+        fatal_downloader_error = False
 
-        for i, item in enumerate(queue, 1):
-            msg = f"[{i}/{len(queue)}] Processing: {item.search_query}"
-            report(msg)
-            if (
-                item.playlist_id == "SATELLITE_ALBUM"
-                and item.id is not None
-                and item.status == "failed"
-            ):
-                # This queue runner deliberately retries failed rows. Publish
-                # the active attempt as pending before satellite polling sees
-                # the new downloading stage; otherwise the persisted failed
-                # queue state would immediately overwrite live progress.
-                self.db.update_download_status(item.id, "pending")
-            self._update_album_request_progress(
-                item,
-                "downloading",
-                "Starting the master download attempt",
+        while not fatal_downloader_error:
+            item = self.db.claim_next_download(
+                owner,
+                DOWNLOAD_CLAIM_LEASE_SECONDS,
+                include_item_ids=snapshot_ids,
+                exclude_item_ids=attempted_ids,
             )
-            item_staging_dir = None
-
+            if item is None or item.id is None:
+                break
+            attempted_ids.add(int(item.id))
+            msg = (
+                f"[{len(attempted_ids)}/{eligible_count}] Processing: "
+                f"{item.search_query}"
+            )
+            report(msg)
+            item_staging_dir: Optional[str] = None
+            item_claim_lost = False
+            heartbeat = _DownloadClaimHeartbeat(
+                self.db,
+                int(item.id),
+                owner,
+            )
             try:
-                # Pass a specialized callback for the item
-                def item_callback(line):
-                    detail = line.strip()
+                with heartbeat:
+                    self._active_claim_heartbeat = heartbeat
+                    if self._complete_claimed_album_if_already_present(
+                        item,
+                        owner,
+                    ):
+                        quarantined_staging_count += (
+                            self._finish_sibling_staging_dirs(item)
+                        )
+                        success_count += 1
+                        continue
                     self._update_album_request_progress(
                         item,
                         "downloading",
-                        detail,
+                        "Starting the master download attempt",
+                        claim_owner=owner,
                     )
-                    if progress_callback:
-                        progress_callback({
-                            "message": msg,
-                            "detail": detail
-                        })
 
-                if self._try_lidarr_album(item, report):
-                    # Lidarr owns this one now; library scanner will pick
-                    # up the imported file on its next pass.
-                    self._update_album_request_progress(
-                        item,
-                        "importing",
-                        "Lidarr accepted the release; waiting for its library import",
-                    )
-                    self.db.remove_from_queue(item.id)
-                    success_count += 1
-                    continue
+                    def item_callback(line):
+                        heartbeat.pulse()
+                        detail = line.strip()
+                        self._update_album_request_progress(
+                            item,
+                            "downloading",
+                            detail,
+                            claim_owner=owner,
+                        )
+                        if progress_callback:
+                            progress_callback({
+                                "message": msg,
+                                "detail": detail,
+                            })
 
-                item_staging_dir = self._create_item_staging_dir(item)
-                if not self._attempt_download(
-                    item,
-                    item_callback,
-                    staging_dir=item_staging_dir,
-                ):
-                    self._process_failure(
-                        item,
-                        "Downloader completed without staging any audio files",
+                    if allow_network and self._try_lidarr_album(item, report):
+                        detail = (
+                            "Lidarr accepted the release; waiting for its "
+                            "library import"
+                        )
+                        heartbeat.pulse(force=True)
+                        if not self._complete_claimed_item(
+                            item,
+                            owner,
+                            detail,
+                            0,
+                        ):
+                            raise DownloadClaimLostError(
+                                f"download claim lost for queue item {item.id}"
+                            )
+                        quarantined_staging_count += (
+                            self._finish_sibling_staging_dirs(
+                                item,
+                                exclude=(item_staging_dir,)
+                                if item_staging_dir
+                                else (),
+                            )
+                        )
+                        success_count += 1
+                        continue
+
+                    item_staging_dir = (
+                        self._find_reusable_item_staging_dir(item)
                     )
-                    fail_count += 1
-                    continue
-                processed_item = self._process_success(
-                    item,
-                    staging_dir=item_staging_dir,
-                )
-                if isinstance(processed_item, ProcessedQueueItem):
-                    changed_file_count += processed_item.changed_file_count
-                    if processed_item.completed:
+                    if item_staging_dir:
+                        reused_staging_count += 1
+                        report(
+                            f"Reusing retained staging for queue item {item.id}"
+                        )
+                    elif not allow_network:
+                        error = "No retained staging was available; network disabled"
+                        if not self._fail_claimed_item(
+                            item,
+                            owner,
+                            error,
+                            quarantine=True,
+                        ):
+                            raise DownloadClaimLostError(error)
+                        fail_count += 1
+                        continue
+                    else:
+                        has_space, available, required = (
+                            self._has_acquisition_disk_space()
+                        )
+                        if not has_space:
+                            error = (
+                                "Fresh acquisition paused: only "
+                                f"{available / 1024 ** 3:.1f} GiB free; "
+                                f"{required / 1024 ** 3:.1f} GiB required"
+                            )
+                            if not self._fail_claimed_item(
+                                item,
+                                owner,
+                                error,
+                                quarantine=True,
+                            ):
+                                raise DownloadClaimLostError(error)
+                            fail_count += 1
+                            continue
+                        item_staging_dir = self._create_item_staging_dir(item)
+                        network_attempt_count += 1
+                        if not self._attempt_download(
+                            item,
+                            item_callback,
+                            staging_dir=item_staging_dir,
+                        ):
+                            error = (
+                                "Downloader completed without staging any "
+                                "audio files"
+                            )
+                            if not self._fail_claimed_item(item, owner, error):
+                                raise DownloadClaimLostError(error)
+                            fail_count += 1
+                            continue
+
+                    processed_item = self._process_success(
+                        item,
+                        staging_dir=item_staging_dir,
+                        manage_queue_state=False,
+                        claim_owner=owner,
+                    )
+                    if isinstance(processed_item, ProcessedQueueItem):
+                        changed_file_count += processed_item.changed_file_count
+                        completed = processed_item.completed
+                        error_message = processed_item.error_message
+                        completed_tracks = processed_item.completed_tracks
+                        completion_detail = processed_item.completion_detail
+                    else:
+                        # Compatibility for private-method test doubles that
+                        # still return the old integer change count.
+                        changed_file_count += int(processed_item)
+                        completed = True
+                        error_message = ""
+                        completed_tracks = 0
+                        completion_detail = "Download imported successfully"
+
+                    heartbeat.pulse(force=True)
+                    if completed:
+                        if not self._complete_claimed_item(
+                            item,
+                            owner,
+                            completion_detail or "Download imported successfully",
+                            completed_tracks,
+                        ):
+                            raise DownloadClaimLostError(
+                                f"download claim lost for queue item {item.id}"
+                            )
+                        quarantined_staging_count += (
+                            self._finish_sibling_staging_dirs(
+                                item,
+                                exclude=(item_staging_dir,),
+                            )
+                        )
                         success_count += 1
                     else:
+                        if not self._fail_claimed_item(
+                            item,
+                            owner,
+                            error_message or "Downloaded audio was rejected",
+                            completed_tracks=completed_tracks,
+                        ):
+                            raise DownloadClaimLostError(
+                                f"download claim lost for queue item {item.id}"
+                            )
                         fail_count += 1
-                else:
-                    # Compatibility for private-method test doubles that still
-                    # return the pre-result-object integer change count.
-                    changed_file_count += int(processed_item)
-                    success_count += 1
 
             except subprocess.CalledProcessError as e:
                 error_message = f"STDOUT: {(e.stdout or '').strip()} | STDERR: {(e.stderr or '').strip()}"
                 logger.error(f"Download command failed: {error_message}")
-                self._process_failure(item, error_message)
-                fail_count += 1
+                if self._fail_claimed_item(item, owner, error_message):
+                    fail_count += 1
+                else:
+                    fail_count += 1
+                    claim_lost_count += 1
+                    item_claim_lost = True
             except subprocess.TimeoutExpired:
                 logger.error(f"Download timed out: {item.search_query}")
-                self._process_failure(item, "Timeout expired")
-                fail_count += 1
+                if self._fail_claimed_item(item, owner, "Timeout expired"):
+                    fail_count += 1
+                else:
+                    fail_count += 1
+                    claim_lost_count += 1
+                    item_claim_lost = True
             except FileNotFoundError:
                 logger.error("FATAL: slsk-batchdl command not found")
-                self._process_failure(item, "slsk-batchdl command not found")
+                if not self._fail_claimed_item(
+                    item,
+                    owner,
+                    "slsk-batchdl command not found",
+                ):
+                    claim_lost_count += 1
+                    item_claim_lost = True
                 fail_count += 1
                 report("FATAL: slsk-batchdl command not found")
-                break
+                fatal_downloader_error = True
+            except DownloadClaimLostError as exc:
+                logger.error("%s; stopping work on this item", exc)
+                fail_count += 1
+                claim_lost_count += 1
+                item_claim_lost = True
             except Exception as e:
                 logger.error(f"Unexpected error: {e}", exc_info=True)
-                self._process_failure(item, str(e))
+                if not self._fail_claimed_item(item, owner, str(e)):
+                    claim_lost_count += 1
+                    item_claim_lost = True
                 fail_count += 1
             finally:
-                if item_staging_dir:
-                    self._finish_item_staging_dir(item_staging_dir)
+                self._active_claim_heartbeat = None
+                if item_staging_dir and not item_claim_lost:
+                    if self._finish_item_staging_dir(item, item_staging_dir):
+                        quarantined_staging_count += 1
 
-        report(f"Download queue finished. Success: {success_count}, Failed: {fail_count}")
+        summary = DownloadRunSummary(
+            eligible_count=eligible_count,
+            attempted_count=len(attempted_ids),
+            success_count=success_count,
+            failure_count=fail_count,
+            changed_file_count=changed_file_count,
+            claim_lost_count=claim_lost_count,
+            reused_staging_count=reused_staging_count,
+            quarantined_staging_count=quarantined_staging_count,
+            network_attempt_count=network_attempt_count,
+        )
+        report(summary.task_message)
 
         if changed_file_count > 0 and self.lidarr:
             report("Refreshing Lidarr library index...")
@@ -685,6 +1314,7 @@ class Downloader:
         if changed_file_count > 0 and self.jellyfin_client:
             report("Triggering Jellyfin library scan...")
             self.jellyfin_client.trigger_library_scan()
+        return summary
 
     def _attempt_download(
         self,
@@ -837,6 +1467,7 @@ class Downloader:
         idle_timeout_seconds: Optional[int] = None,
     ) -> None:
         """Run one sldl command and stream its output."""
+        self._pulse_active_claim(force=True)
         # Keep argv structured (``shell=False`` is Popen's default) and never
         # expose the Soulseek password in debug logs. ``repr`` also escapes
         # newlines in malformed input rather than allowing log-line injection.
@@ -913,6 +1544,8 @@ class Downloader:
             # its timeout. A daemon reader plus a bounded queue wait enforces
             # one real wall-clock deadline while preserving streamed progress.
             while True:
+                # Keep the lease alive even when sldl has emitted no output.
+                self._pulse_active_claim()
                 remaining = min(deadline, idle_deadline) - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(logged_command, total_timeout)
@@ -933,6 +1566,7 @@ class Downloader:
                     if item_callback:
                         item_callback(safe_line)
 
+            self._pulse_active_claim(force=True)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(logged_command, total_timeout)
@@ -1470,9 +2104,32 @@ class Downloader:
         self,
         item: DownloadItem,
         staging_dir: Optional[str] = None,
+        *,
+        manage_queue_state: bool = True,
+        claim_owner: Optional[str] = None,
     ) -> ProcessedQueueItem:
-        """Handles a successful download (Single Track or Album)"""
+        """Consume staged audio and report whether the queue item is complete.
+
+        Direct/private callers retain the historical queue mutations. The
+        public queue runner disables them and applies the returned outcome
+        through owner-fenced claim methods instead.
+        """
         logger.debug("Processing successful download...")
+
+        def failed_result(
+            detail: str,
+            *,
+            changed: int = 0,
+            completed_tracks: int = 0,
+        ) -> ProcessedQueueItem:
+            if manage_queue_state:
+                self._process_failure(item, detail)
+            return ProcessedQueueItem(
+                changed_file_count=changed,
+                completed=False,
+                error_message=detail,
+                completed_tracks=completed_tracks,
+            )
 
         active_staging_dir = staging_dir or self.downloads_dir
         found_files = discover_downloaded_audio(active_staging_dir)
@@ -1482,32 +2139,32 @@ class Downloader:
                 "Download reported success but no audio files found in %s",
                 active_staging_dir,
             )
-            self._process_failure(
-                item,
-                "Download completed without any staged audio files",
+            return failed_result(
+                "Download completed without any staged audio files"
             )
-            return ProcessedQueueItem(changed_file_count=0, completed=False)
 
         is_album_mode = item.search_query.startswith(ALBUM_QUERY_PREFIX)
         logger.info(f"Found {len(found_files)} files. Processing...")
         album_manifest: Optional[Mapping[str, Any]] = None
         album_inventory = None
+        album_tracker: Optional[Mapping[str, Any]] = None
         if item.playlist_id == "SATELLITE_ALBUM" and item.id is not None:
             get_request = getattr(
                 self.db,
                 "get_album_download_request_by_queue_item",
                 None,
             )
-            tracker = get_request(item.id) if callable(get_request) else None
-            if not tracker:
-                self._process_failure(
-                    item,
-                    "Verified album tracker is missing; staged files were not imported",
+            album_tracker = (
+                get_request(item.id) if callable(get_request) else None
+            )
+            if not album_tracker:
+                return failed_result(
+                    "Verified album tracker is missing; staged files were not "
+                    "imported"
                 )
-                return ProcessedQueueItem(changed_file_count=0, completed=False)
             recording_mbids = tuple(
                 self.db.get_album_download_request_recording_mbids(
-                    int(tracker["id"])
+                    int(album_tracker["id"])
                 )
             )
             get_track_manifest = getattr(
@@ -1516,26 +2173,24 @@ class Downloader:
                 None,
             )
             track_manifest = usable_exact_track_manifest(tuple(
-                get_track_manifest(int(tracker["id"]))
+                get_track_manifest(int(album_tracker["id"]))
                 if callable(get_track_manifest)
                 else ()
             ))
             if not recording_mbids:
-                self._process_failure(
-                    item,
+                return failed_result(
                     "Verified MusicBrainz recording manifest is missing",
                 )
-                return ProcessedQueueItem(changed_file_count=0, completed=False)
             album_manifest = {
-                "release_mbid": tracker.get("release_mbid"),
-                "artist": tracker.get("artist"),
-                "title": tracker.get("title"),
+                "release_mbid": album_tracker.get("release_mbid"),
+                "artist": album_tracker.get("artist"),
+                "title": album_tracker.get("title"),
                 "recording_mbids": recording_mbids,
                 "tracks": track_manifest,
             }
             album_inventory = inspect_release_inventory(
                 self.db,
-                str(tracker.get("release_mbid") or ""),
+                str(album_tracker.get("release_mbid") or ""),
                 track_manifest or recording_mbids,
                 self.music_library_dir,
             )
@@ -1544,6 +2199,7 @@ class Downloader:
             "importing",
             f"Importing {len(found_files)} downloaded FLAC file(s)",
             album_inventory.completed_tracks if album_inventory else 0,
+            claim_owner=claim_owner,
         )
 
         satisfied_count = 0
@@ -1554,6 +2210,7 @@ class Downloader:
         # retry and the residue must stay isolated for inspection.
         rejected_count = len(incomplete_files)
         for file_path in found_files:
+            self._pulse_active_claim()
             try:
                 if album_manifest is None:
                     processed = self._process_downloaded_file(
@@ -1596,23 +2253,67 @@ class Downloader:
                         "importing",
                         f"Imported {satisfied_count} of {len(found_files)} file(s)",
                         progress_count,
+                        claim_owner=claim_owner,
                     )
                     mirror_changed = self._mirror_to_jellyfin(imported_path)
                     if library_changed or mirror_changed:
                         changed_count += 1
                 else:
                     rejected_count += 1
+            except DownloadClaimLostError:
+                raise
             except Exception as e:
                 logger.error(f"Error processing file {file_path}: {e}")
                 rejected_count += 1
+            self._pulse_active_claim()
 
         cleanup_empty_download_directories(active_staging_dir)
 
-        if rejected_count:
-            self._process_failure(
-                item,
+        verified_present = satisfied_count
+        if album_manifest is not None and album_tracker is not None:
+            inventory = inspect_release_inventory(
+                self.db,
+                str(album_manifest.get("release_mbid") or ""),
+                tuple(
+                    album_manifest.get("tracks")
+                    or album_manifest.get("recording_mbids")
+                    or ()
+                ),
+                self.music_library_dir,
+            )
+            verified_present = inventory.completed_tracks
+            if not inventory.exact:
+                detail = (
+                    "MusicBrainz completion check failed: "
+                    f"{inventory.completed_tracks} of {inventory.total_tracks} "
+                    "exact release tracks are present"
+                )
+                if rejected_count:
+                    detail += (
+                        f"; {rejected_count} staged artifact(s) were rejected "
+                        "or incomplete"
+                    )
+                return failed_result(
+                    detail,
+                    changed=changed_count,
+                    completed_tracks=verified_present,
+                )
+
+            if rejected_count:
+                # Exact completion is defined by the persisted MusicBrainz
+                # manifest, not by every unrelated Soulseek artifact being
+                # importable. The caller quarantines those leftovers.
+                logger.warning(
+                    "Exact release for item %s is complete; quarantining %s "
+                    "unrelated or incomplete staged artifact(s).",
+                    item.id,
+                    rejected_count,
+                )
+        elif rejected_count:
+            detail = (
                 "Rejected or incomplete audio artifacts: "
-                f"{rejected_count} of {len(found_files) + len(incomplete_files)}",
+                f"{rejected_count} of "
+                f"{len(found_files) + len(incomplete_files)}"
             )
             logger.warning(
                 "Item %s remains failed after importing %s file(s); %s staged "
@@ -1621,80 +2322,45 @@ class Downloader:
                 satisfied_count,
                 rejected_count,
             )
-            return ProcessedQueueItem(
-                changed_file_count=changed_count,
-                completed=False,
+            return failed_result(
+                detail,
+                changed=changed_count,
+                completed_tracks=verified_present,
             )
-
-        verified_present = satisfied_count
-        if item.playlist_id == "SATELLITE_ALBUM" and item.id is not None:
-            get_request = getattr(
-                self.db,
-                "get_album_download_request_by_queue_item",
-                None,
-            )
-            if callable(get_request):
-                tracker = get_request(item.id)
-                if tracker:
-                    release_mbid = str(tracker.get("release_mbid") or "")
-                    recording_mbids = (
-                        self.db.get_album_download_request_recording_mbids(
-                            int(tracker["id"])
-                        )
-                    )
-                    get_track_manifest = getattr(
-                        self.db,
-                        "get_album_download_request_track_manifest",
-                        None,
-                    )
-                    track_manifest = usable_exact_track_manifest((
-                        get_track_manifest(int(tracker["id"]))
-                        if callable(get_track_manifest)
-                        else ()
-                    ))
-                    inventory = inspect_release_inventory(
-                        self.db,
-                        release_mbid,
-                        track_manifest or recording_mbids,
-                        self.music_library_dir,
-                    )
-                    verified_present = inventory.completed_tracks
-                    if not inventory.exact:
-                        self._process_failure(
-                            item,
-                            "MusicBrainz completion check failed: "
-                            f"{inventory.completed_tracks} of "
-                            f"{inventory.total_tracks} exact release tracks "
-                            "are present",
-                        )
-                        return ProcessedQueueItem(
-                            changed_file_count=changed_count,
-                            completed=False,
-                        )
 
         completion_detail = (
             f"Imported {satisfied_count} FLAC file(s) into the master library"
         )
-        complete_request = getattr(
-            self.db,
-            "complete_album_download_request",
-            None,
-        )
-        if (
-            item.playlist_id == "SATELLITE_ALBUM"
-            and item.id is not None
-            and callable(complete_request)
-            and complete_request(item.id, completion_detail, verified_present)
-        ):
-            pass
-        else:
-            self.db.remove_from_queue(item.id)
-            self._update_album_request_progress(
-                item,
-                "success",
-                completion_detail,
-                verified_present,
+        if rejected_count:
+            completion_detail += (
+                f"; retained {rejected_count} unrelated staged artifact(s) "
+                "in quarantine"
             )
+        if manage_queue_state:
+            complete_request = getattr(
+                self.db,
+                "complete_album_download_request",
+                None,
+            )
+            if (
+                item.playlist_id == "SATELLITE_ALBUM"
+                and item.id is not None
+                and callable(complete_request)
+                and complete_request(
+                    item.id,
+                    completion_detail,
+                    verified_present,
+                )
+            ):
+                pass
+            else:
+                self.db.remove_from_queue(item.id)
+                self._update_album_request_progress(
+                    item,
+                    "success",
+                    completion_detail,
+                    verified_present,
+                )
         logger.info(
             "Item %s processing complete (%s file(s) imported).",
             item.id,
@@ -1703,6 +2369,8 @@ class Downloader:
         return ProcessedQueueItem(
             changed_file_count=changed_count,
             completed=True,
+            completed_tracks=verified_present,
+            completion_detail=completion_detail,
         )
 
 
@@ -1745,7 +2413,14 @@ def _build_lidarr_client(config: dict) -> Optional[LidarrClient]:
     return client
 
 
-def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=None):
+def main_run_downloader(
+    db: DatabaseManager,
+    config: dict,
+    progress_callback=None,
+    *,
+    include_item_ids: Optional[Sequence[int]] = None,
+    allow_network: bool = True,
+) -> DownloadRunSummary:
     """
     Main entry point for running the downloader from manager.py
     """
@@ -1756,8 +2431,9 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
 
     # Validation
     if not slsk_cmd_base or not downloads_path or not music_library_path:
-        logger.error("Downloader configuration incomplete in config.json")
-        return
+        error = "Downloader configuration incomplete in config.json"
+        logger.error(error)
+        return DownloadRunSummary(configuration_error=error)
 
     lidarr_client = _build_lidarr_client(config)
     jellyfin_client = _build_jellyfin_client(config)
@@ -1785,7 +2461,11 @@ def main_run_downloader(db: DatabaseManager, config: dict, progress_callback=Non
     )
 
     # Run the queue
-    downloader.run_queue(progress_callback=progress_callback)
+    return downloader.run_queue(
+        progress_callback=progress_callback,
+        include_item_ids=include_item_ids,
+        allow_network=allow_network,
+    )
 
 
 if __name__ == "__main__":

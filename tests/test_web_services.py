@@ -233,6 +233,24 @@ def test_task_manager_injects_progress_callback_and_resets_state():
     assert manager.progress_detail == "1 of 2"
 
 
+def test_task_manager_preserves_truthful_structured_result_message():
+    manager = TaskManager()
+
+    class PartialFailure:
+        task_message = "Download queue finished with failures. Success: 1, Failed: 2."
+
+    started, message = manager.start_task(
+        lambda: PartialFailure(),
+        task_name="Download Queue",
+    )
+
+    assert (started, message) == (True, "Task started.")
+    _wait_until_idle(manager)
+    assert manager.message == (
+        "Download queue finished with failures. Success: 1, Failed: 2."
+    )
+
+
 def test_task_manager_rejects_overlapping_work():
     manager = TaskManager()
     release = threading.Event()

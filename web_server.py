@@ -237,7 +237,11 @@ def run_scan(db_path, conf):
 
 def run_download(db_path, conf, progress_callback=None):
     with DatabaseManager(db_path) as db:
-        main_run_downloader(db, conf._config, progress_callback=progress_callback)
+        return main_run_downloader(
+            db,
+            conf._config,
+            progress_callback=progress_callback,
+        )
 
 
 def run_sync(db_path, conf, mode, fmt, reconcile=False):

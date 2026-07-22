@@ -3,10 +3,14 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from unittest.mock import MagicMock, patch
 from mutagen.flac import FLAC
 from src.downloader import (
+    DOWNLOAD_CLAIM_HEARTBEAT_SECONDS,
+    DownloadClaimLostError,
     Downloader,
+    DownloadRunSummary,
     ProcessedDownload,
     ProcessedQueueItem,
     build_download_command,
@@ -2430,6 +2434,42 @@ def test_main_run_downloader(db, temp_dirs):
         mock_downloader.run_queue.assert_called_once()
 
 
+def test_main_run_downloader_forwards_bounded_retained_only_run(
+    db,
+    temp_dirs,
+):
+    config = {
+        "slsk_cmd_base": ["slsk-batchdl"],
+        "downloads_path": temp_dirs["downloads"],
+        "music_library_path": temp_dirs["music_library"],
+        "slsk_username": "test_user",
+        "slsk_password": "test_pass",
+    }
+    expected = DownloadRunSummary(
+        eligible_count=1,
+        attempted_count=1,
+        success_count=1,
+        reused_staging_count=1,
+    )
+
+    with patch("src.downloader.Downloader") as downloader_class, \
+         patch("src.downloader.LibraryScanner"):
+        downloader_class.return_value.run_queue.return_value = expected
+        result = main_run_downloader(
+            db,
+            config,
+            include_item_ids=[24],
+            allow_network=False,
+        )
+
+    assert result is expected
+    downloader_class.return_value.run_queue.assert_called_once_with(
+        progress_callback=None,
+        include_item_ids=[24],
+        allow_network=False,
+    )
+
+
 # --- Lidarr handoff -------------------------------------------------
 
 def _album_item(release_mbid="rel-mb", query="::ALBUM:: Artist - Album", item_id=1):
@@ -2756,3 +2796,308 @@ def test_build_lidarr_client_happy_path():
         instance.ping.return_value = True
         cls.return_value = instance
         assert _build_lidarr_client(config) is instance
+
+
+# --- durable queue claims / retained-attempt recovery ----------------
+
+def test_run_queue_processes_only_its_initial_snapshot_once(
+    downloader,
+    db,
+):
+    first_id = db.queue_download(DownloadItem(
+        search_query="Artist - First",
+        playlist_id="playlist",
+        mbid_guess="",
+    ))
+    queued_during_run = []
+
+    def attempt(_item, _callback=None, *, staging_dir=None):
+        queued_during_run.append(db.queue_download(DownloadItem(
+            search_query="Artist - Later",
+            playlist_id="playlist",
+            mbid_guess="",
+        )))
+        with open(os.path.join(staging_dir, "first.flac"), "wb") as handle:
+            handle.write(b"flac")
+        return True
+
+    def process(path, *_args):
+        os.remove(path)
+        return ProcessedDownload("/music/first.flac", True)
+
+    with patch.object(downloader, "_attempt_download", side_effect=attempt), \
+         patch.object(
+             downloader,
+             "_process_downloaded_file",
+             side_effect=process,
+         ):
+        summary = downloader.run_queue()
+
+    assert summary == DownloadRunSummary(
+        eligible_count=1,
+        attempted_count=1,
+        success_count=1,
+        changed_file_count=1,
+        network_attempt_count=1,
+    )
+    assert db.get_download_status(first_id) is None
+    assert db.get_download_status(queued_during_run[0]) == "pending"
+
+
+def test_retained_exact_album_is_reused_and_extras_are_quarantined(
+    downloader,
+    db,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    recording_mbid = SATELLITE_RECORDINGS[0]
+    queue_id = db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess=release_mbid,
+    ))
+    request_id = db.create_album_download_request(
+        queue_item_id=queue_id,
+        release_mbid=release_mbid,
+        artist="Artist",
+        title="Album",
+        track_count=1,
+        stage="failed",
+        detail="Earlier validation failure",
+        completed_tracks=0,
+        recording_mbids=(recording_mbid,),
+    )
+    retained = tempfile.mkdtemp(
+        prefix=f".dap-queue-{queue_id}-",
+        dir=temp_dirs["downloads"],
+    )
+    accepted = os.path.join(retained, "01 Track.flac")
+    extra = os.path.join(retained, "bonus.flac")
+    for path in (accepted, extra):
+        with open(path, "wb") as handle:
+            handle.write(b"flac")
+
+    def process(path, *_args):
+        if path == extra:
+            return None
+        os.remove(path)
+        target = os.path.join(temp_dirs["music_library"], "01 Track.flac")
+        _write_tagged_flac(target, recording_mbid, release_mbid)
+        db.add_or_update_track(Track(
+            mbid=recording_mbid,
+            title="Track",
+            artist="Artist",
+            album="Album",
+            release_mbid=release_mbid,
+            local_path=target,
+        ))
+        return ProcessedDownload(target, True)
+
+    with patch.object(downloader, "_attempt_download") as network, \
+         patch.object(
+             downloader,
+             "_process_downloaded_file",
+             side_effect=process,
+         ):
+        summary = downloader.run_queue(
+            include_item_ids=[queue_id],
+            allow_network=False,
+        )
+
+    network.assert_not_called()
+    assert summary.success_count == 1
+    assert summary.failure_count == 0
+    assert summary.reused_staging_count == 1
+    assert summary.quarantined_staging_count == 1
+    assert summary.network_attempt_count == 0
+    assert db.get_download_status(queue_id) is None
+    assert db.get_album_download_request(request_id)["stage"] == "success"
+    quarantine = [
+        name for name in os.listdir(temp_dirs["downloads"])
+        if name.startswith(f".dap-quarantine-{queue_id}-")
+    ]
+    assert len(quarantine) == 1
+    assert os.path.isfile(os.path.join(
+        temp_dirs["downloads"],
+        quarantine[0],
+        "bonus.flac",
+    ))
+
+
+def test_retained_selection_prefers_exact_clean_flac_count_over_newest(
+    downloader,
+    db,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    queue_id = db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess=release_mbid,
+    ))
+    db.create_album_download_request(
+        queue_item_id=queue_id,
+        release_mbid=release_mbid,
+        artist="Artist",
+        title="Album",
+        track_count=2,
+        stage="failed",
+        detail="Earlier failure",
+        completed_tracks=0,
+        recording_mbids=SATELLITE_RECORDINGS,
+    )
+    exact = tempfile.mkdtemp(
+        prefix=f".dap-queue-{queue_id}-",
+        dir=temp_dirs["downloads"],
+    )
+    noisy = tempfile.mkdtemp(
+        prefix=f".dap-queue-{queue_id}-",
+        dir=temp_dirs["downloads"],
+    )
+    for directory, count in ((exact, 2), (noisy, 3)):
+        for number in range(count):
+            with open(
+                os.path.join(directory, f"{number}.flac"),
+                "wb",
+            ) as handle:
+                handle.write(b"flac")
+    os.utime(exact, (1, 1))
+    os.utime(noisy, (2, 2))
+    item = db.get_downloads(status="pending")[0]
+
+    assert downloader._find_reusable_item_staging_dir(item) == exact
+
+
+def test_exact_album_already_present_completes_without_staging_or_network(
+    downloader,
+    db,
+    temp_dirs,
+):
+    release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    recording_mbid = SATELLITE_RECORDINGS[0]
+    queue_id = db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="SATELLITE_ALBUM",
+        mbid_guess=release_mbid,
+    ))
+    request_id = db.create_album_download_request(
+        queue_item_id=queue_id,
+        release_mbid=release_mbid,
+        artist="Artist",
+        title="Album",
+        track_count=1,
+        stage="queued",
+        detail="Waiting",
+        completed_tracks=0,
+        recording_mbids=(recording_mbid,),
+    )
+    target = os.path.join(temp_dirs["music_library"], "01 Track.flac")
+    _write_tagged_flac(target, recording_mbid, release_mbid)
+    db.add_or_update_track(Track(
+        mbid=recording_mbid,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        release_mbid=release_mbid,
+        local_path=target,
+    ))
+
+    with patch.object(downloader, "_attempt_download") as network:
+        summary = downloader.run_queue(
+            include_item_ids=[queue_id],
+            allow_network=False,
+        )
+
+    network.assert_not_called()
+    assert summary.success_count == 1
+    assert summary.network_attempt_count == 0
+    assert db.get_download_status(queue_id) is None
+    assert db.get_album_download_request(request_id)["stage"] == "success"
+
+
+@patch("subprocess.Popen")
+def test_sldl_silent_wait_checks_claim_heartbeat(mock_popen, downloader):
+    released = threading.Event()
+
+    class SilentOutput:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            released.wait(timeout=1)
+            raise StopIteration
+
+    process = MagicMock(stdout=SilentOutput(), returncode=0)
+    mock_popen.return_value = process
+    heartbeat = MagicMock()
+    downloader._active_claim_heartbeat = heartbeat
+    timer = threading.Timer(0.35, released.set)
+    timer.start()
+    try:
+        downloader._run_sldl_command(["sldl"])
+    finally:
+        timer.cancel()
+        downloader._active_claim_heartbeat = None
+
+    assert DOWNLOAD_CLAIM_HEARTBEAT_SECONDS == 60
+    assert heartbeat.pulse.call_count >= 3
+
+
+def test_fresh_download_stops_below_free_space_floor(
+    downloader,
+    db,
+):
+    queue_id = db.queue_download(DownloadItem(
+        search_query="Artist - Large Album",
+        playlist_id="playlist",
+        mbid_guess="",
+    ))
+    disk_usage = MagicMock(free=19 * 1024 ** 3)
+
+    with patch("src.downloader.shutil.disk_usage", return_value=disk_usage), \
+         patch.object(downloader, "_attempt_download") as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_not_called()
+    assert summary.failure_count == 1
+    assert summary.network_attempt_count == 0
+    failed = db.get_downloads(status="failed")[0]
+    assert failed.is_quarantined is True
+    assert "19.0 GiB free" in (failed.last_error or "")
+
+
+def test_lost_claim_does_not_rename_another_owners_staging(
+    downloader,
+    db,
+    temp_dirs,
+):
+    queue_id = db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="playlist",
+        mbid_guess="",
+    ))
+    retained = tempfile.mkdtemp(
+        prefix=f".dap-queue-{queue_id}-",
+        dir=temp_dirs["downloads"],
+    )
+    with open(os.path.join(retained, "track.flac"), "wb") as handle:
+        handle.write(b"flac")
+
+    with patch.object(
+        downloader,
+        "_process_success",
+        side_effect=DownloadClaimLostError("claim changed owners"),
+    ), patch.object(
+        downloader,
+        "_finish_item_staging_dir",
+        wraps=downloader._finish_item_staging_dir,
+    ) as finish:
+        summary = downloader.run_queue(
+            include_item_ids=[queue_id],
+            allow_network=False,
+        )
+
+    assert summary.claim_lost_count == 1
+    finish.assert_not_called()
+    assert os.path.isdir(retained)
+    assert os.path.isfile(os.path.join(retained, "track.flac"))

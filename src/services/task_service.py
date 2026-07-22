@@ -56,12 +56,18 @@ class TaskManager:
         try:
             signature = inspect.signature(func)
             if "progress_callback" in signature.parameters:
-                func(*args, progress_callback=self.update_progress)
+                result = func(*args, progress_callback=self.update_progress)
             else:
-                func(*args)
+                result = func(*args)
 
             with self.lock:
-                self.message = f"{self.current_task} completed successfully."
+                result_message = getattr(result, "task_message", None)
+                if isinstance(result_message, str) and result_message.strip():
+                    self.message = result_message.strip()
+                else:
+                    self.message = (
+                        f"{self.current_task} completed successfully."
+                    )
         except Exception as exc:
             logger.error("Task failed: %s", exc, exc_info=True)
             with self.lock:
