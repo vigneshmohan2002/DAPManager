@@ -60,7 +60,15 @@ function isDownloadQueueItem(value: unknown): value is DownloadQueueItem {
     isNumber(value.id) &&
     isString(value.query) &&
     isString(value.status) &&
-    isNullableString(value.last_attempt)
+    isNullableString(value.last_attempt) &&
+    (value.attempt_count === undefined || isNumber(value.attempt_count)) &&
+    (value.max_attempts === undefined || isNumber(value.max_attempts)) &&
+    (value.next_attempt_at === undefined ||
+      isNullableString(value.next_attempt_at)) &&
+    (value.is_paused === undefined || typeof value.is_paused === "boolean") &&
+    (value.is_quarantined === undefined ||
+      typeof value.is_quarantined === "boolean") &&
+    (value.last_error === undefined || isNullableString(value.last_error))
   );
 }
 

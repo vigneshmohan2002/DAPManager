@@ -493,6 +493,15 @@ export type DownloadQueueItem = {
   // the schema so logs / DB / API don't translate three different ways.
   status: "pending" | "failed" | "success" | string;
   last_attempt: string | null;
+  // Retry metadata was added after the original queue API. Keep each field
+  // optional so desktop clients remain compatible with older masters while a
+  // rolling upgrade is in progress.
+  attempt_count?: number;
+  max_attempts?: number;
+  next_attempt_at?: string | null;
+  is_paused?: boolean;
+  is_quarantined?: boolean;
+  last_error?: string | null;
 };
 
 export type ClearCompletedResult = ActionResult & { removed: number };

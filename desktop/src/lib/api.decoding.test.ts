@@ -366,4 +366,44 @@ describe("desktop API runtime decoding", () => {
       mbid_guess: releaseMbid,
     });
   });
+
+  it("decodes additive download retry state while accepting older queue rows", async () => {
+    const retryState = {
+      id: 2,
+      query: "Artist - Exact Album",
+      status: "failed",
+      last_attempt: "2026-07-22T20:00:00+00:00",
+      attempt_count: 2,
+      max_attempts: 3,
+      next_attempt_at: "2026-07-22T20:05:00+00:00",
+      is_paused: false,
+      is_quarantined: true,
+      last_error: "Exact release remains incomplete",
+    };
+    const api = await loadApiWithResponses(
+      jsonResponse({
+        success: true,
+        items: [
+          {
+            id: 1,
+            query: "Legacy row",
+            status: "failed",
+            last_attempt: null,
+          },
+          retryState,
+          { ...retryState, id: 3, is_quarantined: 1 },
+        ],
+      }),
+    );
+
+    await expect(api.fetchDownloads()).resolves.toEqual([
+      {
+        id: 1,
+        query: "Legacy row",
+        status: "failed",
+        last_attempt: null,
+      },
+      retryState,
+    ]);
+  });
 });

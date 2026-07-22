@@ -275,13 +275,14 @@ function Section({
                     i > 0 ? "border-t border-[var(--color-border)]" : ""
                   }
                 >
-                  <td className="px-3 py-2 text-[var(--color-text)] truncate max-w-[480px]">
-                    {r.query}
+                  <td className="px-3 py-2 text-[var(--color-text)] max-w-[480px] align-top">
+                    <div className="truncate">{r.query}</div>
+                    {showRetry ? <FailedDownloadDetails item={r} /> : null}
                   </td>
-                  <td className="px-3 py-2 text-[var(--color-text-muted)] whitespace-nowrap">
+                  <td className="px-3 py-2 text-[var(--color-text-muted)] whitespace-nowrap align-top">
                     {relativeTime(r.last_attempt)}
                   </td>
-                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                  <td className="px-3 py-2 text-right whitespace-nowrap align-top">
                     {showRetry ? (
                       <button
                         onClick={() => onRetry(r.id)}
@@ -307,4 +308,63 @@ function Section({
       )}
     </section>
   );
+}
+
+function FailedDownloadDetails({ item }: { item: DownloadQueueItem }) {
+  const states: string[] = [];
+  if (item.is_quarantined) states.push("Quarantined");
+  if (item.is_paused) states.push("Paused");
+  if (item.next_attempt_at) {
+    states.push(`Retry scheduled ${formatRetryTime(item.next_attempt_at)}`);
+  }
+
+  const attempt = attemptLabel(item);
+  if (states.length === 0 && !attempt && !item.last_error) return null;
+
+  return (
+    <div className="mt-1.5 space-y-1">
+      {states.length > 0 || attempt ? (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {states.map((state) => (
+            <span
+              key={state}
+              className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[var(--color-text-muted)]"
+            >
+              {state}
+            </span>
+          ))}
+          {attempt ? (
+            <span className="text-[var(--color-text-muted)]">{attempt}</span>
+          ) : null}
+        </div>
+      ) : null}
+      {item.last_error ? (
+        <div className="text-xs text-rose-300 whitespace-pre-wrap break-words">
+          <span className="font-medium">Last error:</span> {item.last_error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function attemptLabel(item: DownloadQueueItem): string | null {
+  if (item.attempt_count !== undefined && item.max_attempts !== undefined) {
+    return `Attempt ${item.attempt_count}/${item.max_attempts}`;
+  }
+  if (item.attempt_count !== undefined) return `Attempt ${item.attempt_count}`;
+  if (item.max_attempts !== undefined) return `Retry limit ${item.max_attempts}`;
+  return null;
+}
+
+function formatRetryTime(stamp: string): string {
+  const normalized = stamp.replace(" ", "T");
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(normalized);
+  // Queue timestamps are persisted as naive UTC for SQLite compatibility.
+  const iso = hasTimezone ? normalized : `${normalized}Z`;
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return stamp;
+  return new Date(parsed).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
