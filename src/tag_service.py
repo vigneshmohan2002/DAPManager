@@ -530,11 +530,11 @@ def identify_file_for_release(
     """Identify audio while binding the result to one selected release.
 
     AcoustID commonly returns one recording on many releases, and its release
-    list is not exhaustive. When a persisted recording is supplied, AcoustID
-    must identify that recording; the fetched exact MusicBrainz release then
-    independently proves that it belongs to the selected edition. Without a
-    persisted recording, candidates are filtered and disambiguated against
-    the exact release. Metadata always comes from that exact release payload.
+    list is not exhaustive. AcoustID must first identify one unambiguous
+    recording without using the requested edition as a filter. A persisted
+    recording, when supplied, must be that winning identity. The fetched exact
+    MusicBrainz release then independently proves that the winner belongs to
+    the selected edition. Metadata always comes from that exact release.
     """
     expected_release = _canonical_uuid(release_mbid)
     expected_recording = _canonical_uuid(recording_mbid)
@@ -584,13 +584,37 @@ def identify_file_for_release(
             candidate_recording = _canonical_uuid(recording.get("id"))
             if not candidate_recording:
                 continue
-            if expected_recording and candidate_recording != expected_recording:
-                continue
             candidate_scores[candidate_recording] = max(
                 score,
                 candidate_scores.get(candidate_recording, -1.0),
             )
     if not candidate_scores:
+        return None
+
+    ranked_candidates = sorted(
+        candidate_scores.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if (
+        len(ranked_candidates) > 1
+        and ranked_candidates[0][1] - ranked_candidates[1][1]
+        < ACOUSTID_AMBIGUITY_MARGIN
+    ):
+        logger.warning(
+            "identify_file_for_release: ambiguous AcoustID recordings "
+            "(%.3f vs %.3f)",
+            ranked_candidates[0][1],
+            ranked_candidates[1][1],
+        )
+        return None
+    identified_recording, score = ranked_candidates[0]
+    if expected_recording and identified_recording != expected_recording:
+        logger.warning(
+            "identify_file_for_release: AcoustID winner %s did not match "
+            "expected recording %s",
+            identified_recording,
+            expected_recording,
+        )
         return None
 
     try:
@@ -605,42 +629,13 @@ def identify_file_for_release(
     if _canonical_uuid(release_info.get("id")) != expected_release:
         return None
 
-    release_candidates: list[
-        Tuple[str, float, Mapping[str, Any], Mapping[str, Any]]
-    ] = []
-    for candidate_recording, score in candidate_scores.items():
-        selection = _select_musicbrainz_track_context(
-            release_info,
-            candidate_recording,
-        )
-        if selection is None:
-            continue
-        track_info, medium = selection
-        release_candidates.append(
-            (candidate_recording, score, track_info, medium)
-        )
-    if not release_candidates:
-        return None
-    ranked_candidates = sorted(
-        release_candidates,
-        key=lambda item: (-item[1], item[0]),
+    selection = _select_musicbrainz_track_context(
+        release_info,
+        identified_recording,
     )
-    if (
-        not expected_recording
-        and len(ranked_candidates) > 1
-        and ranked_candidates[0][1] - ranked_candidates[1][1]
-        < ACOUSTID_AMBIGUITY_MARGIN
-    ):
-        logger.warning(
-            "identify_file_for_release: ambiguous AcoustID recordings for "
-            "release %s (%.3f vs %.3f)",
-            expected_release,
-            ranked_candidates[0][1],
-            ranked_candidates[1][1],
-        )
+    if selection is None:
         return None
-
-    identified_recording, score, track_info, medium = ranked_candidates[0]
+    track_info, medium = selection
     media = [
         item for item in (release_info.get("medium-list") or [])
         if isinstance(item, Mapping)

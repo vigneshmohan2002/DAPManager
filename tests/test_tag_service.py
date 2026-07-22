@@ -500,7 +500,7 @@ def test_release_bound_identification_without_expected_recording_rejects_candida
     get_release.assert_called_once()
 
 
-def test_release_bound_identification_ignores_higher_scoring_wrong_edition(
+def test_release_bound_identification_rejects_higher_scoring_wrong_recording(
     tmp_path,
 ):
     path = tmp_path / "selected.flac"
@@ -569,33 +569,44 @@ def test_release_bound_identification_ignores_higher_scoring_wrong_edition(
     ), patch(
         "src.tag_service.mb.get_release_by_id",
         return_value=release,
-    ), patch("src.tag_service.mb.configure"):
+    ) as get_release, patch("src.tag_service.mb.configure"):
         candidate = tag_service.identify_file_for_release(
             str(path), "key", release_id, recording_id,
         )
 
-    assert candidate is not None
-    assert candidate["score"] == 0.96
-    assert candidate["tier"] == "green"
-    assert candidate["meta"] == {
-        "artist": "Track Artist",
-        "album_artist": "Album Artist",
-        "album": "Selected Edition",
-        "title": "Canonical Track",
-        "date": "2026-07-18",
-        "track_number": 2,
-        "track_total": 3,
-        "disc_number": 2,
-        "disc_total": 2,
-        "mbid": recording_id,
-        "release_mbid": release_id,
-        "release_track_mbid": release_track_id,
-    }
-    assert tag_service.is_safe_auto_candidate(
-        candidate,
-        expected_release_mbid=release_id,
-        expected_recording_mbid=recording_id,
-    )
+    assert candidate is None
+    get_release.assert_not_called()
+
+
+def test_release_bound_identification_without_expected_recording_rejects_lower_scoring_release_match(
+    tmp_path,
+):
+    path = tmp_path / "confirmation-bias.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    outside_recording = "00000000-0000-4000-8000-000000000001"
+    release_recording = "00000000-0000-4000-8000-000000000002"
+    response = {"results": [
+        {"score": 0.99, "recordings": [{"id": outside_recording}]},
+        {"score": 0.91, "recordings": [{"id": release_recording}]},
+    ]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recording(release_id, release_recording),
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path), "key", release_id,
+        )
+
+    assert candidate is None
+    get_release.assert_called_once()
 
 
 def test_release_bound_identification_rejects_ambiguous_recordings(tmp_path):
@@ -642,7 +653,7 @@ def test_release_bound_identification_rejects_ambiguous_recordings(tmp_path):
         )
 
     assert candidate is None
-    get_release.assert_called_once()
+    get_release.assert_not_called()
 
 
 @pytest.mark.parametrize("unsafe_score", [float("inf"), float("nan"), -0.1, 1.1])
