@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from src.db_manager import Track
 from src.sync_dap import (
+    DownloadStepFailure,
     EnhancedDapSyncer,
     SyncMode,
     SyncRequest,
@@ -82,6 +83,127 @@ def test_typed_sync_request_preserves_artist_and_confirmation_policy():
         artist_filter="Massive Attack",
         reconcile=True,
         confirm_large_sync=confirm,
+    )
+
+
+def test_typed_sync_request_returns_structured_download_outcome():
+    syncer = MagicMock()
+    syncer.get_sync_stats.return_value = {
+        "total_tracks": 3,
+        "pending_tracks": 2,
+        "sync_percentage": 33.3,
+    }
+    outcome = SimpleNamespace(
+        task_success=False,
+        task_message=(
+            "Download queue finished with failures. Success: 1, Failed: 1."
+        )
+    )
+    syncer.run_sync.return_value = outcome
+
+    with patch("src.sync_dap._build_syncer", return_value=syncer):
+        result = run_sync_request(MagicMock(), {}, SyncRequest())
+
+    assert result is outcome
+
+
+def test_syncer_propagates_download_outcome_after_remaining_steps():
+    syncer = EnhancedDapSyncer.__new__(EnhancedDapSyncer)
+    outcome = SimpleNamespace(
+        task_success=False,
+        task_message="Download queue failed safely.",
+    )
+    syncer.downloader = MagicMock()
+    syncer.downloader.run_queue.return_value = outcome
+    syncer._sync_tracks = MagicMock()
+    syncer._import_missing_tracks_from_dap = MagicMock()
+    syncer._generate_playlists = MagicMock()
+    syncer._backup_database = MagicMock()
+
+    result = syncer.run_sync(mode=SyncMode.PLAYLISTS_ONLY)
+
+    assert result is outcome
+    syncer._sync_tracks.assert_called_once_with(
+        SyncMode.PLAYLISTS_ONLY,
+        None,
+        None,
+    )
+    syncer._import_missing_tracks_from_dap.assert_called_once_with()
+    syncer._generate_playlists.assert_called_once_with()
+    syncer._backup_database.assert_called_once_with()
+
+
+def test_syncer_keeps_none_returning_downloader_compatible():
+    syncer = EnhancedDapSyncer.__new__(EnhancedDapSyncer)
+    syncer.downloader = MagicMock()
+    syncer.downloader.run_queue.return_value = None
+    syncer._sync_tracks = MagicMock()
+    syncer._import_missing_tracks_from_dap = MagicMock()
+    syncer._generate_playlists = MagicMock()
+    syncer._backup_database = MagicMock()
+
+    assert syncer.run_sync() is None
+
+
+def test_syncer_keeps_successful_download_message_scoped_to_sync_task():
+    syncer = EnhancedDapSyncer.__new__(EnhancedDapSyncer)
+    outcome = SimpleNamespace(
+        task_success=True,
+        task_message="Download queue completed successfully.",
+    )
+    syncer.downloader = MagicMock()
+    syncer.downloader.run_queue.return_value = outcome
+    syncer._sync_tracks = MagicMock()
+    syncer._import_missing_tracks_from_dap = MagicMock()
+    syncer._generate_playlists = MagicMock()
+    syncer._backup_database = MagicMock()
+
+    assert syncer.run_sync() is None
+
+
+def test_syncer_surfaces_nonfatal_download_exception_after_finishing_sync():
+    syncer = EnhancedDapSyncer.__new__(EnhancedDapSyncer)
+    syncer.downloader = MagicMock()
+    syncer.downloader.run_queue.side_effect = RuntimeError("claim store offline")
+    syncer._sync_tracks = MagicMock()
+    syncer._import_missing_tracks_from_dap = MagicMock()
+    syncer._generate_playlists = MagicMock()
+    syncer._backup_database = MagicMock()
+
+    result = syncer.run_sync()
+
+    assert result == DownloadStepFailure(error="claim store offline")
+    assert result.task_success is False
+    assert result.task_message == (
+        "DAP sync finished, but the download queue failed: claim store offline"
+    )
+    syncer._backup_database.assert_called_once_with()
+
+
+def test_main_sync_entry_point_returns_nested_download_outcome():
+    outcome = SimpleNamespace(
+        task_success=False,
+        task_message="Download queue failed safely.",
+    )
+
+    with patch(
+        "src.sync_dap.run_sync_request",
+        return_value=outcome,
+    ) as run_request:
+        result = main_run_sync(
+            MagicMock(),
+            {},
+            sync_mode="library",
+            conversion_format="opus",
+            reconcile=True,
+        )
+
+    assert result is outcome
+    request = run_request.call_args.args[2]
+    assert request == SyncRequest(
+        mode=SyncMode.FULL_LIBRARY,
+        conversion_format="opus",
+        reconcile=True,
     )
 
 

@@ -3069,6 +3069,8 @@ def _config_file_present(monkeypatch, tmp_path):
 
 
 def test_downloads_list_returns_serialized_items(client, mock_config, _config_file_present):
+    from datetime import datetime, timezone
+
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
         item = MagicMock()
@@ -3076,6 +3078,14 @@ def test_downloads_list_returns_serialized_items(client, mock_config, _config_fi
         item.search_query = "Beck - Loser"
         item.status = "failed"
         item.last_attempt = None
+        item.attempt_count = 2
+        item.max_attempts = 3
+        item.next_attempt_at = datetime(
+            2026, 7, 22, 21, 15, tzinfo=timezone.utc
+        )
+        item.is_paused = False
+        item.is_quarantined = True
+        item.last_error = "Exact release remains incomplete"
         inst.get_all_downloads.return_value = [item]
 
         res = client.get('/api/downloads/list')
@@ -3084,8 +3094,48 @@ def test_downloads_list_returns_serialized_items(client, mock_config, _config_fi
     body = res.get_json()
     assert body["success"] is True
     assert body["items"] == [
-        {"id": 7, "query": "Beck - Loser", "status": "failed", "last_attempt": None}
+        {
+            "id": 7,
+            "query": "Beck - Loser",
+            "status": "failed",
+            "last_attempt": None,
+            "attempt_count": 2,
+            "max_attempts": 3,
+            "next_attempt_at": "2026-07-22T21:15:00+00:00",
+            "is_paused": False,
+            "is_quarantined": True,
+            "last_error": "Exact release remains incomplete",
+        }
     ]
+
+
+def test_downloads_list_serializes_empty_retry_metadata_as_null(
+    client,
+    mock_config,
+    _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        item = MagicMock(
+            id=8,
+            search_query="Portishead - Roads",
+            status="pending",
+            last_attempt=None,
+            attempt_count=0,
+            max_attempts=3,
+            next_attempt_at=None,
+            is_paused=False,
+            is_quarantined=False,
+            last_error=None,
+        )
+        inst.get_all_downloads.return_value = [item]
+
+        res = client.get('/api/downloads/list')
+
+    assert res.status_code == 200
+    payload = res.get_json()["items"][0]
+    assert payload["next_attempt_at"] is None
+    assert payload["last_error"] is None
 
 
 def test_retry_download_flips_failed_to_pending(client, mock_config, _config_file_present):

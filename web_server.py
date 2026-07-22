@@ -246,7 +246,7 @@ def run_download(db_path, conf, progress_callback=None):
 
 def run_sync(db_path, conf, mode, fmt, reconcile=False):
     with DatabaseManager(db_path) as db:
-        main_run_sync(
+        return main_run_sync(
             db, conf._config, sync_mode=mode, conversion_format=fmt, reconcile=reconcile
         )
 
@@ -359,7 +359,7 @@ def build_suggestion_items(raw_items):
 
 def run_complete_albums(db_path, conf, run_downloads=False, progress_callback=None):
     """Run the full album completion pipeline, optionally followed by downloads."""
-    album_task_service.run_album_completion_pipeline(
+    return album_task_service.run_album_completion_pipeline(
         db_path=db_path,
         config_values=conf._config,
         run_downloads=run_downloads,
@@ -3128,6 +3128,16 @@ def get_downloads_list():
                     "last_attempt": (
                         item.last_attempt.isoformat() if item.last_attempt else None
                     ),
+                    "attempt_count": item.attempt_count,
+                    "max_attempts": item.max_attempts,
+                    "next_attempt_at": (
+                        item.next_attempt_at.isoformat()
+                        if item.next_attempt_at
+                        else None
+                    ),
+                    "is_paused": item.is_paused,
+                    "is_quarantined": item.is_quarantined,
+                    "last_error": item.last_error,
                 }
             )
 

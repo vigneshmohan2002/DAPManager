@@ -1,6 +1,7 @@
 import threading
 import time
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 from src.services import config_service
 
@@ -249,6 +250,66 @@ def test_task_manager_preserves_truthful_structured_result_message():
     assert manager.message == (
         "Download queue finished with failures. Success: 1, Failed: 2."
     )
+
+
+def test_web_sync_wrapper_returns_structured_nested_outcome(monkeypatch):
+    import web_server
+
+    outcome = SimpleNamespace(task_message="Download queue failed safely.")
+    database = MagicMock()
+    database.__enter__.return_value = "db"
+    run_sync = Mock(return_value=outcome)
+    monkeypatch.setattr(
+        web_server,
+        "DatabaseManager",
+        Mock(return_value=database),
+        raising=False,
+    )
+    monkeypatch.setattr(web_server, "main_run_sync", run_sync, raising=False)
+    config = SimpleNamespace(_config={"music_library_path": "/music"})
+
+    result = web_server.run_sync(
+        "library.db",
+        config,
+        "library",
+        "flac",
+        reconcile=True,
+    )
+
+    assert result is outcome
+    run_sync.assert_called_once_with(
+        "db",
+        config._config,
+        sync_mode="library",
+        conversion_format="flac",
+        reconcile=True,
+    )
+
+
+def test_web_album_completion_wrapper_returns_pipeline_outcome(monkeypatch):
+    import web_server
+
+    outcome = SimpleNamespace(task_message="Download queue failed safely.")
+    pipeline = Mock(return_value=outcome)
+    monkeypatch.setattr(
+        web_server.album_task_service,
+        "run_album_completion_pipeline",
+        pipeline,
+    )
+    monkeypatch.setattr(web_server, "DatabaseManager", Mock(), raising=False)
+    monkeypatch.setattr(web_server, "complete_albums_logic", Mock(), raising=False)
+    monkeypatch.setattr(web_server, "main_run_downloader", Mock(), raising=False)
+    monkeypatch.setattr(web_server, "main_scan_library", Mock(), raising=False)
+    config = SimpleNamespace(_config={"music_library_path": "/music"})
+
+    result = web_server.run_complete_albums(
+        "library.db",
+        config,
+        run_downloads=True,
+    )
+
+    assert result is outcome
+    assert pipeline.call_args.kwargs["run_downloads"] is True
 
 
 def test_task_manager_rejects_overlapping_work():

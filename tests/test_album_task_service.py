@@ -150,6 +150,76 @@ def test_album_completion_propagates_download_error_without_rescan():
     scan.assert_not_called()
 
 
+def test_album_completion_propagates_structured_download_task_message():
+    events = []
+
+    class DownloadSummary:
+        task_success = False
+        task_message = (
+            "Download queue finished with failures. Success: 1, Failed: 1."
+        )
+
+    summary = DownloadSummary()
+    result = run_album_completion_pipeline(
+        db_path="library.db",
+        config_values={},
+        run_downloads=True,
+        database_factory=database_factory(events),
+        complete_albums=lambda db, progress_callback=None: {
+            "tracks_queued": 2
+        },
+        run_downloader=lambda db, config, progress_callback=None: summary,
+        scan_library=lambda db, config: None,
+    )
+
+    assert result.download_result is summary
+    assert result.task_message == summary.task_message
+    assert result.downloads_run is True
+    assert result.rescan_run is True
+
+
+def test_album_completion_keeps_successful_download_message_scoped_to_outer_task():
+    events = []
+
+    class DownloadSummary:
+        task_success = True
+        task_message = "Download queue completed successfully."
+
+    result = run_album_completion_pipeline(
+        db_path="library.db",
+        config_values={},
+        run_downloads=True,
+        database_factory=database_factory(events),
+        complete_albums=lambda db, progress_callback=None: {
+            "tracks_queued": 1
+        },
+        run_downloader=lambda db, config, progress_callback=None: (
+            DownloadSummary()
+        ),
+        scan_library=lambda db, config: None,
+    )
+
+    assert result.task_message is None
+
+
+def test_album_completion_keeps_none_returning_downloader_compatible():
+    events = []
+    result = run_album_completion_pipeline(
+        db_path="library.db",
+        config_values={},
+        run_downloads=True,
+        database_factory=database_factory(events),
+        complete_albums=lambda db, progress_callback=None: {
+            "tracks_queued": 1
+        },
+        run_downloader=lambda db, config, progress_callback=None: None,
+        scan_library=lambda db, config: None,
+    )
+
+    assert result.download_result is None
+    assert result.task_message is None
+
+
 def test_audit_queue_album_mode_uses_marker_and_ignores_track_items():
     db = MagicMock()
     item_factory = MagicMock(return_value="album-download")

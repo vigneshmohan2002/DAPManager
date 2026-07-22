@@ -8,7 +8,7 @@ wrapper preserve its established monkeypatch points.
 """
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Dict,
@@ -60,7 +60,15 @@ class DownloadOperation(Protocol):
         db: Any,
         config_values: Mapping[str, Any],
         progress_callback: Optional[ProgressCallback] = None,
-    ) -> Any: ...
+    ) -> Optional["TaskMessageOutcome"]: ...
+
+
+class TaskMessageOutcome(Protocol):
+    @property
+    def task_success(self) -> bool: ...
+
+    @property
+    def task_message(self) -> str: ...
 
 
 class ScanOperation(Protocol):
@@ -88,11 +96,26 @@ class DownloadItemFactory(Protocol):
 
 @dataclass(frozen=True)
 class AlbumCompletionResult:
-    """Internal outcome; background wrappers may intentionally discard it."""
+    """Album work plus any structured outcome from the download phase."""
 
     summary: AlbumCompletionSummary
     downloads_run: bool
     rescan_run: bool
+    download_result: Optional[TaskMessageOutcome] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def task_message(self) -> Optional[str]:
+        """Expose only a failed downloader outcome to ``TaskManager``."""
+        if getattr(self.download_result, "task_success", None) is not False:
+            return None
+        message = getattr(self.download_result, "task_message", None)
+        if not isinstance(message, str) or not message.strip():
+            return None
+        return message.strip()
 
 
 @dataclass(frozen=True)
@@ -138,7 +161,7 @@ def run_album_completion_pipeline(
     if progress_callback:
         progress_callback({"message": "Downloading queued tracks..."})
     with database_factory(db_path) as db:
-        run_downloader(
+        download_result = run_downloader(
             db,
             config_values,
             progress_callback=progress_callback,
@@ -153,6 +176,7 @@ def run_album_completion_pipeline(
         summary=summary,
         downloads_run=True,
         rescan_run=True,
+        download_result=download_result,
     )
 
 

@@ -7,11 +7,11 @@ import os
 import subprocess
 import logging
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 from enum import Enum
 from .db_manager import DatabaseManager, Track
 from .library_scanner import LibraryScanner
-from .downloader import Downloader
+from .downloader import Downloader, DownloadRunSummary
 import shutil
 from .utils import get_mbid_from_tags, sanitize_path_component
 
@@ -36,6 +36,26 @@ class SyncRequest:
     conversion_format: str = "flac"
     artist_filter: Optional[str] = None
     reconcile: bool = False
+
+
+@dataclass(frozen=True)
+class DownloadStepFailure:
+    """A non-fatal download error that remains visible to task callers."""
+
+    error: str
+
+    @property
+    def task_success(self) -> bool:
+        return False
+
+    @property
+    def task_message(self) -> str:
+        return f"DAP sync finished, but the download queue failed: {self.error}"
+
+
+DownloadStepOutcome = Optional[
+    Union[DownloadRunSummary, DownloadStepFailure]
+]
 
 
 class ConversionOptions:
@@ -151,14 +171,16 @@ class EnhancedDapSyncer:
         os.makedirs(self.dap_playlist_path, exist_ok=True)
         return True
 
-    def _run_downloader(self):
+    def _run_downloader(self) -> DownloadStepOutcome:
         """Runs the downloader to retry failed/pending downloads."""
         logger.info("--- Step 1: Running Download Queue ---")
         try:
-            self.downloader.run_queue()
+            return self.downloader.run_queue()
         except Exception as e:
             logger.warning(f"Download run failed: {e}")
-        logger.info("--- Download Queue Finished ---\n")
+            return DownloadStepFailure(error=str(e))
+        finally:
+            logger.info("--- Download Queue Finished ---\n")
 
     def _get_tracks_to_sync(
         self, mode: SyncMode, artist_filter: Optional[str] = None
@@ -522,7 +544,7 @@ class EnhancedDapSyncer:
         skip_downloads: bool = False,
         reconcile: bool = False,
         confirm_large_sync: Optional[SyncConfirmation] = None,
-    ):
+    ) -> DownloadStepOutcome:
         """
         Main sync entry point.
 
@@ -541,8 +563,9 @@ class EnhancedDapSyncer:
         if reconcile:
              self.reconcile_dap_to_db()
 
+        download_result = None
         if not skip_downloads:
-            self._run_downloader()
+            download_result = self._run_downloader()
 
         self._sync_tracks(mode, artist_filter, confirm_large_sync)
         
@@ -557,6 +580,9 @@ class EnhancedDapSyncer:
         logger.info("=" * 50)
         logger.info("Sync Complete!")
         logger.info("=" * 50)
+        if getattr(download_result, "task_success", None) is False:
+            return download_result
+        return None
 
     def get_sync_stats(self) -> dict:
         """Get statistics about what needs syncing."""
@@ -626,7 +652,7 @@ def run_sync_request(
     request: SyncRequest,
     *,
     confirm_large_sync: Optional[SyncConfirmation] = None,
-) -> None:
+) -> DownloadStepOutcome:
     """Execute a typed sync request without reading from stdin."""
     syncer = _build_syncer(db, config, request.conversion_format)
     stats = syncer.get_sync_stats()
@@ -635,7 +661,7 @@ def run_sync_request(
         f"{stats['pending_tracks']} pending sync "
         f"({stats['sync_percentage']:.1f}% synced)"
     )
-    syncer.run_sync(
+    return syncer.run_sync(
         mode=request.mode,
         artist_filter=request.artist_filter,
         reconcile=request.reconcile,
@@ -649,9 +675,9 @@ def main_run_sync(
     sync_mode: str = "playlists",
     conversion_format: str = "flac",
     reconcile: bool = False,
-):
+) -> DownloadStepOutcome:
     """Run a non-interactive DAP sync through the compatibility entry point."""
-    run_sync_request(
+    return run_sync_request(
         db,
         config,
         SyncRequest(
