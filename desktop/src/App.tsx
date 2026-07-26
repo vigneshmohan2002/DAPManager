@@ -31,6 +31,14 @@ function App() {
   const [queueOpen, setQueueOpen] = useState(false);
   const [lyricsOpen, setLyricsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const toggleQueue = useCallback(() => {
+    setQueueOpen((open) => !open);
+    setLyricsOpen(false);
+  }, []);
+  const toggleLyrics = useCallback(() => {
+    setLyricsOpen((open) => !open);
+    setQueueOpen(false);
+  }, []);
   // Mini-player mode is purely a layout switch — same window, same
   // PlayerProvider, same audio element. Triggered by the user
   // shrinking the window via `enterMiniPlayer` (or by hand).
@@ -206,9 +214,9 @@ function App() {
             </div>
             <PlayerBar
               queueOpen={queueOpen}
-              onToggleQueue={() => setQueueOpen((open) => !open)}
+              onToggleQueue={toggleQueue}
               lyricsOpen={lyricsOpen}
-              onToggleLyrics={() => setLyricsOpen((open) => !open)}
+              onToggleLyrics={toggleLyrics}
             />
             <SearchOverlay
               open={searchOpen}

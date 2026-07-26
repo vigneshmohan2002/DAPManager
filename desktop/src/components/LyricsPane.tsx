@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchLyrics, saveLyrics, type LyricsResponse } from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
+import Icon from "./Icon";
 
 type Props = {
   open: boolean;
@@ -137,43 +138,58 @@ export default function LyricsPane({ open, onClose }: Props) {
   };
 
   return (
-    <aside className="w-96 shrink-0 bg-[var(--color-bg-sidebar)] border-l border-[var(--color-border)] flex flex-col">
-      <header className="h-14 shrink-0 border-b border-[var(--color-border)] flex items-center px-4 gap-2">
+    <aside
+      aria-label="Lyrics"
+      className="flex w-[21rem] min-w-[18rem] max-w-[22rem] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg-elevated)]"
+    >
+      <header className="flex h-[54px] shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-4">
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold">Lyrics</div>
+          <div className="text-[13px] font-semibold tracking-[-0.01em]">
+            Lyrics
+          </div>
           {current && (
-            <div className="text-xs text-[var(--color-text-muted)] truncate">
+            <div className="truncate text-[11px] leading-4 text-[var(--color-text-muted)]">
               {current.title}
             </div>
           )}
         </div>
         {data?.source && !editing && (
           <button
+            type="button"
             onClick={startEditing}
-            className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="doppler-control h-7 rounded-md px-2 text-[11px] font-medium"
             title="Paste your own lyrics for this track"
           >
             Edit
           </button>
         )}
         <button
+          type="button"
           onClick={onClose}
           aria-label="Close lyrics"
-          className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          className="doppler-control grid h-7 w-7 place-items-center rounded-md"
         >
-          ✕
+          <Icon name="close" size={14} />
         </button>
       </header>
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto px-6 py-6 text-sm"
+        className="flex-1 overflow-y-auto px-6 py-7 text-[13px]"
       >
         {!current ? (
-          <p className="text-[var(--color-text-muted)]">Nothing playing.</p>
+          <div className="grid min-h-40 place-items-center text-center text-[var(--color-text-muted)]">
+            <div>
+              <Icon name="lyrics" size={24} className="mx-auto mb-2 opacity-45" />
+              <p className="font-medium text-[var(--color-text)]">
+                Nothing playing
+              </p>
+              <p className="mt-1 text-[11px]">Lyrics will appear here.</p>
+            </div>
+          </div>
         ) : loading ? (
           <p className="text-[var(--color-text-muted)]">Loading…</p>
         ) : error ? (
-          <p className="text-[var(--color-accent)]">{error}</p>
+          <p className="text-[var(--color-danger)]">{error}</p>
         ) : editing ? (
           <Editor
             draft={draft}
@@ -186,34 +202,43 @@ export default function LyricsPane({ open, onClose }: Props) {
         ) : !data?.lrc ? (
           <EmptyState onAdd={startEditing} stale={data?.stale} />
         ) : data.synced ? (
-          <ol className="flex flex-col gap-3 leading-relaxed">
+          <ol className="flex flex-col gap-3.5 leading-relaxed">
             {lines.map((line, i) => {
               const active = i === activeIndex;
               return (
                 <li
                   key={`${line.tMs}-${i}`}
                   data-lyric-index={i}
-                  onClick={() => seek(line.tMs / 1000)}
-                  className={`cursor-pointer transition-all ${
-                    active
-                      ? "text-[var(--color-text)] text-base font-medium"
-                      : i < activeIndex
-                        ? "text-[var(--color-text-muted)]/40"
-                        : "text-[var(--color-text-muted)]/70 hover:text-[var(--color-text)]"
-                  }`}
                 >
-                  {line.text || " "}
+                  <button
+                    type="button"
+                    onClick={() => seek(line.tMs / 1000)}
+                    aria-label={`Seek to ${Math.floor(line.tMs / 60_000)}:${Math.floor(
+                      (line.tMs % 60_000) / 1_000,
+                    )
+                      .toString()
+                      .padStart(2, "0")}`}
+                    className={`w-full cursor-pointer rounded-sm text-left transition-all ${
+                      active
+                        ? "text-[15px] font-semibold text-[var(--color-text)]"
+                        : i < activeIndex
+                          ? "text-[var(--color-text-muted)]/40"
+                          : "text-[var(--color-text-muted)]/70 hover:text-[var(--color-text)]"
+                    }`}
+                  >
+                    {line.text || " "}
+                  </button>
                 </li>
               );
             })}
           </ol>
         ) : (
-          <pre className="whitespace-pre-wrap leading-relaxed text-[var(--color-text-muted)] font-sans">
+          <pre className="whitespace-pre-wrap font-sans leading-relaxed text-[var(--color-text-muted)]">
             {data.lrc}
           </pre>
         )}
         {data?.stale && !editing && (
-          <p className="mt-4 text-[11px] text-amber-400/80">
+          <p className="mt-4 text-[11px] text-[var(--color-text-muted)]">
             Couldn't reach LRCLIB — showing the cached copy.
           </p>
         )}
@@ -230,15 +255,17 @@ function EmptyState({
   stale?: boolean;
 }) {
   return (
-    <div className="flex flex-col items-center text-center gap-3 py-12">
+    <div className="flex flex-col items-center gap-3 py-12 text-center">
+      <Icon name="lyrics" size={24} className="opacity-45" />
       <p className="text-[var(--color-text-muted)]">
         {stale
           ? "Couldn't reach LRCLIB and there's nothing cached for this track."
           : "No lyrics found on LRCLIB for this track."}
       </p>
       <button
+        type="button"
         onClick={onAdd}
-        className="text-xs px-3 py-1.5 rounded border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-text-muted)]"
+        className="doppler-control rounded-md border border-[var(--color-border)] px-3 py-1.5 text-[11px] font-medium"
       >
         Paste lyrics manually
       </button>
@@ -273,7 +300,7 @@ function Editor({
         onChange={(e) => onChangeDraft(e.target.value)}
         placeholder="Lyrics here…"
         rows={12}
-        className="w-full px-3 py-2 rounded bg-[var(--color-surface)] border border-[var(--color-border)] text-sm font-mono text-[var(--color-text)] focus:outline-none focus:border-[var(--color-accent)]"
+        className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-content)] px-3 py-2 font-mono text-[12px] text-[var(--color-text)] shadow-inner focus:border-[var(--color-accent)] focus:outline-none"
       />
       <label className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
         <input
@@ -285,15 +312,17 @@ function Editor({
       </label>
       <div className="flex items-center gap-2 justify-end">
         <button
+          type="button"
           onClick={onCancel}
-          className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] px-3 py-1.5"
+          className="doppler-control rounded-md px-3 py-1.5 text-[11px]"
         >
           Cancel
         </button>
         <button
+          type="button"
           onClick={onSave}
           disabled={!draft.trim()}
-          className="text-xs px-3 py-1.5 rounded bg-[var(--color-accent)] text-white disabled:opacity-40"
+          className="rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-[11px] font-medium text-white disabled:opacity-40"
         >
           Save
         </button>

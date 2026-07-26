@@ -1,4 +1,8 @@
-import { useEffect, useRef } from "react";
+import {
+  useEffect,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 
 type Props = {
   peaks: Float32Array;
@@ -6,8 +10,6 @@ type Props = {
   duration: number;
   onSeek: (seconds: number) => void;
 };
-
-const UNFILLED = "#3a3a3c";
 
 export default function WaveformSeeker({
   peaks,
@@ -42,6 +44,9 @@ export default function WaveformSeeker({
       const accent =
         getComputedStyle(canvas).getPropertyValue("--color-accent").trim() ||
         "#fff";
+      const unfilled =
+        getComputedStyle(canvas).getPropertyValue("--color-surface").trim() ||
+        "#3a3a3c";
       const playedFrac =
         duration > 0 ? Math.min(1, Math.max(0, position / duration)) : 0;
       const playedX = playedFrac * cssW;
@@ -56,7 +61,7 @@ export default function WaveformSeeker({
       for (let i = 0; i < n; i++) {
         const x = i * barW;
         const h = Math.max(1, peaks[i] * cssH);
-        ctx.fillStyle = x + drawW <= playedX ? accent : UNFILLED;
+        ctx.fillStyle = x + drawW <= playedX ? accent : unfilled;
         ctx.fillRect(x, mid - h / 2, drawW, h);
       }
     };
@@ -81,6 +86,31 @@ export default function WaveformSeeker({
     onSeek(frac * duration);
   };
 
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (duration <= 0) return;
+    const step = event.shiftKey ? 15 : 5;
+    let nextPosition: number | null = null;
+    switch (event.key) {
+      case "ArrowLeft":
+      case "ArrowDown":
+        nextPosition = Math.max(0, position - step);
+        break;
+      case "ArrowRight":
+      case "ArrowUp":
+        nextPosition = Math.min(duration, position + step);
+        break;
+      case "Home":
+        nextPosition = 0;
+        break;
+      case "End":
+        nextPosition = duration;
+        break;
+    }
+    if (nextPosition === null) return;
+    event.preventDefault();
+    onSeek(nextPosition);
+  };
+
   return (
     <div
       ref={containerRef}
@@ -91,6 +121,7 @@ export default function WaveformSeeker({
       aria-valuenow={position}
       tabIndex={0}
       className="flex-1 h-7 cursor-pointer select-none"
+      onKeyDown={handleKeyDown}
       onPointerDown={(e) => {
         (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
         seekFromEvent(e.clientX, e.currentTarget.getBoundingClientRect());

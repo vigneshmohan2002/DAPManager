@@ -173,9 +173,36 @@ vi.mock("./components/MiniPlayer", () => ({
   default: () => <div data-testid="mini-player">Mini player</div>,
 }));
 
-vi.mock("./components/PlayerBar", () => ({ default: () => null }));
-vi.mock("./components/LyricsPane", () => ({ default: () => null }));
-vi.mock("./components/QueuePanel", () => ({ default: () => null }));
+vi.mock("./components/PlayerBar", () => ({
+  default: ({
+    queueOpen,
+    onToggleQueue,
+    lyricsOpen,
+    onToggleLyrics,
+  }: {
+    queueOpen: boolean;
+    onToggleQueue: () => void;
+    lyricsOpen: boolean;
+    onToggleLyrics: () => void;
+  }) => (
+    <div>
+      <button onClick={onToggleQueue}>
+        {queueOpen ? "Hide test queue" : "Show test queue"}
+      </button>
+      <button onClick={onToggleLyrics}>
+        {lyricsOpen ? "Hide test lyrics" : "Show test lyrics"}
+      </button>
+    </div>
+  ),
+}));
+vi.mock("./components/LyricsPane", () => ({
+  default: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="lyrics-pane">Lyrics</div> : null,
+}));
+vi.mock("./components/QueuePanel", () => ({
+  default: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="queue-panel">Queue</div> : null,
+}));
 vi.mock("./components/SearchOverlay", () => ({ default: () => null }));
 
 describe("App navigation contract", () => {
@@ -325,5 +352,22 @@ describe("App navigation contract", () => {
 
     expect(await screen.findByTestId("mini-player")).toBeInTheDocument();
     expect(screen.queryByTestId("sidebar")).not.toBeInTheDocument();
+  });
+
+  it("keeps the queue and lyrics rails mutually exclusive", async () => {
+    render(<App />);
+    await screen.findByTestId("home-screen");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show test queue" }));
+    expect(screen.getByTestId("queue-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("lyrics-pane")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show test lyrics" }));
+    expect(screen.getByTestId("lyrics-pane")).toBeInTheDocument();
+    expect(screen.queryByTestId("queue-panel")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show test queue" }));
+    expect(screen.getByTestId("queue-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("lyrics-pane")).not.toBeInTheDocument();
   });
 });
