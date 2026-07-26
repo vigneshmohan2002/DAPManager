@@ -94,6 +94,13 @@ def list_public_albums(db: LibraryQueryStore) -> Dict[str, Any]:
             "id": album["id"],
             "title": album["title"],
             "artist": album["artist"],
+            "primary_artist": album.get(
+                "primary_artist",
+                album["artist"],
+            ),
+            "credited_artists": list(
+                album.get("credited_artists") or [album["artist"]]
+            ),
             "track_count": album["track_count"],
         }
         for album in db.list_albums()

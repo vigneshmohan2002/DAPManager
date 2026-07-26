@@ -45,6 +45,19 @@ function isOptionalBoolean(value: unknown): value is boolean | undefined {
   return value === undefined || typeof value === "boolean";
 }
 
+function isOptionalStringArray(value: unknown): value is string[] | undefined {
+  return (
+    value === undefined ||
+    (Array.isArray(value) && value.every((item) => isString(item)))
+  );
+}
+
+function isOptionalNullableString(
+  value: unknown,
+): value is string | null | undefined {
+  return value === undefined || isNullableString(value);
+}
+
 function isTrack(value: unknown): value is Track {
   if (!isJsonRecord(value)) return false;
   return (
@@ -85,7 +98,9 @@ function isAlbum(value: unknown): value is Album {
     isString(value.id) &&
     isString(value.title) &&
     isString(value.artist) &&
-    isNumber(value.track_count)
+    isNumber(value.track_count) &&
+    isOptionalNullableString(value.primary_artist) &&
+    isOptionalStringArray(value.credited_artists)
   );
 }
 

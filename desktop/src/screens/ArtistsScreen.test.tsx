@@ -172,6 +172,48 @@ describe("ArtistsScreen", () => {
     ).toHaveAttribute("data-base-url", "http://localhost:5001");
   });
 
+  it("associates a credited track artist with the parent album and its artwork", async () => {
+    const featuredArtist: Artist = {
+      name: "2Pac featuring Big Syke",
+      album_count: 0,
+      track_count: 2,
+    };
+    apiMocks.fetchArtists.mockResolvedValue([featuredArtist]);
+    apiMocks.fetchAlbums.mockResolvedValue([
+      {
+        id: "all-eyez-on-me",
+        title: "All Eyez on Me",
+        artist: "2Pac",
+        track_count: 27,
+        primary_artist: "2Pac",
+        credited_artists: ["2Pac", featuredArtist.name],
+      },
+    ]);
+
+    const { container } = render(
+      <ArtistsScreen
+        ready
+        selectedArtist={featuredArtist}
+        onOpen={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("button", {
+      name: `Open artist ${featuredArtist.name}`,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(`Artist detail ${featuredArtist.name}`),
+      ).toHaveAttribute("data-album-count", "1"),
+    );
+
+    expect(
+      container.querySelector<HTMLImageElement>(
+        'img[src="http://localhost:5001/covers/all-eyez-on-me"]',
+      ),
+    ).not.toBeNull();
+  });
+
   it("does not load artists before setup is ready", () => {
     render(<ArtistsScreen ready={false} onOpen={vi.fn()} />);
 

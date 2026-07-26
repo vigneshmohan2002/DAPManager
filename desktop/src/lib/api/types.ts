@@ -3,6 +3,8 @@ export type Album = {
   title: string;
   artist: string;
   track_count: number;
+  primary_artist?: string | null;
+  credited_artists?: string[];
 };
 
 export type Artist = {

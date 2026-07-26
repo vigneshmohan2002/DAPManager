@@ -410,7 +410,66 @@ class LibraryRepository(SQLiteRepository):
                 ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE
                 """
             )
-            return [dict(row) for row in cursor.fetchall()]
+            albums = [dict(row) for row in cursor.fetchall()]
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(
+                        NULLIF(release_mbid, ''),
+                        album || '|' || artist
+                    ) AS album_id,
+                    artist,
+                    COUNT(*) AS credit_count
+                FROM tracks
+                WHERE deleted_at IS NULL
+                  AND album IS NOT NULL AND album != ''
+                  AND artist IS NOT NULL AND artist != ''
+                GROUP BY album_id, artist
+                ORDER BY album_id COLLATE BINARY,
+                         artist COLLATE NOCASE,
+                         artist COLLATE BINARY
+                """
+            )
+            credited_artists_by_album: Dict[str, List[str]] = {}
+            primary_artist_candidates: Dict[str, tuple[int, str, bool]] = {}
+            for row in cursor.fetchall():
+                album_id = str(row["album_id"])
+                artist = str(row["artist"])
+                credited_artists_by_album.setdefault(
+                    album_id,
+                    [],
+                ).append(artist)
+                credit_count = int(row["credit_count"])
+                current_primary = primary_artist_candidates.get(album_id)
+                if (
+                    current_primary is None
+                    or credit_count > current_primary[0]
+                ):
+                    primary_artist_candidates[album_id] = (
+                        credit_count,
+                        artist,
+                        False,
+                    )
+                elif credit_count == current_primary[0]:
+                    primary_artist_candidates[album_id] = (
+                        current_primary[0],
+                        current_primary[1],
+                        True,
+                    )
+
+            for album in albums:
+                album_id = str(album["id"])
+                album["credited_artists"] = credited_artists_by_album.get(
+                    album_id,
+                    [str(album["artist"])],
+                )
+                primary = primary_artist_candidates.get(album_id)
+                album["primary_artist"] = (
+                    primary[1]
+                    if primary is not None and not primary[2]
+                    else None
+                )
+            return albums
         finally:
             cursor.close()
 

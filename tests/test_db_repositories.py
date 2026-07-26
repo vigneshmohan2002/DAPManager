@@ -11,6 +11,7 @@ from src.contribution_sync import (
 )
 from src.db_manager import Track
 from src.db_repositories.downloads import DownloadRepository
+from src.db_repositories.library import LibraryRepository
 from src.inventory_sync import (
     INVENTORY_REPORT_STATE_KEY,
     _stamp_cursor as stamp_inventory,
@@ -102,6 +103,90 @@ def test_artist_radio_uses_facade_top_tags_hook(db, monkeypatch):
         "seed_count": 0,
         "related_count": 0,
     }
+
+
+def test_library_repository_lists_all_live_track_credit_artists_once(db):
+    for mbid, artist, path in (
+        ("primary-one", "Primary Artist", "/music/10-primary.flac"),
+        (
+            "featured",
+            "Primary Artist featuring Guest",
+            "/music/00-featured.flac",
+        ),
+        ("primary-two", "Primary Artist", "/music/20-primary.flac"),
+        (
+            "deleted-credit",
+            "Primary Artist featuring Retired Guest",
+            "/music/30-deleted.flac",
+        ),
+    ):
+        db.add_or_update_track(Track(
+            mbid=mbid,
+            title=mbid,
+            artist=artist,
+            album="One Release",
+            local_path=path,
+            release_mbid="release-id",
+        ))
+    db.soft_delete_track("deleted-credit")
+
+    albums = LibraryRepository(db.conn).list_albums()
+
+    assert len(albums) == 1
+    assert albums[0]["id"] == "release-id"
+    assert albums[0]["track_count"] == 3
+    # Keep the historical bare-column value selected alongside MIN(local_path).
+    assert albums[0]["artist"] == "Primary Artist featuring Guest"
+    assert albums[0]["primary_artist"] == "Primary Artist"
+    assert albums[0]["credited_artists"] == [
+        "Primary Artist",
+        "Primary Artist featuring Guest",
+    ]
+
+
+def test_library_repository_primary_artist_ties_ignore_insertion_order(db):
+    tracks = (
+        ("first-zulu", "Zulu", "tie-first"),
+        ("first-alpha", "alpha", "tie-first"),
+        ("second-alpha", "alpha", "tie-second"),
+        ("second-zulu", "Zulu", "tie-second"),
+        ("case-lower", "alpha", "tie-case"),
+        ("case-upper", "Alpha", "tie-case"),
+    )
+    for mbid, artist, release_id in tracks:
+        db.add_or_update_track(Track(
+            mbid=mbid,
+            title=mbid,
+            artist=artist,
+            album="Tied Credits",
+            local_path=f"/music/{mbid}.flac",
+            release_mbid=release_id,
+        ))
+
+    albums = {
+        album["id"]: album
+        for album in LibraryRepository(db.conn).list_albums()
+    }
+
+    assert albums["tie-first"]["primary_artist"] is None
+    assert albums["tie-second"]["primary_artist"] is None
+    assert albums["tie-case"]["primary_artist"] is None
+
+
+def test_library_repository_single_credit_is_primary_artist(db):
+    db.add_or_update_track(Track(
+        mbid="solo-track",
+        title="Solo Track",
+        artist="Solo Artist",
+        album="Solo Album",
+        local_path="/music/solo.flac",
+        release_mbid="solo-release",
+    ))
+
+    album = LibraryRepository(db.conn).list_albums()[0]
+
+    assert album["primary_artist"] == "Solo Artist"
+    assert album["credited_artists"] == ["Solo Artist"]
 
 
 def test_artist_tag_payload_keeps_non_string_tag_failure(db):

@@ -35,15 +35,71 @@ describe("desktop API runtime decoding", () => {
     const api = await loadApiWithResponses(
       jsonResponse({
         albums: [
-          { id: "release-1", title: "Album", artist: "Artist", track_count: 2 },
+          {
+            id: "release-1",
+            title: "Album",
+            artist: "Artist",
+            track_count: 2,
+            primary_artist: "Artist",
+            credited_artists: ["Artist", "Featured Artist"],
+          },
+          {
+            id: "release-legacy",
+            title: "Legacy Album",
+            artist: "Legacy Artist",
+            track_count: 1,
+          },
+          {
+            id: "release-tied",
+            title: "Tied Credit Album",
+            artist: "One Artist",
+            track_count: 2,
+            primary_artist: null,
+            credited_artists: ["One Artist", "Another Artist"],
+          },
           { id: "release-2", title: "Missing count", artist: "Artist" },
+          {
+            id: "release-3",
+            title: "Malformed credits",
+            artist: "Artist",
+            track_count: 1,
+            credited_artists: ["Artist", 42],
+          },
+          {
+            id: "release-4",
+            title: "Malformed primary artist",
+            artist: "Artist",
+            track_count: 1,
+            primary_artist: 42,
+          },
           "not an album",
         ],
       }),
     );
 
     await expect(api.fetchAlbums()).resolves.toEqual([
-      { id: "release-1", title: "Album", artist: "Artist", track_count: 2 },
+      {
+        id: "release-1",
+        title: "Album",
+        artist: "Artist",
+        track_count: 2,
+        primary_artist: "Artist",
+        credited_artists: ["Artist", "Featured Artist"],
+      },
+      {
+        id: "release-legacy",
+        title: "Legacy Album",
+        artist: "Legacy Artist",
+        track_count: 1,
+      },
+      {
+        id: "release-tied",
+        title: "Tied Credit Album",
+        artist: "One Artist",
+        track_count: 2,
+        primary_artist: null,
+        credited_artists: ["One Artist", "Another Artist"],
+      },
     ]);
   });
 

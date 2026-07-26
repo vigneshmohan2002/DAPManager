@@ -51,6 +51,12 @@ const otherArtist: Artist = {
   track_count: 11,
 };
 
+const featuredArtist: Artist = {
+  name: "2Pac featuring Big Syke",
+  album_count: 0,
+  track_count: 2,
+};
+
 const albums: Album[] = [
   {
     id: "album-1",
@@ -237,6 +243,312 @@ describe("ArtistDetailScreen", () => {
       ],
       0,
     );
+  });
+
+  it("shows a credited parent album and queues only the selected artist's tracks", async () => {
+    const user = userEvent.setup();
+    const parentAlbum: Album = {
+      id: "all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: featuredArtist.name,
+      track_count: 4,
+      primary_artist: "2Pac",
+      credited_artists: ["2Pac", featuredArtist.name],
+    };
+    apiMocks.fetchAlbumTracks.mockResolvedValue([
+      {
+        mbid: "primary-track",
+        title: "Primary",
+        artist: "2Pac",
+        album: parentAlbum.title,
+        track_number: 1,
+        disc_number: 1,
+      },
+      {
+        mbid: "featured-track-1",
+        title: "Featured One",
+        artist: featuredArtist.name,
+        album: parentAlbum.title,
+        track_number: 2,
+        disc_number: 1,
+      },
+      {
+        mbid: "other-feature",
+        title: "Other Feature",
+        artist: "2Pac featuring Method Man",
+        album: parentAlbum.title,
+        track_number: 3,
+        disc_number: 1,
+      },
+      {
+        mbid: "featured-track-2",
+        title: "Featured Two",
+        artist: featuredArtist.name,
+        album: parentAlbum.title,
+        track_number: 4,
+        disc_number: 1,
+      },
+    ]);
+
+    render(
+      <ArtistDetailScreen
+        {...embeddedProps(featuredArtist, [parentAlbum])}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: `Open ${parentAlbum.title} by ${parentAlbum.primary_artist}`,
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: `Play all ${featuredArtist.name}`,
+      }),
+    );
+
+    expect(playerMocks.play).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          mbid: "featured-track-1",
+          albumId: parentAlbum.id,
+        }),
+        expect.objectContaining({
+          mbid: "featured-track-2",
+          albumId: parentAlbum.id,
+        }),
+      ],
+      0,
+    );
+  });
+
+  it("keeps credited album double-click as full-album playback", async () => {
+    const parentAlbum: Album = {
+      id: "all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: featuredArtist.name,
+      track_count: 2,
+      primary_artist: "2Pac",
+      credited_artists: ["2Pac", featuredArtist.name],
+    };
+    const onOpenAlbum = vi.fn();
+    render(
+      <ArtistDetailScreen
+        {...embeddedProps(featuredArtist, [parentAlbum])}
+        onOpenAlbum={onOpenAlbum}
+      />,
+    );
+
+    fireEvent.doubleClick(
+      screen.getByRole("button", {
+        name: `Open ${parentAlbum.title} by ${parentAlbum.primary_artist}`,
+      }),
+    );
+
+    expect(playerMocks.playAlbum).toHaveBeenCalledOnce();
+    expect(playerMocks.playAlbum).toHaveBeenCalledWith(parentAlbum.id);
+    expect(apiMocks.fetchAlbumTracks).not.toHaveBeenCalled();
+    expect(onOpenAlbum).not.toHaveBeenCalled();
+  });
+
+  it("keeps every track when the selected artist is the album's primary artist", async () => {
+    const user = userEvent.setup();
+    const parentAlbum: Album = {
+      id: "all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: featuredArtist.name,
+      track_count: 2,
+      primary_artist: "2Pac",
+      credited_artists: ["2Pac", featuredArtist.name],
+    };
+    const primaryArtist: Artist = {
+      name: "2Pac",
+      album_count: 1,
+      track_count: 2,
+    };
+    apiMocks.fetchAlbumTracks.mockResolvedValue([
+      {
+        mbid: "primary-track",
+        title: "Primary",
+        artist: primaryArtist.name,
+        album: parentAlbum.title,
+        track_number: 1,
+        disc_number: 1,
+      },
+      {
+        mbid: "featured-track",
+        title: "Featured",
+        artist: featuredArtist.name,
+        album: parentAlbum.title,
+        track_number: 2,
+        disc_number: 1,
+      },
+    ]);
+
+    render(
+      <ArtistDetailScreen
+        {...embeddedProps(primaryArtist, [parentAlbum])}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Play all 2Pac" }),
+    );
+
+    expect(playerMocks.play).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ mbid: "primary-track" }),
+        expect.objectContaining({ mbid: "featured-track" }),
+      ],
+      0,
+    );
+  });
+
+  it.each([
+    {
+      caseName: "an explicitly tied primary credit",
+      primaryArtist: null,
+    },
+    {
+      caseName: "credit-aware data with no primary field",
+      primaryArtist: undefined,
+    },
+  ])(
+    "filters exact tracks for $caseName",
+    async ({ primaryArtist }) => {
+      const user = userEvent.setup();
+      const primaryArtistName = "2Pac";
+      const parentAlbum: Album = {
+        id: "all-eyez-on-me",
+        title: "All Eyez on Me",
+        artist: primaryArtistName,
+        track_count: 2,
+        ...(primaryArtist === undefined
+          ? {}
+          : { primary_artist: primaryArtist }),
+        credited_artists: [primaryArtistName, featuredArtist.name],
+      };
+      apiMocks.fetchAlbumTracks.mockResolvedValue([
+        {
+          mbid: "primary-track",
+          title: "Primary",
+          artist: primaryArtistName,
+          album: parentAlbum.title,
+          track_number: 1,
+          disc_number: 1,
+        },
+        {
+          mbid: "featured-track",
+          title: "Featured",
+          artist: featuredArtist.name,
+          album: parentAlbum.title,
+          track_number: 2,
+          disc_number: 1,
+        },
+      ]);
+
+      render(
+        <ArtistDetailScreen
+          {...embeddedProps(
+            {
+              name: primaryArtistName,
+              album_count: 1,
+              track_count: 2,
+            },
+            [parentAlbum],
+          )}
+        />,
+      );
+      await user.click(
+        screen.getByRole("button", {
+          name: `Play all ${primaryArtistName}`,
+        }),
+      );
+
+      expect(playerMocks.play).toHaveBeenCalledWith(
+        [expect.objectContaining({ mbid: "primary-track" })],
+        0,
+      );
+    },
+  );
+
+  it("preserves full-album playback for a legacy response without credit fields", async () => {
+    const user = userEvent.setup();
+    const primaryArtistName = "2Pac";
+    const legacyAlbum: Album = {
+      id: "legacy-all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: primaryArtistName,
+      track_count: 2,
+    };
+    apiMocks.fetchAlbumTracks.mockResolvedValue([
+      {
+        mbid: "primary-track",
+        title: "Primary",
+        artist: primaryArtistName,
+        album: legacyAlbum.title,
+        track_number: 1,
+        disc_number: 1,
+      },
+      {
+        mbid: "featured-track",
+        title: "Featured",
+        artist: featuredArtist.name,
+        album: legacyAlbum.title,
+        track_number: 2,
+        disc_number: 1,
+      },
+    ]);
+
+    render(
+      <ArtistDetailScreen
+        {...embeddedProps(
+          {
+            name: primaryArtistName,
+            album_count: 1,
+            track_count: 2,
+          },
+          [legacyAlbum],
+        )}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: `Play all ${primaryArtistName}`,
+      }),
+    );
+
+    expect(playerMocks.play).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ mbid: "primary-track" }),
+        expect.objectContaining({ mbid: "featured-track" }),
+      ],
+      0,
+    );
+  });
+
+  it("associates credited albums when loaded in standalone mode", async () => {
+    const parentAlbum: Album = {
+      id: "all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: "2Pac",
+      track_count: 2,
+      credited_artists: ["2Pac", featuredArtist.name],
+    };
+    apiMocks.fetchAlbums.mockResolvedValue([parentAlbum]);
+
+    render(
+      <ArtistDetailScreen
+        artist={featuredArtist}
+        onBack={vi.fn()}
+        onOpenAlbum={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", {
+        name: `Open ${parentAlbum.title} by ${parentAlbum.artist}`,
+      }),
+    ).toBeInTheDocument();
   });
 
   it("keeps successful albums in order when one album fails to load", async () => {

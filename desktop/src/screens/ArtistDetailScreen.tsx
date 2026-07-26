@@ -44,8 +44,24 @@ type ArtistTrackLoadResult = {
   failedAlbums: number;
 };
 
+function albumIncludesArtist(album: Album, artistName: string): boolean {
+  if (album.credited_artists !== undefined) {
+    return album.credited_artists.includes(artistName);
+  }
+  return album.artist === artistName;
+}
+
+function artistOwnsWholeAlbum(album: Album, artistName: string): boolean {
+  if (album.primary_artist !== undefined) {
+    return album.primary_artist === artistName;
+  }
+  if (album.credited_artists !== undefined) return false;
+  return album.artist === artistName;
+}
+
 async function loadArtistTracks(
   albums: readonly Album[],
+  artistName: string,
   requestIsCurrent: () => boolean,
 ): Promise<ArtistTrackLoadResult> {
   const results: Array<ArtistQueueTrack[] | null | undefined> = new Array(
@@ -62,7 +78,11 @@ async function loadArtistTracks(
       try {
         const tracks = await fetchAlbumTracks(album.id);
         if (!requestIsCurrent()) return;
-        results[index] = tracks.map((track) => ({
+        const artistTracks =
+          artistOwnsWholeAlbum(album, artistName)
+            ? tracks
+            : tracks.filter((track) => track.artist === artistName);
+        results[index] = artistTracks.map((track) => ({
           ...track,
           albumId: album.id,
         }));
@@ -197,6 +217,7 @@ export default function ArtistDetailScreen({
     try {
       const { queue, failedAlbums } = await loadArtistTracks(
         requestedAlbums,
+        requestArtist,
         requestIsCurrent,
       );
       if (!requestIsCurrent()) return;
@@ -246,7 +267,9 @@ export default function ArtistDetailScreen({
         const [url, all] = await Promise.all([backendUrl(), fetchAlbums()]);
         if (cancelled) return;
         setLoadedBase(url);
-        setLoadedAlbums(all.filter((a) => a.artist === artist.name));
+        setLoadedAlbums(
+          all.filter((album) => albumIncludesArtist(album, artist.name)),
+        );
       } catch (e) {
         if (!cancelled) setLoadedAlbumsError(String(e));
       } finally {

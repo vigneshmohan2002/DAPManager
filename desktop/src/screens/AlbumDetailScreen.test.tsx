@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Album, Track } from "../lib/api";
@@ -100,6 +107,48 @@ describe("AlbumDetailScreen", () => {
     expect(await screen.findByText(/16 tracks/)).toBeInTheDocument();
     expect(screen.queryByText(/32 tracks/)).not.toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(16);
+  });
+
+  it("uses the canonical primary artist for presentation and feature badges", async () => {
+    const featuredCredit = "2Pac featuring Big Syke";
+    const canonicalAlbum: Album = {
+      id: "all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: featuredCredit,
+      primary_artist: "2Pac",
+      credited_artists: ["2Pac", featuredCredit],
+      track_count: 2,
+    };
+    apiMocks.fetchAlbumTracks.mockResolvedValue([
+      {
+        mbid: "primary-track",
+        title: "Primary Track",
+        artist: "2Pac",
+        album: canonicalAlbum.title,
+        track_number: 1,
+        disc_number: 1,
+      },
+      {
+        mbid: "featured-track",
+        title: "Featured Track",
+        artist: featuredCredit,
+        album: canonicalAlbum.title,
+        track_number: 2,
+        disc_number: 1,
+      },
+    ]);
+
+    renderAlbum(canonicalAlbum);
+
+    const primaryRow = (await screen.findByText("Primary Track")).closest("li");
+    const featuredRow = screen.getByText("Featured Track").closest("li");
+    expect(primaryRow).not.toBeNull();
+    expect(featuredRow).not.toBeNull();
+    expect(screen.getAllByText("2Pac")).toHaveLength(2);
+    expect(within(primaryRow!).queryByText("2Pac")).not.toBeInTheDocument();
+    expect(
+      within(featuredRow!).getByText(featuredCredit),
+    ).toBeInTheDocument();
   });
 
   it.each([

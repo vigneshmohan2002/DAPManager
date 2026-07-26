@@ -83,6 +83,11 @@ def test_list_public_albums_preserves_wire_shape_and_strips_cover_path():
         "id": "release-1",
         "title": "Album",
         "artist": "Artist",
+        "primary_artist": "Artist",
+        "credited_artists": [
+            "Artist",
+            "Artist featuring Guest",
+        ],
         "track_count": 12,
         "cover_path": "/private/music/track.flac",
     }]
@@ -93,10 +98,33 @@ def test_list_public_albums_preserves_wire_shape_and_strips_cover_path():
             "id": "release-1",
             "title": "Album",
             "artist": "Artist",
+            "primary_artist": "Artist",
+            "credited_artists": [
+                "Artist",
+                "Artist featuring Guest",
+            ],
             "track_count": 12,
         }],
     }
     assert store.calls == [("list_albums",)]
+
+
+def test_list_public_albums_preserves_ambiguous_primary_artist_null():
+    store = FakeLibraryStore()
+    store.albums = [{
+        "id": "release-tie",
+        "title": "Compilation",
+        "artist": "Legacy Arbitrary Credit",
+        "primary_artist": None,
+        "credited_artists": ["Artist A", "Artist B"],
+        "track_count": 2,
+        "cover_path": "/private/music/track.flac",
+    }]
+
+    result = list_public_albums(store)
+
+    assert result["albums"][0]["artist"] == "Legacy Arbitrary Credit"
+    assert result["albums"][0]["primary_artist"] is None
 
 
 def test_unfiltered_track_query_uses_legacy_query_and_drops_unavailable():

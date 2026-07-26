@@ -20,6 +20,13 @@ type Props = {
   onBack?: () => void;
 };
 
+function albumIncludesArtist(album: Album, artistName: string): boolean {
+  if (album.credited_artists !== undefined) {
+    return album.credited_artists.includes(artistName);
+  }
+  return album.artist === artistName;
+}
+
 export default function ArtistsScreen({
   ready,
   selectedArtist = null,
@@ -97,8 +104,13 @@ export default function ArtistsScreen({
     if (!catalogBase) return {};
     const covers: Record<string, string> = {};
     for (const album of catalogAlbums) {
-      if (!covers[album.artist]) {
-        covers[album.artist] = albumCoverUrl(catalogBase, album.id);
+      const creditedArtists = new Set(
+        album.credited_artists ?? [album.artist],
+      );
+      for (const artistName of creditedArtists) {
+        if (!covers[artistName]) {
+          covers[artistName] = albumCoverUrl(catalogBase, album.id);
+        }
       }
     }
     return covers;
@@ -106,7 +118,9 @@ export default function ArtistsScreen({
   const selectedAlbums = useMemo(
     () =>
       selectedArtist
-        ? catalogAlbums.filter((album) => album.artist === selectedArtist.name)
+        ? catalogAlbums.filter((album) =>
+            albumIncludesArtist(album, selectedArtist.name),
+          )
         : [],
     [catalogAlbums, selectedArtist],
   );

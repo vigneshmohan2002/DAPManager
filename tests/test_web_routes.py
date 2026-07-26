@@ -639,8 +639,24 @@ def test_library_albums_lists_albums(client, mock_config):
     with patch('web_server.DatabaseManager') as MockDB:
         instance = MockDB.return_value.__enter__.return_value
         instance.list_albums.return_value = [
-            {"id": "rmb-1", "title": "Album One", "artist": "A", "track_count": 10, "cover_path": "/m/1.flac"},
-            {"id": "Y|X", "title": "Y", "artist": "X", "track_count": 5, "cover_path": "/m/2.flac"},
+            {
+                "id": "rmb-1",
+                "title": "Album One",
+                "artist": "A featuring Guest",
+                "primary_artist": None,
+                "credited_artists": ["A", "A featuring Guest"],
+                "track_count": 10,
+                "cover_path": "/m/1.flac",
+            },
+            {
+                "id": "Y|X",
+                "title": "Y",
+                "artist": "X",
+                "primary_artist": "X",
+                "credited_artists": ["X"],
+                "track_count": 5,
+                "cover_path": "/m/2.flac",
+            },
         ]
         res = client.get('/api/library/albums')
 
@@ -652,6 +668,12 @@ def test_library_albums_lists_albums(client, mock_config):
     assert "cover_path" not in data["albums"][0]
     assert data["albums"][0]["id"] == "rmb-1"
     assert data["albums"][0]["track_count"] == 10
+    assert data["albums"][0]["artist"] == "A featuring Guest"
+    assert data["albums"][0]["primary_artist"] is None
+    assert data["albums"][0]["credited_artists"] == [
+        "A",
+        "A featuring Guest",
+    ]
 
 
 def test_library_tracks_tags_availability_and_filters_unavailable(client, mock_config):

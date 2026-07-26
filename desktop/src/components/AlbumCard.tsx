@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Album } from "../lib/api";
+import { albumDisplayArtist } from "../lib/album";
 import Artwork from "./Artwork";
 
 type Props = {
@@ -16,6 +17,7 @@ export default function AlbumCard({
   onDoubleClick,
 }: Props) {
   const clickTimer = useRef<number | null>(null);
+  const displayArtist = albumDisplayArtist(album);
 
   useEffect(
     () => () => {
@@ -54,7 +56,7 @@ export default function AlbumCard({
   return (
     <button
       type="button"
-      aria-label={`Open ${album.title} by ${album.artist}`}
+      aria-label={`Open ${album.title} by ${displayArtist}`}
       className="group block w-full cursor-pointer select-none rounded-md border-0 bg-transparent p-0 text-left font-[inherit] text-[var(--color-text)] transition-transform duration-150 hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-content)]"
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
@@ -69,7 +71,7 @@ export default function AlbumCard({
         {album.title}
       </span>
       <span className="mt-0.5 block truncate text-[11px] leading-[1.3] text-[var(--color-text-muted)]">
-        {album.artist}
+        {displayArtist}
       </span>
     </button>
   );

@@ -3,6 +3,7 @@ import AlbumCard from "../components/AlbumCard";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
 import { albumCoverUrl, backendUrl, fetchAlbums, type Album } from "../lib/api";
+import { albumDisplayArtist } from "../lib/album";
 import { usePlayer } from "../player/PlayerContext";
 
 type Props = {
@@ -51,11 +52,17 @@ export default function AlbumsScreen({ ready, onOpen }: Props) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return albums;
-    return albums.filter(
-      (a) =>
-        a.title.toLowerCase().includes(q) ||
-        a.artist.toLowerCase().includes(q),
-    );
+    return albums.filter((album) => {
+      if (album.title.toLowerCase().includes(q)) return true;
+      const artistCredits = [
+        albumDisplayArtist(album),
+        album.artist,
+        ...(album.credited_artists ?? []),
+      ];
+      return artistCredits.some((artist) =>
+        artist.toLowerCase().includes(q),
+      );
+    });
   }, [albums, search]);
 
   return (

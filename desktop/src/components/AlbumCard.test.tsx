@@ -33,6 +33,39 @@ describe("AlbumCard", () => {
     ).toHaveAttribute("type", "button");
   });
 
+  it("presents the canonical primary artist instead of an arbitrary legacy credit", () => {
+    render(
+      <AlbumCard
+        album={{
+          ...album,
+          artist: "2Pac featuring Big Syke",
+          primary_artist: "2Pac",
+          credited_artists: ["2Pac", "2Pac featuring Big Syke"],
+        }}
+        coverUrl="http://localhost/cover.jpg"
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Open Test Album by 2Pac" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2Pac")).toBeInTheDocument();
+    expect(screen.queryByText("2Pac featuring Big Syke")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the legacy artist when the primary credit is null", () => {
+    render(
+      <AlbumCard
+        album={{ ...album, primary_artist: null }}
+        coverUrl="http://localhost/cover.jpg"
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Open Test Album by Test Artist" }),
+    ).toBeInTheDocument();
+  });
+
   it("defers a single click until the double-click window closes", () => {
     vi.useFakeTimers();
     const onClick = vi.fn();

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Album } from "../lib/api";
 
@@ -70,5 +71,49 @@ describe("AlbumsScreen", () => {
     expect(playerMocks.playAlbum).toHaveBeenCalledOnce();
     expect(playerMocks.playAlbum).toHaveBeenCalledWith(album.id);
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("searches canonical and credited artists while displaying the canonical artist", async () => {
+    const creditedAlbum: Album = {
+      id: "all-eyez-on-me",
+      title: "All Eyez on Me",
+      artist: "Arbitrary featured credit",
+      primary_artist: "2Pac",
+      credited_artists: ["Credited Guest"],
+      track_count: 2,
+    };
+    apiMocks.fetchAlbums.mockResolvedValue([
+      creditedAlbum,
+      {
+        id: "dummy",
+        title: "Dummy",
+        artist: "Portishead",
+        track_count: 11,
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<AlbumsScreen ready onOpen={vi.fn()} />);
+
+    await screen.findByRole("button", {
+      name: "Open All Eyez on Me by 2Pac",
+    });
+    await user.type(screen.getByRole("searchbox"), "Credited Guest");
+
+    expect(
+      screen.getByRole("button", {
+        name: "Open All Eyez on Me by 2Pac",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open Dummy by Portishead" }),
+    ).not.toBeInTheDocument();
+
+    await user.clear(screen.getByRole("searchbox"));
+    await user.type(screen.getByRole("searchbox"), "2Pac");
+    expect(
+      screen.getByRole("button", {
+        name: "Open All Eyez on Me by 2Pac",
+      }),
+    ).toBeInTheDocument();
   });
 });

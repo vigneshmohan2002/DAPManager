@@ -11,6 +11,7 @@ import {
   type Album,
   type Track,
 } from "../lib/api";
+import { albumDisplayArtist } from "../lib/album";
 import { usePlayer } from "../player/PlayerContext";
 
 type Props = {
@@ -43,6 +44,7 @@ export default function AlbumDetailScreen({
     setTrackLikedInQueue,
   } = usePlayer();
   const toast = useToast();
+  const displayArtist = albumDisplayArtist(album);
 
   useEffect(() => {
     let cancelled = false;
@@ -122,7 +124,7 @@ export default function AlbumDetailScreen({
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar
         title={album.title}
-        subtitle={album.artist}
+        subtitle={displayArtist}
         search={search}
         onSearch={setSearch}
         onBack={onBack}
@@ -147,7 +149,7 @@ export default function AlbumDetailScreen({
             />
             <div className="flex min-w-0 flex-col justify-end pb-1">
               <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
-                {album.artist}
+                {displayArtist}
               </div>
               <h2 className="mt-1 max-w-2xl truncate text-[30px] font-semibold leading-tight tracking-[-0.025em]">
                 {album.title}
@@ -193,7 +195,7 @@ export default function AlbumDetailScreen({
                 const isCurrent = current?.mbid === t.mbid;
                 const showTrackArtist =
                   t.artist.trim().toLocaleLowerCase() !==
-                  album.artist.trim().toLocaleLowerCase();
+                  displayArtist.trim().toLocaleLowerCase();
                 return (
                   <li
                     key={t.mbid}
