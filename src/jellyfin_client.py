@@ -242,6 +242,7 @@ class JellyfinClient:
             title=jf_item.get("Name") or "Unknown Title",
             artist=jf_item.get("AlbumArtist")
             or (jf_item.get("Artists", [""])[0] if jf_item.get("Artists") else "Unknown Artist"),
+            album_artist=jf_item.get("AlbumArtist") or None,
             album=jf_item.get("Album"),
             local_path=dest_path,
             release_mbid=self._extract_release_mbid(jf_item),

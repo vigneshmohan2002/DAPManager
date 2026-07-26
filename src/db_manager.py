@@ -95,6 +95,7 @@ class Track:
     # or None for tracks that were never auto-tagged (legacy / manual import).
     tag_tier: Optional[str] = None
     tag_score: Optional[float] = None
+    album_artist: Optional[str] = None
 
     @property
     def safe_artist(self):
@@ -215,6 +216,19 @@ class DatabaseManager:
             mbid,
             tier,
             score,
+        )
+
+    def set_track_album_artist(
+        self,
+        mbid: str,
+        album_artist: str,
+    ) -> bool:
+        """Persist an embedded album-artist tag for an existing live track."""
+        if not mbid or not album_artist.strip():
+            return False
+        return self._library_repository.set_track_album_artist(
+            mbid,
+            album_artist.strip(),
         )
 
     def get_tracks_needing_tag_review(self) -> List[Track]:
@@ -405,12 +419,11 @@ class DatabaseManager:
         return self._library_repository.get_live_track_identity(mbid)
 
     def list_artists(self) -> List[dict]:
-        """Distinct artists with album and track counts.
+        """Distinct primary album artists with album and track counts.
 
-        Mirrors ``list_albums`` in that it ignores soft-deleted rows and
-        only counts tracks that have an album attached (we don't want
-        loose singles inflating album_count). Sort is case-insensitive
-        on the artist name so the UI can render it directly.
+        Uses embedded album-artist tags, so featured track credits do not
+        become separate Artists-tab rows. Albums without one unambiguous
+        album artist are not assigned to an invented owner.
         """
         return self._library_repository.list_artists()
 
@@ -1884,6 +1897,11 @@ class DatabaseManager:
             disc_number=row["disc_number"],
             tag_tier=row["tag_tier"] if "tag_tier" in row.keys() else None,
             tag_score=row["tag_score"] if "tag_score" in row.keys() else None,
+            album_artist=(
+                row["album_artist"]
+                if "album_artist" in row.keys()
+                else None
+            ),
         )
 
     def _row_to_playlist(self, row):

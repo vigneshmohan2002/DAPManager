@@ -51,7 +51,7 @@ class SyncRepository(SQLiteRepository):
         self, since_iso: Optional[str]
     ) -> List[Dict[str, object]]:
         sql = (
-            "SELECT mbid, title, artist, album, isrc, release_mbid, "
+            "SELECT mbid, title, artist, album, album_artist, isrc, release_mbid, "
             "track_number, disc_number, is_liked, updated_at, deleted_at "
             "FROM tracks"
         )
@@ -74,13 +74,17 @@ class SyncRepository(SQLiteRepository):
         cursor.execute(
             """
             INSERT INTO tracks
-                (mbid, title, artist, album, isrc, release_mbid,
+                (mbid, title, artist, album, album_artist, isrc, release_mbid,
                  track_number, disc_number, is_liked, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
             ON CONFLICT(mbid) DO UPDATE SET
                 title = excluded.title,
                 artist = excluded.artist,
                 album = excluded.album,
+                album_artist = COALESCE(
+                    excluded.album_artist,
+                    tracks.album_artist
+                ),
                 isrc = excluded.isrc,
                 release_mbid = excluded.release_mbid,
                 track_number = excluded.track_number,
@@ -94,6 +98,7 @@ class SyncRepository(SQLiteRepository):
                 row.get("title") or "Unknown Title",
                 row.get("artist") or "Unknown Artist",
                 row.get("album"),
+                row.get("album_artist"),
                 row.get("isrc"),
                 row.get("release_mbid"),
                 row.get("track_number") or 0,

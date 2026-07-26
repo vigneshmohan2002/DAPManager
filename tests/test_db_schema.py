@@ -317,6 +317,7 @@ def test_schema_module_migrates_the_complete_legacy_contract_twice():
         "tag_tier",
         "tag_score",
         "is_liked",
+        "album_artist",
     )
     assert _columns(conn, "play_events")[-1] == "listened_ms"
     assert _columns(conn, "playlists")[-3:] == (

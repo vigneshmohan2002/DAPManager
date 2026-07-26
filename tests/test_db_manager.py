@@ -46,7 +46,7 @@ EXPECTED_SCHEMA_COLUMNS = {
         "mbid", "title", "artist", "album", "isrc", "local_path",
         "dap_path", "synced_to_dap", "release_mbid", "track_number",
         "disc_number", "updated_at", "deleted_at", "tag_tier", "tag_score",
-        "is_liked",
+        "is_liked", "album_artist",
     ),
 }
 
@@ -333,19 +333,23 @@ def test_list_artists_groups_and_counts(db):
     from src.db_manager import Track
     db.add_or_update_track(Track(
         mbid="t1", title="S1", artist="Alpha", album="A1",
-        local_path="/m/a/1.flac", release_mbid="rmb-a1",
+        album_artist="Alpha", local_path="/m/a/1.flac",
+        release_mbid="rmb-a1",
     ))
     db.add_or_update_track(Track(
         mbid="t2", title="S2", artist="Alpha", album="A1",
-        local_path="/m/a/2.flac", release_mbid="rmb-a1",
+        album_artist="Alpha", local_path="/m/a/2.flac",
+        release_mbid="rmb-a1",
     ))
     db.add_or_update_track(Track(
         mbid="t3", title="S3", artist="Alpha", album="A2",
-        local_path="/m/a/3.flac", release_mbid="rmb-a2",
+        album_artist="Alpha", local_path="/m/a/3.flac",
+        release_mbid="rmb-a2",
     ))
     db.add_or_update_track(Track(
         mbid="t4", title="S4", artist="Bravo", album="B1",
-        local_path="/m/b/1.flac", release_mbid="rmb-b1",
+        album_artist="Bravo", local_path="/m/b/1.flac",
+        release_mbid="rmb-b1",
     ))
     artists = db.list_artists()
     by_name = {a["name"]: a for a in artists}
@@ -364,6 +368,68 @@ def test_list_artists_skips_tracks_without_album(db):
         local_path="/m/loose.flac",
     ))
     assert db.list_artists() == []
+
+
+def test_list_artists_does_not_infer_album_artist_from_track_credit(db):
+    from src.db_manager import Track
+
+    db.add_or_update_track(Track(
+        mbid="feature-only",
+        title="Feature",
+        artist="Lead Artist featuring Guest",
+        album="Untagged Album",
+        local_path="/music/feature.flac",
+        release_mbid="untagged-release",
+    ))
+
+    assert db.list_artists() == []
+
+
+def test_list_artists_only_includes_embedded_album_artists(db):
+    from src.db_manager import Track
+
+    for mbid, artist, release_id, album_artist in (
+        ("primary-1", "2Pac", "release-1", "2Pac"),
+        ("primary-2", "2Pac", "release-1", "2Pac"),
+        ("feature", "2Pac featuring Outlawz", "release-1", "2Pac"),
+        ("second-album", "2Pac", "release-2", "2Pac"),
+        (
+            "compilation-a",
+            "Compilation Artist A",
+            "compilation",
+            "Various Artists",
+        ),
+        (
+            "compilation-b",
+            "Compilation Artist B",
+            "compilation",
+            "Various Artists",
+        ),
+    ):
+        db.add_or_update_track(Track(
+            mbid=mbid,
+            title=mbid,
+            artist=artist,
+            album=release_id,
+            local_path=f"/music/{mbid}.flac",
+            release_mbid=release_id,
+            album_artist=album_artist,
+        ))
+
+    artists = db.list_artists()
+
+    assert artists == [
+        {
+            "name": "2Pac",
+            "album_count": 2,
+            "track_count": 4,
+        },
+        {
+            "name": "Various Artists",
+            "album_count": 1,
+            "track_count": 2,
+        },
+    ]
 
 
 def test_get_album_cover_path_by_mbid_and_synthetic(db):
@@ -598,6 +664,7 @@ def test_legacy_schema_migration_preserves_rows_and_adds_all_contract_fields(
         assert track["tag_tier"] is None
         assert track["tag_score"] is None
         assert track["is_liked"] == 0
+        assert track["album_artist"] is None
 
         event = mgr.conn.execute(
             "SELECT * FROM play_events WHERE track_mbid = 'legacy-track'"
@@ -658,10 +725,18 @@ def test_get_catalog_since_returns_delta(db):
 
 
 def test_get_catalog_since_no_filter_returns_all(db):
-    db.add_or_update_track(Track(mbid="c1", title="T", artist="A"))
+    db.add_or_update_track(Track(
+        mbid="c1",
+        title="T",
+        artist="A featuring B",
+        album_artist="A",
+    ))
     db.add_or_update_track(Track(mbid="c2", title="T", artist="B"))
     rows = db.get_catalog_since()
     assert {r["mbid"] for r in rows} == {"c1", "c2"}
+    by_mbid = {row["mbid"]: row for row in rows}
+    assert by_mbid["c1"]["album_artist"] == "A"
+    assert by_mbid["c2"]["album_artist"] is None
 
 
 def test_get_catalog_since_omits_local_only_fields(db):
@@ -679,6 +754,7 @@ def test_apply_catalog_row_inserts_new_track(db):
         "mbid": "a1",
         "title": "Catalog Song",
         "artist": "Catalog Artist",
+        "album_artist": "Catalog Album Artist",
         "album": "Catalog Album",
         "isrc": "ISRC01",
         "release_mbid": "r1",
@@ -690,6 +766,7 @@ def test_apply_catalog_row_inserts_new_track(db):
     track = db.get_track_by_mbid("a1")
     assert track is not None
     assert track.title == "Catalog Song"
+    assert track.album_artist == "Catalog Album Artist"
     assert track.local_path is None  # catalog row has no device presence
 
 
@@ -714,6 +791,29 @@ def test_apply_catalog_row_preserves_local_path(db):
     assert track.local_path == "/music/a1.flac"
     assert track.dap_path == "/dap/a1.flac"
     assert track.synced_to_dap is True
+
+
+def test_apply_legacy_catalog_row_preserves_local_album_artist(db):
+    db.add_or_update_track(Track(
+        mbid="a1",
+        title="Stale Title",
+        artist="Stale Artist",
+        album_artist="Canonical Album Artist",
+        local_path="/music/a1.flac",
+    ))
+
+    action = db.apply_catalog_row({
+        "mbid": "a1",
+        "title": "Fresh Title",
+        "artist": "Fresh Artist",
+        "updated_at": "2026-04-17 13:00:00",
+    })
+
+    assert action == "updated"
+    assert (
+        db.get_track_by_mbid("a1").album_artist
+        == "Canonical Album Artist"
+    )
 
 
 def test_apply_catalog_row_skips_when_mbid_missing(db):

@@ -36,6 +36,7 @@ class MediaTags(Protocol):
     mb_albumid: Optional[str]
     title: Optional[str]
     artist: Optional[str]
+    albumartist: Optional[str]
     album: Optional[str]
     track: Optional[int]
     tracktotal: Optional[int]
@@ -76,6 +77,14 @@ def release_track_total(details: Mapping[str, Any]) -> int:
     )
 
 
+def optional_text(value: object) -> Optional[str]:
+    """Return a trimmed tag value only when the media reader supplied text."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def track_from_media(file_path: str, media: MediaTags, mbid: str) -> Track:
     """Build the database value object for an identified on-disk file."""
     return Track(
@@ -83,6 +92,7 @@ def track_from_media(file_path: str, media: MediaTags, mbid: str) -> Track:
         title=media.title or "Unknown",
         artist=media.artist or "Unknown",
         album=media.album or "Unknown",
+        album_artist=optional_text(getattr(media, "albumartist", None)),
         local_path=file_path,
         release_mbid=media.mb_albumid,
         track_number=media.track or 0,
@@ -195,8 +205,20 @@ class LibraryScanner:
 
     def process_file(self, file_path: str) -> ScanResult:
         """Read, enrich, de-duplicate, and persist one library file."""
-        if self.db.get_track_by_path(file_path):
-            return "skipped"
+        existing = self.db.get_track_by_path(file_path)
+        if existing is not None:
+            if existing.album_artist:
+                return "skipped"
+            media = self._read_media_file(file_path)
+            album_artist = optional_text(
+                getattr(media, "albumartist", None)
+                if media is not None
+                else None
+            )
+            if not album_artist:
+                return "skipped"
+            self.db.set_track_album_artist(existing.mbid, album_artist)
+            return "processed"
 
         media = self._read_identified_media(file_path)
         if media is None or not media.mb_trackid:

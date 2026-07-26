@@ -135,6 +135,48 @@ def test_process_file_skipped_existing(mock_mediafile, scanner, db):
 
 
 @patch('src.library_scanner.MediaFile')
+def test_process_file_backfills_album_artist_for_existing_path(
+    mock_mediafile,
+    scanner,
+    db,
+):
+    db.add_or_update_track(Track(
+        mbid="existing-mbid",
+        title="Existing Song",
+        artist="Lead Artist featuring Guest",
+        album="Existing Album",
+        local_path="/test/existing.flac",
+    ))
+    mock_file = MagicMock()
+    mock_file.albumartist = "Lead Artist"
+    mock_mediafile.return_value = mock_file
+
+    result = scanner.process_file("/test/existing.flac")
+
+    assert result == "processed"
+    assert db.get_track_by_mbid("existing-mbid").album_artist == "Lead Artist"
+
+
+@patch('src.library_scanner.MediaFile')
+def test_process_file_does_not_reread_existing_album_artist(
+    mock_mediafile,
+    scanner,
+    db,
+):
+    db.add_or_update_track(Track(
+        mbid="existing-mbid",
+        title="Existing Song",
+        artist="Lead Artist",
+        album_artist="Lead Artist",
+        album="Existing Album",
+        local_path="/test/existing.flac",
+    ))
+
+    assert scanner.process_file("/test/existing.flac") == "skipped"
+    mock_mediafile.assert_not_called()
+
+
+@patch('src.library_scanner.MediaFile')
 def test_process_file_processed_new(mock_mediafile, scanner, db):
     """Test processing new file."""
     # Mock MediaFile

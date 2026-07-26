@@ -10,6 +10,22 @@ from .base import SQLiteRepository
 T = TypeVar("T")
 
 
+def _unique_modal_artist(counts: Dict[str, int]) -> Optional[str]:
+    if not counts:
+        return None
+    highest_count = max(counts.values())
+    winners = [
+        artist
+        for artist, count in counts.items()
+        if count == highest_count
+    ]
+    return winners[0] if len(winners) == 1 else None
+
+
+def _artist_sort_key(artist: str) -> tuple[str, str]:
+    return artist.casefold(), artist
+
+
 class TrackRecord(Protocol):
     mbid: str
     title: str
@@ -24,6 +40,7 @@ class TrackRecord(Protocol):
     disc_number: int
     tag_tier: Optional[str]
     tag_score: Optional[float]
+    album_artist: Optional[str]
 
 
 class LibraryRepository(SQLiteRepository):
@@ -35,8 +52,9 @@ class LibraryRepository(SQLiteRepository):
         sql = """
         INSERT INTO tracks
         (mbid, title, artist, album, isrc, local_path, dap_path, synced_to_dap,
-         release_mbid, track_number, disc_number, tag_tier, tag_score, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         release_mbid, track_number, disc_number, tag_tier, tag_score,
+         album_artist, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(mbid) DO UPDATE SET
             title = excluded.title,
             artist = excluded.artist,
@@ -50,6 +68,7 @@ class LibraryRepository(SQLiteRepository):
             disc_number = excluded.disc_number,
             tag_tier = COALESCE(excluded.tag_tier, tag_tier),
             tag_score = COALESCE(excluded.tag_score, tag_score),
+            album_artist = COALESCE(excluded.album_artist, album_artist),
             updated_at = CURRENT_TIMESTAMP
         """
         try:
@@ -70,6 +89,7 @@ class LibraryRepository(SQLiteRepository):
                     track.disc_number,
                     track.tag_tier,
                     track.tag_score,
+                    track.album_artist,
                 ),
             )
             self.conn.commit()
@@ -79,6 +99,24 @@ class LibraryRepository(SQLiteRepository):
         finally:
             if cursor:
                 cursor.close()
+
+    def set_track_album_artist(
+        self,
+        mbid: str,
+        album_artist: str,
+    ) -> bool:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE tracks SET album_artist = ?, "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE mbid = ? AND deleted_at IS NULL",
+                (album_artist, mbid),
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            cursor.close()
 
     def set_track_tag_tier(
         self,
@@ -419,55 +457,61 @@ class LibraryRepository(SQLiteRepository):
                         album || '|' || artist
                     ) AS album_id,
                     artist,
+                    album_artist,
                     COUNT(*) AS credit_count
                 FROM tracks
                 WHERE deleted_at IS NULL
                   AND album IS NOT NULL AND album != ''
                   AND artist IS NOT NULL AND artist != ''
-                GROUP BY album_id, artist
+                GROUP BY album_id, artist, album_artist
                 ORDER BY album_id COLLATE BINARY,
                          artist COLLATE NOCASE,
-                         artist COLLATE BINARY
+                         artist COLLATE BINARY,
+                         album_artist COLLATE NOCASE,
+                         album_artist COLLATE BINARY
                 """
             )
-            credited_artists_by_album: Dict[str, List[str]] = {}
-            primary_artist_candidates: Dict[str, tuple[int, str, bool]] = {}
+            credit_counts_by_album: Dict[str, Dict[str, int]] = {}
+            album_artist_counts_by_album: Dict[str, Dict[str, int]] = {}
             for row in cursor.fetchall():
                 album_id = str(row["album_id"])
                 artist = str(row["artist"])
-                credited_artists_by_album.setdefault(
+                credit_counts = credit_counts_by_album.setdefault(
                     album_id,
-                    [],
-                ).append(artist)
+                    {},
+                )
                 credit_count = int(row["credit_count"])
-                current_primary = primary_artist_candidates.get(album_id)
-                if (
-                    current_primary is None
-                    or credit_count > current_primary[0]
-                ):
-                    primary_artist_candidates[album_id] = (
-                        credit_count,
-                        artist,
-                        False,
+                credit_counts[artist] = (
+                    credit_counts.get(artist, 0) + credit_count
+                )
+                album_artist = str(row["album_artist"] or "").strip()
+                if album_artist:
+                    album_artist_counts = (
+                        album_artist_counts_by_album.setdefault(
+                            album_id,
+                            {},
+                        )
                     )
-                elif credit_count == current_primary[0]:
-                    primary_artist_candidates[album_id] = (
-                        current_primary[0],
-                        current_primary[1],
-                        True,
+                    album_artist_counts[album_artist] = (
+                        album_artist_counts.get(album_artist, 0)
+                        + credit_count
                     )
 
             for album in albums:
                 album_id = str(album["id"])
-                album["credited_artists"] = credited_artists_by_album.get(
-                    album_id,
-                    [str(album["artist"])],
+                credit_counts = credit_counts_by_album.get(album_id, {})
+                album["credited_artists"] = sorted(
+                    credit_counts or {str(album["artist"]): 1},
+                    key=_artist_sort_key,
                 )
-                primary = primary_artist_candidates.get(album_id)
-                album["primary_artist"] = (
-                    primary[1]
-                    if primary is not None and not primary[2]
-                    else None
+                explicit_album_artists = (
+                    album_artist_counts_by_album.get(album_id, {})
+                )
+                album["album_artist"] = _unique_modal_artist(
+                    explicit_album_artists
+                )
+                album["primary_artist"] = _unique_modal_artist(
+                    explicit_album_artists or credit_counts
                 )
             return albums
         finally:
@@ -508,24 +552,29 @@ class LibraryRepository(SQLiteRepository):
         return bool(liked) if changed else None
 
     def list_artists(self) -> List[Dict[str, object]]:
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                artist AS name,
-                COUNT(DISTINCT COALESCE(NULLIF(release_mbid, ''), album || '|' || artist)) AS album_count,
-                COUNT(*) AS track_count
-            FROM tracks
-            WHERE deleted_at IS NULL
-              AND artist IS NOT NULL AND artist != ''
-              AND album IS NOT NULL AND album != ''
-            GROUP BY artist
-            ORDER BY artist COLLATE NOCASE
-            """
+        artists: Dict[str, Dict[str, object]] = {}
+        for album in self.list_albums():
+            album_artist = album.get("album_artist")
+            if not isinstance(album_artist, str) or not album_artist:
+                continue
+            summary = artists.setdefault(
+                album_artist,
+                {
+                    "name": album_artist,
+                    "album_count": 0,
+                    "track_count": 0,
+                },
+            )
+            summary["album_count"] = int(summary["album_count"]) + 1
+            summary["track_count"] = (
+                int(summary["track_count"])
+                + int(album["track_count"])
+            )
+
+        return sorted(
+            artists.values(),
+            key=lambda row: _artist_sort_key(str(row["name"])),
         )
-        rows = [dict(row) for row in cursor.fetchall()]
-        cursor.close()
-        return rows
 
     def get_album_cover_path(self, album_id: str) -> Optional[str]:
         cursor = self.conn.cursor()

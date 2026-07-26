@@ -27,7 +27,8 @@ TABLE_DEFINITIONS: Dict[str, str] = {
             deleted_at TIMESTAMP,
             tag_tier TEXT,
             tag_score REAL,
-            is_liked INTEGER NOT NULL DEFAULT 0
+            is_liked INTEGER NOT NULL DEFAULT 0,
+            album_artist TEXT
         );
     """,
     "albums": """
@@ -276,6 +277,7 @@ def _schema_requires_migration(cursor: sqlite3.Cursor) -> bool:
             "tag_tier",
             "tag_score",
             "is_liked",
+            "album_artist",
         }.issubset(track_columns)
     ):
         return True
@@ -359,6 +361,9 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
                 "ALTER TABLE tracks ADD COLUMN is_liked INTEGER NOT NULL DEFAULT 0"
             )
             logger.info("Added column: tracks.is_liked")
+        if "album_artist" not in columns:
+            cursor.execute("ALTER TABLE tracks ADD COLUMN album_artist TEXT")
+            logger.info("Added column: tracks.album_artist")
 
         play_event_columns = _columns(cursor, "play_events")
         if "listened_ms" not in play_event_columns:

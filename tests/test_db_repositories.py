@@ -173,6 +173,31 @@ def test_library_repository_primary_artist_ties_ignore_insertion_order(db):
     assert albums["tie-case"]["primary_artist"] is None
 
 
+def test_library_repository_prefers_embedded_album_artist_over_track_credits(db):
+    for mbid, artist in (
+        ("primary", "Katy Perry"),
+        ("feature", "Katy Perry feat. Snoop Dogg"),
+    ):
+        db.add_or_update_track(Track(
+            mbid=mbid,
+            title=mbid,
+            artist=artist,
+            album="Teenage Dream",
+            album_artist="Katy Perry",
+            local_path=f"/music/{mbid}.flac",
+            release_mbid="release-id",
+        ))
+
+    album = LibraryRepository(db.conn).list_albums()[0]
+
+    assert album["album_artist"] == "Katy Perry"
+    assert album["primary_artist"] == "Katy Perry"
+    assert album["credited_artists"] == [
+        "Katy Perry",
+        "Katy Perry feat. Snoop Dogg",
+    ]
+
+
 def test_library_repository_single_credit_is_primary_artist(db):
     db.add_or_update_track(Track(
         mbid="solo-track",
