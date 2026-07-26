@@ -62,21 +62,27 @@ export default function AlbumsScreen({ ready, onOpen }: Props) {
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar
         title="Albums"
-        subtitle={`${filtered.length} of ${albums.length}`}
+        subtitle={
+          search
+            ? `${filtered.length} of ${albums.length}`
+            : `${albums.length} ${albums.length === 1 ? "album" : "albums"}`
+        }
         search={search}
         onSearch={setSearch}
       />
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="flex-1 overflow-y-auto px-5 py-5">
         {!ready || loading ? (
-          <div className="text-[var(--color-text-muted)] text-sm">Loading…</div>
+          <div className="text-[11px] text-[var(--color-text-muted)]">
+            Loading…
+          </div>
         ) : error ? (
-          <div className="text-[var(--color-accent)] text-sm">{error}</div>
+          <div className="text-[11px] text-[var(--color-danger)]">{error}</div>
         ) : filtered.length === 0 ? (
-          <div className="text-[var(--color-text-muted)] text-sm">
+          <div className="text-[11px] text-[var(--color-text-muted)]">
             No albums yet. Scan your library to populate.
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-6">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-x-4 gap-y-5">
             {filtered.map((a) => (
               <AlbumCard
                 key={a.id}

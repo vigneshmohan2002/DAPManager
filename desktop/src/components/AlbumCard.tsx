@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { Album } from "../lib/api";
+import Artwork from "./Artwork";
 
 type Props = {
   album: Album;
@@ -14,7 +15,6 @@ export default function AlbumCard({
   onClick,
   onDoubleClick,
 }: Props) {
-  const [failed, setFailed] = useState(false);
   const clickTimer = useRef<number | null>(null);
 
   useEffect(
@@ -55,29 +55,20 @@ export default function AlbumCard({
     <button
       type="button"
       aria-label={`Open ${album.title} by ${album.artist}`}
-      className="group block w-full cursor-pointer select-none rounded-md border-0 bg-transparent p-0 text-left font-[inherit] text-[var(--color-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg)]"
+      className="group block w-full cursor-pointer select-none rounded-md border-0 bg-transparent p-0 text-left font-[inherit] text-[var(--color-text)] transition-transform duration-150 hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-content)]"
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
-      <span className="block aspect-square w-full rounded-md overflow-hidden bg-[var(--color-surface)] shadow-md">
-        {failed ? (
-          <span className="w-full h-full flex items-center justify-center text-[var(--color-text-muted)] text-xs">
-            No cover
-          </span>
-        ) : (
-          <img
-            src={coverUrl}
-            alt={album.title}
-            loading="lazy"
-            onError={() => setFailed(true)}
-            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-          />
-        )}
-      </span>
-      <span className="block mt-2 text-sm font-medium text-[var(--color-text)] truncate">
+      <Artwork
+        src={coverUrl}
+        alt={album.title}
+        className="aspect-square w-full rounded-[5px] shadow-[var(--shadow-artwork)]"
+        imageClassName="transition-transform duration-200 group-hover:scale-[1.015]"
+      />
+      <span className="block mt-1.5 truncate text-[11px] font-medium leading-[1.35] text-[var(--color-text)]">
         {album.title}
       </span>
-      <span className="block text-xs text-[var(--color-text-muted)] truncate">
+      <span className="mt-0.5 block truncate text-[10px] leading-[1.3] text-[var(--color-text-muted)]">
         {album.artist}
       </span>
     </button>

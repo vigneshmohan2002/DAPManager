@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
 const playerMocks = vi.hoisted(() => ({
   play: vi.fn(),
   toggle: vi.fn(),
+  toggleShuffle: vi.fn(),
   setTrackLikedInQueue: vi.fn(),
 }));
 
@@ -24,7 +25,9 @@ vi.mock("../player/PlayerContext", () => ({
     play: playerMocks.play,
     current: null,
     isPlaying: false,
+    shuffle: false,
     toggle: playerMocks.toggle,
+    toggleShuffle: playerMocks.toggleShuffle,
     setTrackLikedInQueue: playerMocks.setTrackLikedInQueue,
   }),
 }));
@@ -150,6 +153,22 @@ describe("AlbumDetailScreen", () => {
     expect(playerMocks.play).toHaveBeenCalledWith(
       tracks.map((track) => ({ ...track, albumId: album.id })),
       1,
+    );
+  });
+
+  it("enables shuffle and starts the complete album at its first row", async () => {
+    const tracks = [makeTrack(1), makeTrack(2), makeTrack(3)];
+    apiMocks.fetchAlbumTracks.mockResolvedValue(tracks);
+    const user = userEvent.setup();
+    renderAlbum();
+    await screen.findByText(/3 tracks/);
+
+    await user.click(screen.getByRole("button", { name: "Shuffle" }));
+
+    expect(playerMocks.toggleShuffle).toHaveBeenCalledOnce();
+    expect(playerMocks.play).toHaveBeenCalledWith(
+      tracks.map((track) => ({ ...track, albumId: album.id })),
+      0,
     );
   });
 

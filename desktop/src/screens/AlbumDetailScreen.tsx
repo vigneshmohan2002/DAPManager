@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import Artwork from "../components/Artwork";
+import Icon from "../components/Icon";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
 import {
@@ -31,8 +33,15 @@ export default function AlbumDetailScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const { play, current, isPlaying, toggle, setTrackLikedInQueue } =
-    usePlayer();
+  const {
+    play,
+    current,
+    isPlaying,
+    toggle,
+    shuffle,
+    toggleShuffle,
+    setTrackLikedInQueue,
+  } = usePlayer();
   const toast = useToast();
 
   useEffect(() => {
@@ -81,6 +90,11 @@ export default function AlbumDetailScreen({
     play(withAlbum, startIndex);
   };
 
+  const shuffleAlbum = () => {
+    if (!shuffle) toggleShuffle();
+    playFrom(0);
+  };
+
   const handleLikeToggle = async (track: Track) => {
     const wasLiked = Boolean(track.is_liked);
     const next = !wasLiked;
@@ -102,109 +116,149 @@ export default function AlbumDetailScreen({
     if (next) onPlaylistsChanged?.();
   };
 
+  const coverUrl = base ? albumCoverUrl(base, album.id) : null;
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <TopBar title={album.title} subtitle={album.artist} search={search} onSearch={setSearch} />
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="flex gap-6 mb-8">
-          <div className="w-48 h-48 rounded-md overflow-hidden bg-[var(--color-surface)] shadow-lg shrink-0">
-            {base ? (
-              <img
-                src={albumCoverUrl(base, album.id)}
-                alt=""
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                }}
-              />
-            ) : null}
-          </div>
-          <div className="flex flex-col justify-end min-w-0">
-            <div className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-              Album
-            </div>
-            <h2 className="text-3xl font-bold truncate">{album.title}</h2>
-            <div className="text-sm text-[var(--color-text-muted)] mt-1">
-              {album.artist} · {trackSummary}
-            </div>
-            <div className="mt-4 flex gap-2">
-              <button
-                onClick={() => playFrom(0)}
-                disabled={tracks.length === 0}
-                className="px-5 py-2 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium disabled:opacity-40"
-              >
-                ▶ Play
-              </button>
-              <button
-                onClick={onBack}
-                className="px-4 py-2 rounded-full bg-[var(--color-surface)] text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-              >
-                ← Back
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="text-[var(--color-text-muted)] text-sm">Loading…</div>
-        ) : error ? (
-          <div className="text-[var(--color-accent)] text-sm">{error}</div>
-        ) : filtered.length === 0 ? (
-          <div className="text-[var(--color-text-muted)] text-sm">
-            No tracks available.
-          </div>
-        ) : (
-          <ol className="divide-y divide-[var(--color-border)]">
-            {filtered.map((t, idx) => {
-              const absIdx = tracks.indexOf(t);
-              const isCurrent = current?.mbid === t.mbid;
-              return (
-                <li
-                  key={t.mbid}
-                  className="flex items-center gap-4 py-2 px-2 rounded hover:bg-[var(--color-surface)]/60 group cursor-pointer"
-                  onClick={() => {
-                    if (isCurrent) toggle();
-                    else playFrom(absIdx);
-                  }}
+      <TopBar
+        title={album.title}
+        subtitle={album.artist}
+        search={search}
+        onSearch={setSearch}
+        onBack={onBack}
+      />
+      <div className="relative flex-1 overflow-y-auto">
+        {coverUrl ? (
+          <img
+            key={coverUrl}
+            src={coverUrl}
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-16 -top-28 h-96 w-96 scale-125 object-cover opacity-[0.07] blur-3xl"
+          />
+        ) : null}
+        <div className="relative px-6 py-7">
+          <div className="mb-8 flex gap-7">
+            <Artwork
+              src={coverUrl}
+              alt={`${album.title} cover`}
+              loading="eager"
+              className="h-52 w-52 shrink-0 rounded-[6px] shadow-[var(--shadow-artwork)]"
+            />
+            <div className="flex min-w-0 flex-col justify-end pb-1">
+              <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+                {album.artist}
+              </div>
+              <h2 className="mt-1 max-w-2xl truncate text-[30px] font-semibold leading-tight tracking-[-0.025em]">
+                {album.title}
+              </h2>
+              <div className="mt-2 text-[11px] text-[var(--color-text-muted)]">
+                {trackSummary}
+              </div>
+              <div className="mt-6 flex gap-2.5">
+                <button
+                  onClick={() => playFrom(0)}
+                  disabled={tracks.length === 0}
+                  className="doppler-control flex h-9 min-w-28 items-center justify-center gap-2 rounded-full bg-[var(--color-accent-soft)] px-5 text-[12px] font-medium text-[var(--color-accent)] disabled:opacity-40"
                 >
-                  <div className="w-8 text-center text-[var(--color-text-muted)] text-sm tabular-nums">
-                    {isCurrent && isPlaying ? (
-                      <span className="text-[var(--color-accent)]">♪</span>
-                    ) : (
-                      t.track_number ?? idx + 1
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div
-                      className={`text-sm truncate ${isCurrent ? "text-[var(--color-accent)]" : ""}`}
-                    >
-                      {t.title}
-                    </div>
-                    <div className="text-xs text-[var(--color-text-muted)] truncate">
-                      {t.artist}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      // Heart must not also fire the row's play handler.
-                      e.stopPropagation();
-                      handleLikeToggle(t);
-                    }}
-                    aria-label={t.is_liked ? "Unlike" : "Like"}
-                    aria-pressed={Boolean(t.is_liked)}
-                    className={`text-base px-2 transition-colors ${
-                      t.is_liked
-                        ? "text-rose-400 hover:text-rose-300"
-                        : "text-[var(--color-text-muted)]/30 hover:text-rose-400 opacity-0 group-hover:opacity-100"
+                  <Icon name="play" size={13} />
+                  Play
+                </button>
+                <button
+                  onClick={shuffleAlbum}
+                  disabled={tracks.length === 0}
+                  className="doppler-control flex h-9 min-w-28 items-center justify-center gap-2 rounded-full bg-[var(--color-accent-soft)] px-5 text-[12px] font-medium text-[var(--color-accent)] disabled:opacity-40"
+                >
+                  <Icon name="shuffle" size={14} />
+                  Shuffle
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="text-[11px] text-[var(--color-text-muted)]">
+              Loading…
+            </div>
+          ) : error ? (
+            <div className="text-[11px] text-[var(--color-danger)]">{error}</div>
+          ) : filtered.length === 0 ? (
+            <div className="text-[11px] text-[var(--color-text-muted)]">
+              No tracks available.
+            </div>
+          ) : (
+            <ol className="border-y border-[var(--color-border)]">
+              {filtered.map((t, idx) => {
+                const absIdx = tracks.indexOf(t);
+                const isCurrent = current?.mbid === t.mbid;
+                const showTrackArtist =
+                  t.artist.trim().toLocaleLowerCase() !==
+                  album.artist.trim().toLocaleLowerCase();
+                return (
+                  <li
+                    key={t.mbid}
+                    className={`group flex min-h-10 cursor-pointer items-center gap-3 border-b border-[var(--color-border)] px-3 last:border-b-0 ${
+                      isCurrent
+                        ? "bg-[var(--color-accent-soft)]"
+                        : "hover:bg-[var(--color-surface)]/45"
                     }`}
+                    onClick={() => {
+                      if (isCurrent) toggle();
+                      else playFrom(absIdx);
+                    }}
                   >
-                    {t.is_liked ? "♥" : "♡"}
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
-        )}
+                    <div className="w-6 text-right text-[10px] tabular-nums text-[var(--color-text-muted)]">
+                      {isCurrent && isPlaying ? (
+                        <Icon
+                          name="songs"
+                          size={12}
+                          className="ml-auto text-[var(--color-accent)]"
+                        />
+                      ) : (
+                        t.track_number ?? idx + 1
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1 py-1.5">
+                      <div
+                        className={`truncate text-[11px] ${
+                          isCurrent
+                            ? "font-medium text-[var(--color-accent)]"
+                            : ""
+                        }`}
+                      >
+                        {t.title}
+                      </div>
+                      {showTrackArtist ? (
+                        <div className="truncate text-[9px] text-[var(--color-text-muted)]">
+                          {t.artist}
+                        </div>
+                      ) : null}
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleLikeToggle(t);
+                      }}
+                      aria-label={t.is_liked ? "Unlike" : "Like"}
+                      aria-pressed={Boolean(t.is_liked)}
+                      className={`doppler-control grid h-7 w-7 place-items-center rounded ${
+                        t.is_liked
+                          ? "text-[var(--color-liked)]"
+                          : "opacity-0 group-hover:opacity-100"
+                      }`}
+                    >
+                      <Icon
+                        name="heart"
+                        size={13}
+                        className={t.is_liked ? "fill-current" : ""}
+                      />
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
       </div>
     </div>
   );
