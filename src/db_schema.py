@@ -236,10 +236,102 @@ def _columns(cursor: sqlite3.Cursor, table: str) -> Set[str]:
     }
 
 
+ALBUM_TRACK_MIGRATIONS: Tuple[Tuple[str, str], ...] = (
+    ("medium_position", "INTEGER NOT NULL DEFAULT 0"),
+    ("track_position", "INTEGER NOT NULL DEFAULT 0"),
+    ("track_number", "TEXT NOT NULL DEFAULT ''"),
+    ("title", "TEXT NOT NULL DEFAULT ''"),
+    ("artist", "TEXT NOT NULL DEFAULT ''"),
+    ("date", "TEXT NOT NULL DEFAULT ''"),
+    ("track_total", "INTEGER NOT NULL DEFAULT 0"),
+    ("disc_total", "INTEGER NOT NULL DEFAULT 0"),
+    ("release_track_mbid", "TEXT NOT NULL DEFAULT ''"),
+)
+
+DOWNLOAD_QUEUE_MIGRATIONS: Tuple[Tuple[str, str], ...] = (
+    ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
+    ("next_attempt_at", "TIMESTAMP"),
+    ("claim_owner", "TEXT"),
+    ("claim_expires_at", "TIMESTAMP"),
+    ("claim_heartbeat_at", "TIMESTAMP"),
+    ("is_paused", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_quarantined", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_error", "TEXT"),
+)
+
+
+def _schema_requires_migration(cursor: sqlite3.Cursor) -> bool:
+    """Return whether any additive/rename migration or migration index is absent."""
+    track_columns = _columns(cursor, "tracks")
+    if (
+        ("ipod_path" in track_columns and "dap_path" not in track_columns)
+        or (
+            "synced_to_ipod" in track_columns
+            and "synced_to_dap" not in track_columns
+        )
+        or not {
+            "updated_at",
+            "deleted_at",
+            "tag_tier",
+            "tag_score",
+            "is_liked",
+        }.issubset(track_columns)
+    ):
+        return True
+
+    if "listened_ms" not in _columns(cursor, "play_events"):
+        return True
+    if not {"updated_at", "deleted_at", "smart_rules"}.issubset(
+        _columns(cursor, "playlists")
+    ):
+        return True
+    if not {column for column, _ in ALBUM_TRACK_MIGRATIONS}.issubset(
+        _columns(cursor, "album_download_request_tracks")
+    ):
+        return True
+    if not {column for column, _ in DOWNLOAD_QUEUE_MIGRATIONS}.issubset(
+        _columns(cursor, "download_queue")
+    ):
+        return True
+
+    migration_indexes = {
+        row[0]
+        for row in cursor.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'index' AND name IN (?, ?)",
+            ("idx_tracks_is_liked", "idx_download_queue_claimable"),
+        ).fetchall()
+    }
+    return migration_indexes != {
+        "idx_tracks_is_liked",
+        "idx_download_queue_claimable",
+    }
+
+
 def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
     """Apply every legacy schema migration idempotently in historical order."""
     cursor = conn.cursor()
     try:
+        requires_migration = _schema_requires_migration(cursor)
+        if not requires_migration:
+            # Keep the current-schema path read-only. DatabaseManager is opened
+            # by high-fanout read routes (including each artwork request), so
+            # taking a write reservation here would make readers contend with
+            # unrelated writers even when there is no DDL to apply.
+            conn.commit()
+            return
+
+        # Column migrations are necessarily check-then-ALTER operations. When
+        # this function owns transaction startup, reserve the write lock and
+        # re-read the schema under it: another process may have completed the
+        # same migration between the optimistic read and this reservation.
+        if not conn.in_transaction:
+            cursor.execute("BEGIN IMMEDIATE")
+            if not _schema_requires_migration(cursor):
+                conn.commit()
+                return
+
         columns = _columns(cursor, "tracks")
         if "ipod_path" in columns and "dap_path" not in columns:
             cursor.execute("ALTER TABLE tracks RENAME COLUMN ipod_path TO dap_path")
@@ -300,18 +392,7 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
             cursor,
             "album_download_request_tracks",
         )
-        album_track_migrations = (
-            ("medium_position", "INTEGER NOT NULL DEFAULT 0"),
-            ("track_position", "INTEGER NOT NULL DEFAULT 0"),
-            ("track_number", "TEXT NOT NULL DEFAULT ''"),
-            ("title", "TEXT NOT NULL DEFAULT ''"),
-            ("artist", "TEXT NOT NULL DEFAULT ''"),
-            ("date", "TEXT NOT NULL DEFAULT ''"),
-            ("track_total", "INTEGER NOT NULL DEFAULT 0"),
-            ("disc_total", "INTEGER NOT NULL DEFAULT 0"),
-            ("release_track_mbid", "TEXT NOT NULL DEFAULT ''"),
-        )
-        for column, definition in album_track_migrations:
+        for column, definition in ALBUM_TRACK_MIGRATIONS:
             if column not in album_track_columns:
                 cursor.execute(
                     "ALTER TABLE album_download_request_tracks "
@@ -329,18 +410,7 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
         legacy_download_queue_retry_state = (
             "is_quarantined" not in download_queue_columns
         )
-        download_queue_migrations = (
-            ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("max_attempts", "INTEGER NOT NULL DEFAULT 3"),
-            ("next_attempt_at", "TIMESTAMP"),
-            ("claim_owner", "TEXT"),
-            ("claim_expires_at", "TIMESTAMP"),
-            ("claim_heartbeat_at", "TIMESTAMP"),
-            ("is_paused", "INTEGER NOT NULL DEFAULT 0"),
-            ("is_quarantined", "INTEGER NOT NULL DEFAULT 0"),
-            ("last_error", "TEXT"),
-        )
-        for column, definition in download_queue_migrations:
+        for column, definition in DOWNLOAD_QUEUE_MIGRATIONS:
             if column not in download_queue_columns:
                 cursor.execute(
                     "ALTER TABLE download_queue "

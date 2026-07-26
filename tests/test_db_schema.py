@@ -1,6 +1,8 @@
 import logging
 import sqlite3
+import threading
 
+import src.db_schema as db_schema
 from src.db_schema import create_tables, migrate_schema
 
 
@@ -121,6 +123,153 @@ def test_schema_module_migrates_legacy_download_queue_idempotently():
     }
     assert "idx_download_queue_claimable" in indexes
     conn.close()
+
+
+def test_concurrent_connections_serialize_legacy_download_queue_migration(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "concurrent-legacy.db"
+    logger = logging.getLogger("test.db_schema.concurrent")
+
+    # Build every current table/index first, then downgrade only download_queue
+    # to the exact legacy shape involved in the production startup race.
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    create_tables(conn, logger)
+    migrate_schema(conn, logger)
+    conn.execute("DROP INDEX idx_download_queue_claimable")
+    conn.execute("DROP TABLE download_queue")
+    conn.executescript(
+        """
+        CREATE TABLE download_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            search_query TEXT NOT NULL,
+            playlist_id TEXT NOT NULL,
+            status TEXT DEFAULT 'pending'
+                CHECK(status IN ('pending', 'failed', 'success')),
+            last_attempt TIMESTAMP,
+            mbid_guess TEXT NOT NULL
+        );
+        INSERT INTO download_queue (
+            search_query, playlist_id, status, mbid_guess
+        ) VALUES ('Artist - Album', 'SATELLITE_ALBUM', 'failed', 'release-1');
+        """
+    )
+    conn.close()
+
+    first_rechecking_under_lock = threading.Event()
+    second_started = threading.Event()
+    second_detected_migration = threading.Event()
+    second_rechecked_under_lock = threading.Event()
+    release_first_connection = threading.Event()
+    original_requires_migration = db_schema._schema_requires_migration
+    migration_checks = {}
+    checks_lock = threading.Lock()
+
+    def gated_requires_migration(cursor):
+        requires_migration = original_requires_migration(cursor)
+        thread_name = threading.current_thread().name
+        with checks_lock:
+            check_number = migration_checks.get(thread_name, 0) + 1
+            migration_checks[thread_name] = check_number
+        if thread_name == "migration-first" and check_number == 2:
+            first_rechecking_under_lock.set()
+            assert release_first_connection.wait(timeout=5)
+        elif thread_name == "migration-second" and check_number == 1:
+            second_detected_migration.set()
+        elif thread_name == "migration-second" and check_number == 2:
+            second_rechecked_under_lock.set()
+        return requires_migration
+
+    monkeypatch.setattr(
+        db_schema,
+        "_schema_requires_migration",
+        gated_requires_migration,
+    )
+
+    errors = []
+
+    def run_migration():
+        worker_conn = sqlite3.connect(db_path)
+        worker_conn.row_factory = sqlite3.Row
+        worker_conn.execute("PRAGMA busy_timeout = 5000")
+        if threading.current_thread().name == "migration-second":
+            second_started.set()
+        try:
+            migrate_schema(worker_conn, logger)
+        except Exception as error:  # pragma: no cover - assertion reports details
+            errors.append(error)
+        finally:
+            worker_conn.close()
+
+    first = threading.Thread(target=run_migration, name="migration-first")
+    second = threading.Thread(target=run_migration, name="migration-second")
+    first.start()
+    assert first_rechecking_under_lock.wait(timeout=5)
+    second.start()
+
+    # Both workers can perform the optimistic, read-only schema check. The
+    # second must then wait on BEGIN IMMEDIATE and may not perform its locked
+    # re-check until the first migration commits.
+    assert second_started.wait(timeout=5)
+    assert second_detected_migration.wait(timeout=5)
+    assert not second_rechecked_under_lock.wait(timeout=0.25)
+    release_first_connection.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+
+    verify = sqlite3.connect(db_path)
+    verify.row_factory = sqlite3.Row
+    assert _columns(verify, "download_queue")[-9:] == (
+        "attempt_count",
+        "max_attempts",
+        "next_attempt_at",
+        "claim_owner",
+        "claim_expires_at",
+        "claim_heartbeat_at",
+        "is_paused",
+        "is_quarantined",
+        "last_error",
+    )
+    row = verify.execute(
+        "SELECT status, attempt_count, is_quarantined "
+        "FROM download_queue WHERE mbid_guess = 'release-1'"
+    ).fetchone()
+    assert dict(row) == {
+        "status": "failed",
+        "attempt_count": 0,
+        "is_quarantined": 1,
+    }
+    verify.close()
+
+
+def test_current_schema_migration_check_remains_read_only_under_writer_lock(
+    tmp_path,
+):
+    db_path = tmp_path / "current-schema.db"
+    logger = logging.getLogger("test.db_schema.current")
+    setup = sqlite3.connect(db_path)
+    setup.row_factory = sqlite3.Row
+    create_tables(setup, logger)
+    migrate_schema(setup, logger)
+    setup.close()
+
+    writer = sqlite3.connect(db_path)
+    writer.execute("BEGIN IMMEDIATE")
+    reader = sqlite3.connect(db_path)
+    reader.row_factory = sqlite3.Row
+    reader.execute("PRAGMA busy_timeout = 50")
+    try:
+        migrate_schema(reader, logger)
+    finally:
+        reader.close()
+        writer.rollback()
+        writer.close()
 
 
 def test_schema_module_migrates_the_complete_legacy_contract_twice():
