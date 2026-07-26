@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
+import AlbumCard from "../components/AlbumCard";
+import Artwork from "../components/Artwork";
+import Icon from "../components/Icon";
 import TopBar from "../components/TopBar";
+import { useToast } from "../components/Toast";
 import {
   albumCoverUrl,
   backendUrl,
@@ -8,6 +12,7 @@ import {
   type Artist,
   type HomePayload,
 } from "../lib/api";
+import { usePlayer } from "../player/PlayerContext";
 
 type Props = {
   ready: boolean;
@@ -20,9 +25,6 @@ type Props = {
   onOpenStats: () => void;
 };
 
-// Relative-time formatter matching the Listening screen's
-// "Xm ago / Xh ago / Xd ago" shape so users see consistent copy
-// across the two surfaces.
 function relTime(iso: string): string {
   try {
     const t = Date.parse(iso);
@@ -51,6 +53,17 @@ export default function HomeScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [base, setBase] = useState("");
+  const { playAlbum } = usePlayer();
+  const toast = useToast();
+
+  const handlePlayAlbum = async (album: Album) => {
+    try {
+      const count = await playAlbum(album.id);
+      if (count === 0) toast.show("No playable tracks in this album.", "err");
+    } catch (e) {
+      toast.show(`Could not play album: ${e}`, "err");
+    }
+  };
 
   useEffect(() => {
     backendUrl().then(setBase);
@@ -79,31 +92,43 @@ export default function HomeScreen({
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar title="Home" />
-      <div className="flex-1 overflow-y-auto px-6 pb-8">
+      <div className="flex-1 overflow-y-auto px-5 pb-10">
         {!ready || loading ? (
           <p className="py-6 text-sm text-[var(--color-text-muted)]">Loading…</p>
         ) : error ? (
-          <p className="py-6 text-sm text-[var(--color-accent)]">{error}</p>
+          <p className="py-6 text-sm text-[var(--color-danger)]">{error}</p>
         ) : !data ? null : (
-          <div className="flex flex-col gap-10 pt-4">
+          <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-9 pt-5">
             {data.daily_mixes.length > 0 && (
               <Section title="Daily Mixes">
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-x-4 gap-y-5">
                   {data.daily_mixes.map((m) => (
                     <button
+                      type="button"
                       key={m.playlist_id}
                       onClick={() => onOpenPlaylist(m.playlist_id)}
-                      className="text-left group"
+                      aria-label={`Open playlist ${m.name}`}
+                      className="group min-w-0 text-left focus-visible:rounded-md"
                     >
-                      <div className="aspect-square rounded-md bg-gradient-to-br from-[var(--color-accent)]/40 via-[var(--color-surface)] to-[var(--color-bg-elevated)] flex items-center justify-center px-3">
-                        <span className="text-xs font-semibold uppercase tracking-wider text-center text-[var(--color-text)] line-clamp-3">
-                          {m.tag || "Mix"}
-                        </span>
+                      <div className="relative flex aspect-square items-end overflow-hidden rounded-[5px] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--color-accent)_78%,#25293a),color-mix(in_srgb,var(--color-accent)_24%,#b08a9d))] p-3 shadow-[var(--shadow-artwork)] transition-transform duration-150 group-hover:-translate-y-px">
+                        <Icon
+                          name="playlist"
+                          size={58}
+                          className="absolute -right-2 -top-1 rotate-6 text-white/20"
+                        />
+                        <div className="relative min-w-0 text-white">
+                          <span className="block text-[9px] font-semibold uppercase tracking-[0.14em] text-white/70">
+                            Daily Mix
+                          </span>
+                          <span className="mt-1 block line-clamp-3 text-[15px] font-semibold leading-tight">
+                            {m.tag || "Mix"}
+                          </span>
+                        </div>
                       </div>
-                      <div className="mt-1.5 text-xs font-medium truncate">
+                      <div className="mt-1.5 truncate text-[11px] font-medium">
                         {m.name}
                       </div>
-                      <div className="text-[11px] text-[var(--color-text-muted)]">
+                      <div className="mt-0.5 text-[10px] text-[var(--color-text-muted)]">
                         {m.track_count}{" "}
                         {m.track_count === 1 ? "track" : "tracks"}
                       </div>
@@ -115,41 +140,24 @@ export default function HomeScreen({
 
             {data.jump_back_in.length > 0 && (
               <Section title="Jump back in">
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                  {data.jump_back_in.map((a) => (
-                    <button
-                      key={a.album_id}
-                      onClick={() =>
-                        onOpenAlbum({
-                          id: a.album_id,
-                          title: a.title,
-                          artist: a.artist,
-                          track_count: 0,
-                        })
-                      }
-                      className="text-left group"
-                    >
-                      <div className="aspect-square rounded-md overflow-hidden bg-[var(--color-surface)]">
-                        {base && (
-                          <img
-                            src={albumCoverUrl(base, a.album_id)}
-                            alt=""
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLImageElement).style.display =
-                                "none";
-                            }}
-                          />
-                        )}
-                      </div>
-                      <div className="mt-1.5 text-xs font-medium truncate">
-                        {a.title}
-                      </div>
-                      <div className="text-[11px] text-[var(--color-text-muted)] truncate">
-                        {a.artist}
-                      </div>
-                    </button>
-                  ))}
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-x-4 gap-y-5">
+                  {data.jump_back_in.map((a) => {
+                    const album: Album = {
+                      id: a.album_id,
+                      title: a.title,
+                      artist: a.artist,
+                      track_count: 0,
+                    };
+                    return (
+                      <AlbumCard
+                        key={a.album_id}
+                        album={album}
+                        coverUrl={base ? albumCoverUrl(base, a.album_id) : ""}
+                        onClick={() => onOpenAlbum(album)}
+                        onDoubleClick={() => void handlePlayAlbum(album)}
+                      />
+                    );
+                  })}
                 </div>
               </Section>
             )}
@@ -159,9 +167,10 @@ export default function HomeScreen({
                 title="Top artists this month"
                 action={{ label: "See all", onClick: onOpenStats }}
               >
-                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+                <div className="grid grid-cols-1 gap-x-5 overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)] sm:grid-cols-2">
                   {data.top_artists.map((a) => (
                     <button
+                      type="button"
                       key={a.artist}
                       onClick={() =>
                         onOpenArtist({
@@ -170,17 +179,24 @@ export default function HomeScreen({
                           track_count: a.distinct_tracks,
                         })
                       }
-                      className="flex flex-col items-center text-center gap-1.5 group"
+                      aria-label={`Open artist ${a.artist}`}
+                      className="group flex min-w-0 items-center gap-3 border-b border-[var(--color-border)] px-3 py-2.5 text-left last:border-b-0 hover:bg-[var(--color-surface)]/55 sm:[&:nth-last-child(-n+2)]:border-b-0"
                     >
-                      <div className="w-20 h-20 rounded-full bg-[var(--color-surface)] flex items-center justify-center text-2xl font-bold text-[var(--color-text-muted)] group-hover:text-[var(--color-text)]">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[var(--color-surface)] text-[12px] font-semibold text-[var(--color-text-muted)] shadow-sm transition-colors group-hover:text-[var(--color-text)]">
                         {(a.artist[0] ?? "?").toUpperCase()}
-                      </div>
-                      <div className="text-xs font-medium truncate w-full">
-                        {a.artist}
-                      </div>
-                      <div className="text-[11px] text-[var(--color-text-muted)]">
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12px] font-medium">
+                          {a.artist}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[10px] text-[var(--color-text-muted)]">
+                          {a.distinct_tracks}{" "}
+                          {a.distinct_tracks === 1 ? "track" : "tracks"}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-[10px] tabular-nums text-[var(--color-text-muted)]">
                         {a.plays} {a.plays === 1 ? "play" : "plays"}
-                      </div>
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -199,34 +215,34 @@ export default function HomeScreen({
               }
             >
               {data.liked.total === 0 ? (
-                <p className="text-sm text-[var(--color-text-muted)]">
-                  Tap the ♡ on any track to add it here.
-                </p>
+                <EmptyCollection
+                  icon="heart"
+                  text="Use the heart on any track to add it here."
+                />
               ) : (
-                <div className="flex flex-col rounded-md bg-[var(--color-surface)]/40 divide-y divide-[var(--color-border)]/40">
+                <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)]">
                   {data.liked.preview.map((t) => (
-                    <button
+                    <CompactTrackRow
                       key={t.mbid}
-                      onClick={() =>
+                      title={t.title}
+                      subtitle={`${t.artist}${t.album ? ` — ${t.album}` : ""}`}
+                      artworkUrl={
+                        base && t.album_id
+                          ? albumCoverUrl(base, t.album_id)
+                          : undefined
+                      }
+                      leading={<Icon name="heart" size={14} />}
+                      disabled={!t.album_id}
+                      onClick={() => {
                         t.album_id &&
                         onOpenAlbum({
                           id: t.album_id,
                           title: t.album ?? "",
                           artist: t.artist,
                           track_count: 0,
-                        })
-                      }
-                      className="flex items-center gap-3 px-3 py-2 text-left hover:bg-[var(--color-surface)]/80"
-                    >
-                      <span className="text-rose-400">♥</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm truncate">{t.title}</div>
-                        <div className="text-xs text-[var(--color-text-muted)] truncate">
-                          {t.artist}
-                          {t.album ? ` — ${t.album}` : ""}
-                        </div>
-                      </div>
-                    </button>
+                        });
+                      }}
+                    />
                   ))}
                 </div>
               )}
@@ -237,34 +253,29 @@ export default function HomeScreen({
                 title="Recently played"
                 action={{ label: "See all", onClick: onOpenStats }}
               >
-                <div className="flex flex-col rounded-md bg-[var(--color-surface)]/40 divide-y divide-[var(--color-border)]/40">
+                <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)]">
                   {data.recent.map((p) => (
-                    <button
+                    <CompactTrackRow
                       key={p.id}
-                      onClick={() =>
+                      title={p.title ?? "(unknown track)"}
+                      subtitle={`${p.artist ?? ""}${p.album ? ` — ${p.album}` : ""}`}
+                      artworkUrl={
+                        base && p.album_id
+                          ? albumCoverUrl(base, p.album_id)
+                          : undefined
+                      }
+                      trailing={relTime(p.played_at)}
+                      disabled={!p.album_id}
+                      onClick={() => {
                         p.album_id &&
                         onOpenAlbum({
                           id: p.album_id,
                           title: p.album ?? "",
                           artist: p.artist ?? "",
                           track_count: 0,
-                        })
-                      }
-                      className="flex items-center gap-3 px-3 py-2 text-left hover:bg-[var(--color-surface)]/80"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm truncate">
-                          {p.title ?? "(unknown track)"}
-                        </div>
-                        <div className="text-xs text-[var(--color-text-muted)] truncate">
-                          {p.artist ?? ""}
-                          {p.album ? ` — ${p.album}` : ""}
-                        </div>
-                      </div>
-                      <div className="text-xs text-[var(--color-text-muted)] shrink-0">
-                        {relTime(p.played_at)}
-                      </div>
-                    </button>
+                        });
+                      }}
+                    />
                   ))}
                 </div>
               </Section>
@@ -296,12 +307,13 @@ function Section({
 }) {
   return (
     <section>
-      <div className="flex items-baseline justify-between mb-3">
-        <h2 className="text-lg font-semibold">{title}</h2>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-[13px] font-semibold tracking-[-0.01em]">{title}</h2>
         {action && (
           <button
+            type="button"
             onClick={action.onClick}
-            className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="rounded px-1 py-0.5 text-[10px] font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
           >
             {action.label}
           </button>
@@ -309,5 +321,68 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+function CompactTrackRow({
+  title,
+  subtitle,
+  artworkUrl,
+  leading,
+  trailing,
+  disabled,
+  onClick,
+}: {
+  title: string;
+  subtitle: string;
+  artworkUrl?: string;
+  leading?: React.ReactNode;
+  trailing?: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="group flex w-full items-center gap-2.5 border-b border-[var(--color-border)] px-2.5 py-1.5 text-left last:border-b-0 hover:bg-[var(--color-surface)]/55 disabled:cursor-default disabled:opacity-70"
+    >
+      <Artwork
+        src={artworkUrl}
+        alt=""
+        fallbackLabel=""
+        className="h-9 w-9 shrink-0 rounded-[3px] shadow-sm"
+      />
+      {leading ? (
+        <span className="shrink-0 text-[var(--color-liked)]">{leading}</span>
+      ) : null}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[11px] font-medium">{title}</span>
+        <span className="mt-0.5 block truncate text-[10px] text-[var(--color-text-muted)]">
+          {subtitle}
+        </span>
+      </span>
+      {trailing ? (
+        <span className="shrink-0 text-[10px] tabular-nums text-[var(--color-text-muted)]">
+          {trailing}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function EmptyCollection({
+  icon,
+  text,
+}: {
+  icon: "heart";
+  text: string;
+}) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-bg-elevated)] px-3 py-4 text-[11px] text-[var(--color-text-muted)]">
+      <Icon name={icon} size={16} />
+      {text}
+    </div>
   );
 }

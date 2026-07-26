@@ -190,4 +190,69 @@ describe("SongsScreen list and playback contract", () => {
     expect(playerMocks.play).not.toHaveBeenCalled();
     expect(onPlaylistsChanged).toHaveBeenCalledTimes(1);
   });
+
+  it("does not trigger row playback when liking with the keyboard", async () => {
+    const user = userEvent.setup();
+    render(
+      <SongsScreen
+        ready
+        playlistsVersion={0}
+        onPlaylistsChanged={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+    const localTitle = await screen.findByText("Local opener");
+    const likeButton = localTitle.closest("tr")?.querySelector("button");
+    expect(likeButton).not.toBeNull();
+
+    likeButton!.focus();
+    await user.keyboard("{Enter}");
+
+    expect(apiMocks.setTrackLiked).toHaveBeenCalledWith("local-1", true);
+    expect(playerMocks.play).not.toHaveBeenCalled();
+    expect(playerMocks.toggle).not.toHaveBeenCalled();
+  });
+
+  it("keeps filtering, sorting, and row playback keyboard accessible", async () => {
+    const user = userEvent.setup();
+    render(
+      <SongsScreen
+        ready
+        playlistsVersion={0}
+        onPlaylistsChanged={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+    await screen.findByText("Local opener");
+
+    const artistHeader = screen.getByRole("columnheader", { name: "Artist" });
+    expect(artistHeader).toHaveAttribute("aria-sort", "ascending");
+    await user.click(screen.getByRole("button", { name: "Title" }));
+    expect(
+      screen.getByRole("columnheader", { name: "Title" }),
+    ).toHaveAttribute("aria-sort", "ascending");
+
+    await user.click(screen.getByRole("checkbox", { name: "Catalog-only" }));
+    await waitFor(() =>
+      expect(apiMocks.fetchAllTracks).toHaveBeenLastCalledWith({
+        playlistId: undefined,
+        localOnly: false,
+        includeOrphans: false,
+      }),
+    );
+
+    const targetRow = screen.getByRole("row", {
+      name: "Target closer by Charlie",
+    });
+    targetRow.focus();
+    await user.keyboard("{Enter}");
+
+    expect(playerMocks.play).toHaveBeenCalledTimes(1);
+    const [queue, startIndex] = playerMocks.play.mock.calls[0] as [
+      Array<LibraryTrack & { albumId: string | null }>,
+      number,
+    ];
+    expect(queue.map((track) => track.mbid)).toEqual(["local-1", "drive-1"]);
+    expect(startIndex).toBe(1);
+  });
 });

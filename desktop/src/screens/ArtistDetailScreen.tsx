@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AlbumCard from "../components/AlbumCard";
+import Artwork from "../components/Artwork";
+import Icon from "../components/Icon";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
 import {
@@ -124,40 +126,52 @@ export default function ArtistDetailScreen({ artist, onBack, onOpenAlbum }: Prop
         subtitle={`${artist.album_count} albums · ${artist.track_count} tracks`}
         search={search}
         onSearch={setSearch}
+        onBack={onBack}
       />
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <button
-            onClick={onBack}
-            className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-          >
-            ← All artists
-          </button>
-          <button
-            onClick={handleRadio}
-            disabled={radioLoading || albums.length === 0}
-            title="Start a Spotify-style radio seeded on this artist"
-            className="px-4 py-1.5 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium disabled:opacity-40"
-          >
-            {radioLoading ? "Loading…" : "📻 Start Radio"}
-          </button>
-        </div>
-        {infoLoading ? (
-          <div className="mb-6 h-24 rounded-md bg-[var(--color-surface)]/40 animate-pulse" />
-        ) : info ? (
-          <div className="mb-6 flex gap-4 p-4 rounded-md bg-[var(--color-surface)]/40">
-            {info.image_url ? (
-              <img
-                src={info.image_url}
-                alt=""
-                className="w-20 h-20 rounded object-cover shrink-0"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                }}
+      <div className="flex-1 overflow-y-auto px-5 pb-10">
+        <div className="mx-auto w-full max-w-[1180px]">
+          <header className="flex min-h-40 items-end gap-5 border-b border-[var(--color-border)] py-6">
+            {infoLoading ? (
+              <div className="h-24 w-24 shrink-0 animate-pulse rounded-full bg-[var(--color-surface)] shadow-[var(--shadow-artwork)]" />
+            ) : (
+              <Artwork
+                src={info?.image_url}
+                alt={artist.name}
+                fallbackLabel={(artist.name[0] ?? "?").toUpperCase()}
+                loading="eager"
+                className="h-24 w-24 shrink-0 rounded-full text-lg font-semibold shadow-[var(--shadow-artwork)]"
               />
-            ) : null}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm leading-snug text-[var(--color-text)] line-clamp-4">
+            )}
+            <div className="min-w-0 flex-1 pb-0.5">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.13em] text-[var(--color-text-muted)]">
+                Artist
+              </p>
+              <h1 className="mt-1 truncate text-[28px] font-semibold leading-none tracking-[-0.035em]">
+                {artist.name}
+              </h1>
+              <p className="mt-2 text-[10px] text-[var(--color-text-muted)]">
+                {artist.album_count}{" "}
+                {artist.album_count === 1 ? "album" : "albums"} ·{" "}
+                {artist.track_count}{" "}
+                {artist.track_count === 1 ? "track" : "tracks"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleRadio}
+              disabled={radioLoading || albums.length === 0}
+              title="Start a Spotify-style radio seeded on this artist"
+              aria-label={`Start ${artist.name} radio`}
+              className="mb-0.5 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-[var(--color-text)] px-4 text-[11px] font-semibold text-[var(--color-content)] shadow-sm transition-transform hover:scale-[1.015] active:scale-[0.98] disabled:opacity-35"
+            >
+              <Icon name="play" size={11} />
+              {radioLoading ? "Loading…" : "Start Radio"}
+            </button>
+          </header>
+
+          {!infoLoading && info ? (
+            <section className="border-b border-[var(--color-border)] py-4">
+              <p className="max-w-3xl text-[11px] leading-[1.55] text-[var(--color-text-muted)] line-clamp-4">
                 {info.summary}
               </p>
               {info.source_url ? (
@@ -165,35 +179,50 @@ export default function ArtistDetailScreen({ artist, onBack, onOpenAlbum }: Prop
                   href={info.source_url}
                   target="_blank"
                   rel="noreferrer"
-                  className="mt-2 inline-block text-xs text-[var(--color-accent)] hover:underline"
+                  className="mt-2 inline-block text-[10px] font-medium text-[var(--color-accent)] hover:underline"
                 >
                   Read on Wikipedia →
                 </a>
               ) : null}
+            </section>
+          ) : null}
+
+          <section className="pt-5">
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 className="text-[13px] font-semibold">Albums</h2>
+              {!loading && !error ? (
+                <span className="text-[10px] tabular-nums text-[var(--color-text-muted)]">
+                  {filtered.length}
+                </span>
+              ) : null}
             </div>
-          </div>
-        ) : null}
-        {loading ? (
-          <div className="text-[var(--color-text-muted)] text-sm">Loading…</div>
-        ) : error ? (
-          <div className="text-[var(--color-accent)] text-sm">{error}</div>
-        ) : filtered.length === 0 ? (
-          <div className="text-[var(--color-text-muted)] text-sm">
-            No albums for this artist.
-          </div>
-        ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-6">
-            {filtered.map((a) => (
-              <AlbumCard
-                key={a.id}
-                album={a}
-                coverUrl={albumCoverUrl(base, a.id)}
-                onClick={() => onOpenAlbum(a)}
-                onDoubleClick={() => void handlePlayAlbum(a)}
-              />
-            ))}
-          </div>
-        )}
+            {loading ? (
+              <div className="text-[11px] text-[var(--color-text-muted)]">
+                Loading…
+              </div>
+            ) : error ? (
+              <div className="text-[11px] text-[var(--color-danger)]">{error}</div>
+            ) : filtered.length === 0 ? (
+              <div className="text-[11px] text-[var(--color-text-muted)]">
+                {search.trim()
+                  ? "No matching albums."
+                  : "No albums for this artist."}
+              </div>
+            ) : (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-x-4 gap-y-5">
+                {filtered.map((a) => (
+                  <AlbumCard
+                    key={a.id}
+                    album={a}
+                    coverUrl={albumCoverUrl(base, a.id)}
+                    onClick={() => onOpenAlbum(a)}
+                    onDoubleClick={() => void handlePlayAlbum(a)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );

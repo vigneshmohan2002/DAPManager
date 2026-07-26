@@ -92,16 +92,19 @@ export default function SongsScreen({
         actions: actions.menuActions,
       })
     : null;
+  const songCount = `${visible.length} ${
+    visible.length === 1 ? "song" : "songs"
+  }`;
+  const countSummary =
+    visible.length === library.rows.length
+      ? songCount
+      : `${visible.length} of ${library.rows.length} songs`;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <TopBar
         title={playlistId ? library.playlistName ?? "Playlist" : "Songs"}
-        subtitle={
-          playlistId
-            ? `${visible.length} of ${library.rows.length} · playlist`
-            : `${visible.length} of ${library.rows.length}`
-        }
+        subtitle={playlistId ? `${countSummary} · playlist` : countSummary}
         search={search}
         onSearch={setSearch}
       />
@@ -111,25 +114,27 @@ export default function SongsScreen({
         onCatalogOnlyChange={setCatalogOnly}
         onShowOrphansChange={setShowOrphans}
       />
-      <div className="flex-1 overflow-y-auto">
-        <SongsTable
-          ready={ready}
-          loading={library.loading}
-          error={library.error}
-          tracks={visible}
-          sort={sort}
-          direction={direction}
-          currentMbid={actions.currentMbid}
-          isPlaying={actions.isPlaying}
-          onSort={clickHeader}
-          onPlayFrom={actions.playFrom}
-          onTogglePlayback={actions.toggle}
-          onLikeToggle={actions.menuActions.onLikeToggle}
-          onContextMenu={(event, track) => {
-            event.preventDefault();
-            setMenu({ x: event.clientX, y: event.clientY, track });
-          }}
-        />
+      <div className="flex-1 overflow-y-auto px-5 pb-6">
+        <div className="mx-auto w-full max-w-[1180px]">
+          <SongsTable
+            ready={ready}
+            loading={library.loading}
+            error={library.error}
+            tracks={visible}
+            sort={sort}
+            direction={direction}
+            currentMbid={actions.currentMbid}
+            isPlaying={actions.isPlaying}
+            onSort={clickHeader}
+            onPlayFrom={actions.playFrom}
+            onTogglePlayback={actions.toggle}
+            onLikeToggle={actions.menuActions.onLikeToggle}
+            onContextMenu={(event, track) => {
+              event.preventDefault();
+              setMenu({ x: event.clientX, y: event.clientY, track });
+            }}
+          />
+        </div>
       </div>
       {menuEntries && menu ? (
         <ContextMenu

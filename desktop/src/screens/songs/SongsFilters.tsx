@@ -12,23 +12,62 @@ export default function SongsFilters({
   onShowOrphansChange,
 }: Props) {
   return (
-    <div className="titlebar-nodrag flex items-center gap-4 px-6 py-2 border-b border-[var(--color-border)] text-sm text-[var(--color-text-muted)]">
-      <label className="flex items-center gap-2 cursor-pointer select-none hover:text-[var(--color-text)]">
-        <input
-          type="checkbox"
+    <div className="titlebar-nodrag shrink-0 border-b border-[var(--color-border)] bg-[var(--color-bg-elevated)]/65 px-5 py-1.5">
+      <div className="mx-auto flex w-full max-w-[1180px] items-center gap-1.5">
+        <span className="mr-1 text-[9px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
+          Include
+        </span>
+        <FilterToggle
           checked={catalogOnly}
-          onChange={(event) => onCatalogOnlyChange(event.target.checked)}
+          label="Catalog-only"
+          onChange={onCatalogOnlyChange}
         />
-        Show catalog-only
-      </label>
-      <label className="flex items-center gap-2 cursor-pointer select-none hover:text-[var(--color-text)]">
-        <input
-          type="checkbox"
+        <FilterToggle
           checked={showOrphans}
-          onChange={(event) => onShowOrphansChange(event.target.checked)}
+          label="Orphans"
+          onChange={onShowOrphansChange}
         />
-        Show orphans
-      </label>
+      </div>
     </div>
+  );
+}
+
+function FilterToggle({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label
+      className={`relative flex h-6 cursor-pointer select-none items-center gap-1.5 rounded-md px-2 text-[10px] font-medium ${
+        checked
+          ? "doppler-selection text-[var(--color-accent)]"
+          : "doppler-control"
+      }`}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="peer sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 rounded-full ${
+          checked
+            ? "bg-[var(--color-accent)]"
+            : "bg-[var(--color-text-muted)]/45"
+        }`}
+      />
+      {label}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 rounded-md peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-1 peer-focus-visible:outline-[var(--color-accent)]"
+      />
+    </label>
   );
 }

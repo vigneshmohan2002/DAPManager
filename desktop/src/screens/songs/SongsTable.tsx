@@ -1,4 +1,5 @@
-import type { MouseEvent } from "react";
+import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import Icon from "../../components/Icon";
 import type { Availability, LibraryTrack } from "../../lib/api";
 import type {
   SongSortDirection,
@@ -13,10 +14,10 @@ const AVAILABILITY_LABEL: Record<Availability, string> = {
 };
 
 const AVAILABILITY_CLASS: Record<Availability, string> = {
-  local: "bg-emerald-900/40 text-emerald-300",
-  drive: "bg-sky-900/40 text-sky-300",
-  remote: "bg-amber-900/40 text-amber-300",
-  unavailable: "bg-neutral-800 text-neutral-400",
+  local: "bg-emerald-500",
+  drive: "bg-sky-500",
+  remote: "bg-amber-500",
+  unavailable: "bg-[var(--color-text-muted)]/45",
 };
 
 type Props = {
@@ -54,117 +55,171 @@ export default function SongsTable({
   onContextMenu,
 }: Props) {
   const arrow = (key: SongSortKey) =>
-    sort === key ? (direction === "asc" ? " ↑" : " ↓") : "";
+    sort === key ? (direction === "asc" ? "↑" : "↓") : null;
 
   if (!ready || loading) {
     return (
-      <div className="px-6 py-6 text-[var(--color-text-muted)] text-sm">
-        Loading…
-      </div>
+      <TableState>
+        <span role="status">Loading…</span>
+      </TableState>
     );
   }
   if (error) {
     return (
-      <div className="px-6 py-6 text-[var(--color-accent)] text-sm">
-        {error}
-      </div>
+      <TableState>
+        <span role="alert" className="text-[var(--color-danger)]">
+          {error}
+        </span>
+      </TableState>
     );
   }
   if (tracks.length === 0) {
     return (
-      <div className="px-6 py-6 text-[var(--color-text-muted)] text-sm">
-        No tracks.
-      </div>
+      <TableState>
+        <Icon name="songs" size={26} className="mb-2 opacity-40" />
+        <span>No tracks.</span>
+      </TableState>
     );
   }
 
   return (
-    <table className="w-full text-sm">
-      <thead className="sticky top-0 bg-[var(--color-bg)] text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border)]">
+    <table className="mt-2 w-full table-fixed text-[11px]">
+      <thead className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-[var(--color-content)]/95 text-[9px] uppercase tracking-[0.08em] text-[var(--color-text-muted)] backdrop-blur-xl">
         <tr>
-          <th className="w-10"></th>
-          <th className="w-9"></th>
-          <th
-            onClick={() => onSort("title")}
-            className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
-          >
-            Title{arrow("title")}
-          </th>
-          <th
-            onClick={() => onSort("artist")}
-            className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
-          >
-            Artist{arrow("artist")}
-          </th>
-          <th
-            onClick={() => onSort("album")}
-            className="text-left font-medium px-3 py-2 cursor-pointer select-none hover:text-[var(--color-text)]"
-          >
-            Album{arrow("album")}
-          </th>
-          <th className="w-36 text-left font-medium px-3 py-2">Status</th>
+          <th className="w-8" aria-label="Playback" />
+          <th className="w-9" aria-label="Liked" />
+          <SortableHeader
+            column="title"
+            label="Title"
+            sort={sort}
+            direction={direction}
+            arrow={arrow("title")}
+            onSort={onSort}
+          />
+          <SortableHeader
+            column="artist"
+            label="Artist"
+            sort={sort}
+            direction={direction}
+            arrow={arrow("artist")}
+            onSort={onSort}
+          />
+          <SortableHeader
+            column="album"
+            label="Album"
+            sort={sort}
+            direction={direction}
+            arrow={arrow("album")}
+            onSort={onSort}
+          />
+          <th className="w-40 px-3 py-2 text-left font-medium">Availability</th>
         </tr>
       </thead>
       <tbody>
         {tracks.map((track, index) => {
           const isCurrent = currentMbid === track.mbid;
           const playable = track.availability !== "unavailable";
+          const activateRow = () => {
+            if (!playable) return;
+            if (isCurrent) {
+              onTogglePlayback();
+              return;
+            }
+            onPlayFrom(index);
+          };
+          const handleKeyDown = (
+            event: KeyboardEvent<HTMLTableRowElement>,
+          ) => {
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            activateRow();
+          };
           return (
             <tr
               key={track.mbid}
-              onClick={() => {
-                if (!playable) return;
-                if (isCurrent) onTogglePlayback();
-                else onPlayFrom(index);
-              }}
+              onClick={activateRow}
+              onKeyDown={handleKeyDown}
               onContextMenu={(event) => onContextMenu(event, track)}
-              className={`border-b border-[var(--color-border)]/40 ${
+              tabIndex={playable ? 0 : undefined}
+              aria-current={isCurrent ? "true" : undefined}
+              aria-disabled={!playable || undefined}
+              aria-label={`${track.title} by ${track.artist}`}
+              className={`group h-10 border-b border-[var(--color-border)]/75 outline-none last:border-b-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent)] ${
+                isCurrent ? "bg-[var(--color-accent-soft)]" : ""
+              } ${
                 playable
-                  ? "cursor-pointer hover:bg-[var(--color-surface)]/60"
-                  : "opacity-60 cursor-default"
+                  ? "cursor-pointer hover:bg-[var(--color-surface)]/45"
+                  : "cursor-default text-[var(--color-text-muted)]"
               }`}
             >
-              <td className="w-10 px-3 py-1.5 text-center text-[var(--color-text-muted)]">
+              <td className="w-8 pl-2 text-center text-[var(--color-text-muted)]">
                 {isCurrent && isPlaying ? (
-                  <span className="text-[var(--color-accent)]">♪</span>
-                ) : null}
+                  <Icon
+                    name="songs"
+                    size={12}
+                    className="mx-auto text-[var(--color-accent)]"
+                  />
+                ) : playable ? (
+                  <Icon
+                    name="play"
+                    size={10}
+                    className="mx-auto opacity-0 transition-opacity group-hover:opacity-55 group-focus-visible:opacity-55"
+                  />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className="mx-auto block h-px w-2 bg-[var(--color-text-muted)]/40"
+                  />
+                )}
               </td>
-              <td className="w-9 px-1 py-1.5 text-center">
+              <td className="w-9 px-1 text-center">
                 <button
+                  type="button"
                   onClick={(event) => {
                     event.stopPropagation();
                     onLikeToggle(track);
                   }}
                   aria-label={track.is_liked ? "Unlike" : "Like"}
                   aria-pressed={track.is_liked}
-                  className={`text-base transition-colors ${
+                  className={`doppler-control mx-auto grid h-7 w-7 place-items-center rounded transition-opacity ${
                     track.is_liked
-                      ? "text-rose-400 hover:text-rose-300"
-                      : "text-[var(--color-text-muted)]/40 hover:text-rose-400"
+                      ? "text-[var(--color-liked)]"
+                      : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                   }`}
                 >
-                  {track.is_liked ? "♥" : "♡"}
+                  <Icon
+                    name="heart"
+                    size={13}
+                    className={track.is_liked ? "fill-current" : ""}
+                  />
                 </button>
               </td>
               <td
-                className={`px-3 py-1.5 truncate max-w-0 ${isCurrent ? "text-[var(--color-accent)]" : ""}`}
+                className={`truncate px-3 font-medium ${
+                  isCurrent ? "text-[var(--color-accent)]" : ""
+                }`}
               >
                 {track.title}
               </td>
-              <td className="px-3 py-1.5 truncate max-w-0 text-[var(--color-text-muted)]">
+              <td className="truncate px-3 text-[var(--color-text-muted)]">
                 {track.artist}
               </td>
-              <td className="px-3 py-1.5 truncate max-w-0 text-[var(--color-text-muted)]">
+              <td className="truncate px-3 text-[var(--color-text-muted)]">
                 {track.album ?? ""}
               </td>
-              <td className="px-3 py-1.5 whitespace-nowrap">
+              <td className="whitespace-nowrap px-3 text-[10px] text-[var(--color-text-muted)]">
                 <span
-                  className={`inline-block rounded-full px-2 py-0.5 text-[11px] ${AVAILABILITY_CLASS[track.availability]}`}
-                >
-                  {AVAILABILITY_LABEL[track.availability]}
-                </span>
+                  aria-hidden="true"
+                  className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${AVAILABILITY_CLASS[track.availability]}`}
+                />
+                {AVAILABILITY_LABEL[track.availability]}
                 {track.orphan ? (
-                  <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-[11px] bg-rose-900/40 text-rose-300">
+                  <span className="ml-2 text-[var(--color-danger)]">
+                    <span
+                      aria-hidden="true"
+                      className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-danger)]"
+                    />
                     orphan
                   </span>
                 ) : null}
@@ -174,5 +229,59 @@ export default function SongsTable({
         })}
       </tbody>
     </table>
+  );
+}
+
+function SortableHeader({
+  column,
+  label,
+  sort,
+  direction,
+  arrow,
+  onSort,
+}: {
+  column: SongSortKey;
+  label: string;
+  sort: SongSortKey;
+  direction: SongSortDirection;
+  arrow: string | null;
+  onSort: (key: SongSortKey) => void;
+}) {
+  return (
+    <th
+      scope="col"
+      aria-sort={
+        sort === column
+          ? direction === "asc"
+            ? "ascending"
+            : "descending"
+          : "none"
+      }
+      className="px-1 text-left font-medium"
+    >
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className="doppler-control flex h-8 w-full min-w-0 items-center gap-1 rounded px-2 text-left font-medium"
+      >
+        <span className="truncate">{label}</span>
+        {arrow ? (
+          <span
+            aria-hidden="true"
+            className="text-[10px] text-[var(--color-accent)]"
+          >
+            {arrow}
+          </span>
+        ) : null}
+      </button>
+    </th>
+  );
+}
+
+function TableState({ children }: { children: ReactNode }) {
+  return (
+    <div className="grid min-h-48 place-items-center text-center text-[11px] text-[var(--color-text-muted)]">
+      <div className="flex flex-col items-center">{children}</div>
+    </div>
   );
 }
