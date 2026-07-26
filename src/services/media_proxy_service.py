@@ -21,6 +21,8 @@ from urllib.parse import quote
 
 import requests
 
+from src.artwork_cache import CachedArtwork
+
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +103,7 @@ class LocalAlbumTracksLoader(Protocol):
 CoverExtractor: TypeAlias = Callable[
     [str], Optional[Tuple[bytes, str]]
 ]
+CachedCoverLoader: TypeAlias = Callable[[str], Optional[CachedArtwork]]
 FileExists: TypeAlias = Callable[[str], bool]
 FileSource: TypeAlias = Literal["local", "drive"]
 
@@ -187,14 +190,23 @@ def resolve_album_cover(
     *,
     config_values: object,
     extract_cover: CoverExtractor,
+    load_cached_cover: Optional[CachedCoverLoader] = None,
 ) -> AlbumCoverResolution:
-    """Prefer locally embedded artwork, then the normalized master endpoint."""
+    """Prefer embedded art, then a complete cache entry, then the master."""
     cover_path = db.get_album_cover_path(album_id)
     if cover_path:
         extracted = extract_cover(cover_path)
         if extracted is not None:
             body, content_type = extracted
             return LocalAlbumCoverResolution(body, content_type)
+
+    if load_cached_cover is not None:
+        cached = load_cached_cover(album_id)
+        if cached is not None:
+            return LocalAlbumCoverResolution(
+                cached.body,
+                cached.content_type,
+            )
 
     master_url = normalized_master_url(config_values)
     if master_url is not None:

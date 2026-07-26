@@ -1103,6 +1103,67 @@ def test_library_album_cover_proxies_master_when_no_local_path(client, mock_conf
     upstream.close.assert_called_once_with()
 
 
+def test_library_album_cover_uses_disk_cache_before_master(
+    client,
+    mock_config,
+    tmp_path,
+):
+    from src.artwork_cache import artwork_cache_for_database
+
+    mock_config.db_path = str(tmp_path / "library.db")
+    mock_config._config = {"master_url": "http://master.example"}
+    cache = artwork_cache_for_database(mock_config.db_path)
+    assert cache is not None
+    assert cache.store("album-1", b"CACHED", "image/jpeg")
+
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+
+        res = client.get('/api/library/albums/album-1/cover')
+
+    assert res.status_code == 200
+    assert res.mimetype == "image/jpeg"
+    assert res.data == b"CACHED"
+    mock_get.assert_not_called()
+
+
+def test_library_album_cover_caches_complete_master_response(
+    client,
+    mock_config,
+    tmp_path,
+):
+    from src.artwork_cache import CachedArtwork, artwork_cache_for_database
+
+    mock_config.db_path = str(tmp_path / "library.db")
+    mock_config._config = {"master_url": "http://master.example"}
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get') as mock_get:
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+        upstream = MagicMock()
+        upstream.status_code = 200
+        upstream.headers = {"Content-Type": "image/png"}
+        upstream.iter_content.return_value = iter([b"PN", b"G"])
+        mock_get.return_value = upstream
+
+        first = client.get('/api/library/albums/album-1/cover')
+
+    assert first.status_code == 200
+    assert first.data == b"PNG"
+    cache = artwork_cache_for_database(mock_config.db_path)
+    assert cache is not None
+    assert cache.load("album-1") == CachedArtwork(b"PNG", "image/png")
+
+    with patch('web_server.DatabaseManager') as MockDB, \
+         patch('requests.get', side_effect=AssertionError("must use cache")):
+        MockDB.return_value.__enter__.return_value.get_album_cover_path.return_value = None
+
+        second = client.get('/api/library/albums/album-1/cover')
+
+    assert second.status_code == 200
+    assert second.data == b"PNG"
+
+
 def test_library_album_cover_proxies_when_local_file_has_no_art(client, mock_config):
     mock_config._config = {"master_url": "http://master.example"}
     with patch('web_server.DatabaseManager') as MockDB, \

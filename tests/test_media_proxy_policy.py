@@ -1,7 +1,9 @@
 from typing import Any, Dict, Optional
 
+import pytest
 import requests
 
+from src.artwork_cache import CachedArtwork
 from src.services.media_proxy_service import (
     BufferedProxyResult,
     FileStreamResolution,
@@ -77,6 +79,42 @@ def test_album_cover_falls_back_to_normalized_master_after_local_miss():
         master_url="https://master.test",
         api_token="secret",
     )
+
+
+def test_album_cover_uses_cache_after_local_miss_before_master():
+    store = FakeMediaStore(cover_path="/music/track.flac")
+    cache_lookups = []
+
+    def load_cached(album_id: str):
+        cache_lookups.append(album_id)
+        return CachedArtwork(b"cached", "image/webp")
+
+    result = resolve_album_cover(
+        store,
+        "album-1",
+        config_values={"master_url": "https://master.test"},
+        extract_cover=lambda _path: None,
+        load_cached_cover=load_cached,
+    )
+
+    assert result == LocalAlbumCoverResolution(b"cached", "image/webp")
+    assert cache_lookups == ["album-1"]
+
+
+def test_album_cover_does_not_read_cache_when_embedded_art_exists():
+    store = FakeMediaStore(cover_path="/music/track.flac")
+
+    result = resolve_album_cover(
+        store,
+        "album-1",
+        config_values={"master_url": "https://master.test"},
+        extract_cover=lambda _path: (b"embedded", "image/jpeg"),
+        load_cached_cover=lambda _album_id: pytest.fail(
+            "cache should not be read for embedded artwork"
+        ),
+    )
+
+    assert result == LocalAlbumCoverResolution(b"embedded", "image/jpeg")
 
 
 def test_album_cover_returns_missing_without_local_art_or_real_master_config():

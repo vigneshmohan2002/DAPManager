@@ -5,6 +5,11 @@ from typing import Optional
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from src.artwork_cache import (
+    ArtworkCache,
+    artwork_cache_for_database,
+    cache_complete_stream,
+)
 from src.config_paths import resolve_config_path
 from src.services import album_task_service
 from src.services import album_download_request_service
@@ -1191,12 +1196,18 @@ def api_library_album_cover(album_id: str):
     try:
         from src.cover_art import extract_cover
 
+        artwork_cache = artwork_cache_for_database(config.db_path)
         with DatabaseManager(config.db_path) as db:
             resolution = resolve_album_cover(
                 db,
                 album_id,
                 config_values=getattr(config, "_config", None),
                 extract_cover=extract_cover,
+                load_cached_cover=(
+                    artwork_cache.load
+                    if artwork_cache is not None
+                    else None
+                ),
             )
         if isinstance(resolution, LocalAlbumCoverResolution):
             return Response(
@@ -1205,15 +1216,24 @@ def api_library_album_cover(album_id: str):
                 headers={"Cache-Control": resolution.cache_control},
             )
         if isinstance(resolution, MasterAlbumCoverResolution):
-            return _proxy_master_album_cover(resolution.master_url, album_id)
+            return _proxy_master_album_cover(
+                resolution.master_url,
+                album_id,
+                artwork_cache=artwork_cache,
+            )
         return ("", resolution.status_code)
     except Exception:
         logger.exception("api_library_album_cover failed for %s", album_id)
         return ("", 500)
 
 
-def _proxy_master_album_cover(master_url: str, album_id: str):
-    """Stream a master's album-art response through the local satellite."""
+def _proxy_master_album_cover(
+    master_url: str,
+    album_id: str,
+    *,
+    artwork_cache: Optional[ArtworkCache] = None,
+):
+    """Stream master artwork and atomically cache complete image responses."""
     import requests
     from flask import Response, stream_with_context
     token = (config._config.get("api_token") or "").strip()
@@ -1233,8 +1253,16 @@ def _proxy_master_album_cover(master_url: str, album_id: str):
     if result.status_code == 304:
         return Response(status=304, headers=result.headers)
 
+    chunks = result.chunks
+    if artwork_cache is not None and result.status_code == 200:
+        chunks = cache_complete_stream(
+            chunks,
+            cache=artwork_cache,
+            album_id=album_id,
+            content_type=result.headers.get("Content-Type", ""),
+        )
     return Response(
-        stream_with_context(result.chunks),
+        stream_with_context(chunks),
         status=result.status_code,
         headers=result.headers,
     )
