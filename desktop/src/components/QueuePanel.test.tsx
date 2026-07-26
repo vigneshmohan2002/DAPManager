@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -53,6 +54,10 @@ import QueuePanel from "./QueuePanel";
 
 describe("QueuePanel", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1200,
+    });
     playerMocks.queue.splice(
       0,
       playerMocks.queue.length,
@@ -145,7 +150,14 @@ describe("QueuePanel", () => {
 
   it("updates a like optimistically and does not activate the row", async () => {
     const user = userEvent.setup();
-    render(<QueuePanel open onClose={vi.fn()} />);
+    const onPlaylistsChanged = vi.fn();
+    render(
+      <QueuePanel
+        open
+        onClose={vi.fn()}
+        onPlaylistsChanged={onPlaylistsChanged}
+      />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Like" }));
 
@@ -154,7 +166,25 @@ describe("QueuePanel", () => {
       true,
     );
     expect(apiMocks.setTrackLiked).toHaveBeenCalledWith("track-1", true);
+    expect(onPlaylistsChanged).toHaveBeenCalledOnce();
     expect(playerMocks.jumpTo).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh playlists for an unlike", async () => {
+    const user = userEvent.setup();
+    const onPlaylistsChanged = vi.fn();
+    render(
+      <QueuePanel
+        open
+        onClose={vi.fn()}
+        onPlaylistsChanged={onPlaylistsChanged}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Unlike" }));
+
+    expect(apiMocks.setTrackLiked).toHaveBeenCalledWith("track-2", false);
+    expect(onPlaylistsChanged).not.toHaveBeenCalled();
   });
 
   it("rolls back an optimistic like when the API rejects it", async () => {
@@ -222,5 +252,42 @@ describe("QueuePanel", () => {
       screen.getByText("Pick an album or song to start."),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
+  });
+
+  it("acts as a compact drawer, closes with Escape, and restores focus", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 900,
+    });
+    const user = userEvent.setup();
+
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open queue
+          </button>
+          <QueuePanel open={open} onClose={() => setOpen(false)} />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "Open queue" });
+    await user.click(trigger);
+
+    expect(
+      screen.getByRole("dialog", { name: "Playback queue" }),
+    ).toBeInTheDocument();
+    const close = screen.getByRole("button", { name: "Close queue" });
+    await waitFor(() => expect(close).toHaveFocus());
+
+    await user.keyboard("{Escape}");
+
+    expect(
+      screen.queryByRole("dialog", { name: "Playback queue" }),
+    ).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });

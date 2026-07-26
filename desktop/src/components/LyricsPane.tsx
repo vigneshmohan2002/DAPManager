@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchLyrics, saveLyrics, type LyricsResponse } from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
 import Icon from "./Icon";
+import { useResponsiveSidePanel } from "./useResponsiveSidePanel";
 
 type Props = {
   open: boolean;
@@ -68,6 +69,8 @@ export default function LyricsPane({ open, onClose }: Props) {
   const [draft, setDraft] = useState("");
   const [draftSynced, setDraftSynced] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const { closeButtonRef, compact, handleKeyDown } =
+    useResponsiveSidePanel(open, onClose);
 
   // Re-fetch when the user opens the pane or the track changes. The
   // server caches LRCLIB results so reopens on the same track are
@@ -140,7 +143,9 @@ export default function LyricsPane({ open, onClose }: Props) {
   return (
     <aside
       aria-label="Lyrics"
-      className="flex w-[21rem] min-w-[18rem] max-w-[22rem] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg-elevated)]"
+      role={compact ? "dialog" : "complementary"}
+      onKeyDown={handleKeyDown}
+      className="doppler-side-panel flex w-[21rem] min-w-[18rem] max-w-[22rem] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg-elevated)]"
     >
       <header className="flex h-[54px] shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-4">
         <div className="flex-1 min-w-0">
@@ -164,6 +169,7 @@ export default function LyricsPane({ open, onClose }: Props) {
           </button>
         )}
         <button
+          ref={closeButtonRef}
           type="button"
           onClick={onClose}
           aria-label="Close lyrics"

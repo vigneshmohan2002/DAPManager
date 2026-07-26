@@ -8,7 +8,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { readPersistedPlayerState } from "./playerStorage";
+import {
+  clampPlayerVolume,
+  readPersistedPlayerState,
+} from "./playerStorage";
 import {
   buildShufflePool,
   clampQueueIndex,
@@ -47,6 +50,7 @@ type PlayerState = {
   duration: number;
   shuffle: boolean;
   repeat: RepeatMode;
+  volume: number;
   play: (queue: PlayerTrack[], startIndex?: number) => void;
   // Fetch an album's ordered tracks, replace the queue, and start at track 1.
   // Returns the number of queued tracks so callers can surface an empty state.
@@ -69,6 +73,7 @@ type PlayerState = {
   // Update is_liked on a queued track in place. Called by every
   // heart-toggle path so the queue panel doesn't drift out of sync.
   setTrackLikedInQueue: (mbid: string, liked: boolean) => void;
+  setVolume: (volume: number) => void;
   // Sleep timer expiry (epoch ms) or null when no timer is set.
   sleepTimerExpiresAt: number | null;
   setSleepTimer: (durationMs: number | null) => void;
@@ -93,8 +98,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [duration, setDuration] = useState(0);
   const [shuffle, setShuffle] = useState(persisted.shuffle);
   const [repeat, setRepeat] = useState<RepeatMode>(persisted.repeat);
+  const [volume, setVolumeState] = useState(persisted.volume);
 
-  usePlayerStorage(queue, index, shuffle, repeat);
+  useEffect(() => {
+    if (audio) audio.volume = volume;
+  }, [audio, volume]);
+
+  usePlayerStorage(queue, index, shuffle, repeat, volume);
   const baseUrl = useBackendBaseUrl();
   const { sleepTimerExpiresAt, setSleepTimer } = useSleepTimer(audio);
   const current = queue[index] ?? null;
@@ -180,6 +190,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const cycleRepeat = useCallback(() => {
     setRepeat(cycleRepeatMode);
+  }, []);
+
+  const setVolume = useCallback((nextVolume: number) => {
+    setVolumeState((currentVolume) =>
+      clampPlayerVolume(nextVolume, currentVolume),
+    );
   }, []);
 
   const addToQueue = useCallback(
@@ -306,6 +322,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       duration,
       shuffle,
       repeat,
+      volume,
       play,
       playAlbum,
       toggle,
@@ -320,6 +337,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setTrackLikedInQueue,
+      setVolume,
       sleepTimerExpiresAt,
       setSleepTimer,
     }),
@@ -332,6 +350,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       duration,
       shuffle,
       repeat,
+      volume,
       play,
       playAlbum,
       toggle,
@@ -346,6 +365,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       toggleShuffle,
       cycleRepeat,
       setTrackLikedInQueue,
+      setVolume,
       sleepTimerExpiresAt,
       setSleepTimer,
     ],

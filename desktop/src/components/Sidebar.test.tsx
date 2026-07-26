@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Playlist, SmartRuleset } from "../lib/api";
 import Sidebar from "./Sidebar";
@@ -61,7 +62,7 @@ describe("Sidebar playlist controller", () => {
 
   it("loads playlist rows, retains navigation IDs, and gates the system menu", async () => {
     const { props } = renderSidebar();
-    const likedLabel = await screen.findByText("♥ Liked Songs");
+    const likedLabel = await screen.findByText("Liked Songs");
     const roadLabel = screen.getByText("Road trip");
 
     fireEvent.click(roadLabel.closest("button")!);
@@ -71,9 +72,23 @@ describe("Sidebar playlist controller", () => {
       clientX: 10,
       clientY: 20,
     });
-    expect(screen.getByRole("button", { name: "Edit rules…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Rename…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete (soft)" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Edit rules…" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeDisabled();
+    expect(
+      screen.getByRole("menuitem", { name: "Delete (soft)" }),
+    ).toBeDisabled();
+  });
+
+  it("keeps management routes available through the compact tools menu", async () => {
+    const user = userEvent.setup();
+    const { props } = renderSidebar();
+
+    await user.click(
+      screen.getByRole("button", { name: "Open DAPManager tools" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Downloads" }));
+
+    expect(props.onSelect).toHaveBeenCalledWith("downloads");
   });
 
   it("keeps create payloads and parent notifications unchanged", async () => {

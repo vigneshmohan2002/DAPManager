@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PLAYER_QUEUE_VERSION,
   PLAYER_STORAGE_KEYS,
+  decodePersistedVolume,
   decodePersistedQueue,
   persistQueue,
   persistRepeat,
   persistShuffle,
+  persistVolume,
   readPersistedPlayerState,
 } from "./playerStorage";
 import type { PlayerTrack } from "./playerTypes";
@@ -28,6 +30,7 @@ describe("player storage codec", () => {
       shuffle: "dap.player.shuffle",
       repeat: "dap.player.repeat",
       queue: "dap.player.queue",
+      volume: "dap.player.volume",
     });
     expect(PLAYER_QUEUE_VERSION).toBe(1);
   });
@@ -57,6 +60,7 @@ describe("player storage codec", () => {
       [PLAYER_STORAGE_KEYS.queue]: JSON.stringify({ v: 1, queue, index: 0 }),
       [PLAYER_STORAGE_KEYS.shuffle]: "1",
       [PLAYER_STORAGE_KEYS.repeat]: "one",
+      [PLAYER_STORAGE_KEYS.volume]: "0.65",
     };
     const storage = {
       getItem: vi.fn((key: string) => values[key] ?? null),
@@ -67,8 +71,9 @@ describe("player storage codec", () => {
       index: 0,
       shuffle: true,
       repeat: "one",
+      volume: 0.65,
     });
-    expect(storage.getItem).toHaveBeenCalledTimes(3);
+    expect(storage.getItem).toHaveBeenCalledTimes(4);
   });
 
   it("keeps independently readable modes when one storage key throws", () => {
@@ -86,7 +91,16 @@ describe("player storage codec", () => {
       index: 0,
       shuffle: true,
       repeat: "all",
+      volume: 1,
     });
+  });
+
+  it("defaults old state safely and clamps persisted volume", () => {
+    expect(decodePersistedVolume(null)).toBe(1);
+    expect(decodePersistedVolume("not-a-number")).toBe(1);
+    expect(decodePersistedVolume("-0.25")).toBe(0);
+    expect(decodePersistedVolume("1.5")).toBe(1);
+    expect(decodePersistedVolume("0.4")).toBe(0.4);
   });
 
   it("writes the exact persisted shape and ignores unavailable storage", () => {
@@ -94,6 +108,7 @@ describe("player storage codec", () => {
     persistQueue(queue, 0, storage);
     persistShuffle(true, storage);
     persistRepeat("all", storage);
+    persistVolume(0.35, storage);
 
     expect(storage.setItem).toHaveBeenNthCalledWith(
       1,
@@ -110,6 +125,11 @@ describe("player storage codec", () => {
       PLAYER_STORAGE_KEYS.repeat,
       "all",
     );
+    expect(storage.setItem).toHaveBeenNthCalledWith(
+      4,
+      PLAYER_STORAGE_KEYS.volume,
+      "0.35",
+    );
 
     const unavailable = {
       setItem: vi.fn(() => {
@@ -117,5 +137,6 @@ describe("player storage codec", () => {
       }),
     };
     expect(() => persistQueue(queue, 0, unavailable)).not.toThrow();
+    expect(() => persistVolume(2, unavailable)).not.toThrow();
   });
 });

@@ -1,11 +1,20 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
   backendUrl: vi.fn(),
+  setTrackLiked: vi.fn(),
   streamUrl: vi.fn(),
 }));
+
+const toastMocks = vi.hoisted(() => ({ show: vi.fn() }));
 
 const waveformMocks = vi.hoisted(() => ({
   useWaveformPeaks: vi.fn(),
@@ -22,6 +31,8 @@ const playerMocks = vi.hoisted(() => ({
   seek: vi.fn(),
   toggleShuffle: vi.fn(),
   cycleRepeat: vi.fn(),
+  setTrackLikedInQueue: vi.fn(),
+  setVolume: vi.fn(),
   setSleepTimer: vi.fn(),
 }));
 
@@ -34,6 +45,7 @@ const playerState = vi.hoisted(() => ({
     track_number: 1,
     disc_number: 1,
     albumId: "album-1",
+    is_liked: false,
   } as {
     mbid: string;
     title: string;
@@ -42,16 +54,19 @@ const playerState = vi.hoisted(() => ({
     track_number: number | null;
     disc_number: number | null;
     albumId: string | null;
+    is_liked?: boolean;
   } | null,
   isPlaying: false,
   position: 45,
   duration: 180,
   shuffle: false,
   repeat: "off" as "off" | "all" | "one",
+  volume: 0.75,
   sleepTimerExpiresAt: null as number | null,
 }));
 
 vi.mock("../lib/api", () => apiMocks);
+vi.mock("./Toast", () => ({ useToast: () => toastMocks }));
 vi.mock("../lib/useWaveformPeaks", () => waveformMocks);
 vi.mock("../lib/window", () => windowMocks);
 vi.mock("../player/PlayerContext", () => ({
@@ -84,6 +99,7 @@ describe("PlayerBar", () => {
   beforeEach(() => {
     apiMocks.backendUrl.mockResolvedValue("http://localhost:5001");
     apiMocks.streamUrl.mockReturnValue("http://localhost:5001/stream/track-1");
+    apiMocks.setTrackLiked.mockResolvedValue({ success: true });
     waveformMocks.useWaveformPeaks.mockReturnValue(null);
     windowMocks.enterMiniPlayer.mockResolvedValue(undefined);
     Object.assign(playerState, {
@@ -95,12 +111,14 @@ describe("PlayerBar", () => {
         track_number: 1,
         disc_number: 1,
         albumId: "album-1",
+        is_liked: false,
       },
       isPlaying: false,
       position: 45,
       duration: 180,
       shuffle: false,
       repeat: "off",
+      volume: 0.75,
       sleepTimerExpiresAt: null,
     });
   });
@@ -170,6 +188,78 @@ describe("PlayerBar", () => {
     expect(playerMocks.seek).toHaveBeenCalledWith(90);
   });
 
+  it("changes the actual player volume through its range control", () => {
+    renderPlayerBar();
+
+    fireEvent.change(screen.getByRole("slider", { name: "Volume" }), {
+      target: { value: "0.4" },
+    });
+
+    expect(playerMocks.setVolume).toHaveBeenCalledWith(0.4);
+  });
+
+  it("likes the current track and updates the queued copy", async () => {
+    const user = userEvent.setup();
+    const onPlaylistsChanged = vi.fn();
+    renderPlayerBar({ onPlaylistsChanged });
+
+    await user.click(
+      screen.getByRole("button", { name: "Like current track" }),
+    );
+
+    expect(playerMocks.setTrackLikedInQueue).toHaveBeenCalledWith(
+      "track-1",
+      true,
+    );
+    expect(apiMocks.setTrackLiked).toHaveBeenCalledWith("track-1", true);
+    expect(onPlaylistsChanged).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back a failed current-track like", async () => {
+    const user = userEvent.setup();
+    const onPlaylistsChanged = vi.fn();
+    apiMocks.setTrackLiked.mockResolvedValue({
+      success: false,
+      message: "Nope",
+    });
+    renderPlayerBar({ onPlaylistsChanged });
+
+    await user.click(
+      screen.getByRole("button", { name: "Like current track" }),
+    );
+
+    expect(playerMocks.setTrackLikedInQueue).toHaveBeenNthCalledWith(
+      1,
+      "track-1",
+      true,
+    );
+    expect(playerMocks.setTrackLikedInQueue).toHaveBeenNthCalledWith(
+      2,
+      "track-1",
+      false,
+    );
+    expect(toastMocks.show).toHaveBeenCalledWith("Nope", "err");
+    expect(onPlaylistsChanged).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh playlists after a successful unlike", async () => {
+    const user = userEvent.setup();
+    const onPlaylistsChanged = vi.fn();
+    if (playerState.current) playerState.current.is_liked = true;
+    renderPlayerBar({ onPlaylistsChanged });
+
+    await user.click(
+      screen.getByRole("button", { name: "Unlike current track" }),
+    );
+
+    expect(playerMocks.setTrackLikedInQueue).toHaveBeenCalledWith(
+      "track-1",
+      false,
+    );
+    expect(apiMocks.setTrackLiked).toHaveBeenCalledWith("track-1", false);
+    expect(onPlaylistsChanged).not.toHaveBeenCalled();
+  });
+
   it("sets and clears the sleep timer from its menu", async () => {
     const user = userEvent.setup();
     const view = renderPlayerBar();
@@ -207,6 +297,102 @@ describe("PlayerBar", () => {
     ).not.toBeInTheDocument();
 
     await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps compact player utilities in a keyboard-accessible overflow menu", async () => {
+    const user = userEvent.setup();
+    const { onToggleQueue, onToggleLyrics } = renderPlayerBar();
+    const trigger = screen.getByRole("button", {
+      name: "More player controls",
+      hidden: true,
+    });
+
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("menu", {
+      name: "More player controls",
+    });
+    const sleepItem = within(menu).getByRole("menuitem", {
+      name: "Sleep Timer",
+    });
+    const lyricsItem = within(menu).getByRole("menuitem", {
+      name: "Show Lyrics",
+    });
+    const miniItem = within(menu).getByRole("menuitem", {
+      name: "Enter Mini Player",
+    });
+
+    await waitFor(() => expect(sleepItem).toHaveFocus());
+    expect(
+      within(menu).queryByRole("menuitem", { name: /queue/i }),
+    ).not.toBeInTheDocument();
+    await user.keyboard("{ArrowDown}");
+    expect(lyricsItem).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(onToggleLyrics).toHaveBeenCalledOnce();
+    expect(onToggleQueue).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByRole("menu", { name: "More player controls" }),
+        ).getByRole("menuitem", { name: "Sleep Timer" }),
+      ).toHaveFocus(),
+    );
+    await user.keyboard("{End}");
+    expect(
+      within(
+        screen.getByRole("menu", { name: "More player controls" }),
+      ).getByRole("menuitem", { name: "Enter Mini Player" }),
+    ).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(windowMocks.enterMiniPlayer).toHaveBeenCalledOnce();
+
+    fireEvent.click(trigger);
+    expect(
+      screen.getByRole("menu", { name: "More player controls" }),
+    ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("menu", { name: "More player controls" }),
+    ).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    expect(screen.getByRole("button", { name: "Show queue" })).toBeEnabled();
+    expect(miniItem).not.toBeInTheDocument();
+  });
+
+  it("opens the sleep timer from the compact overflow and restores focus", async () => {
+    const user = userEvent.setup();
+    renderPlayerBar();
+    const trigger = screen.getByRole("button", {
+      name: "More player controls",
+      hidden: true,
+    });
+
+    fireEvent.click(trigger);
+    await user.click(
+      within(
+        screen.getByRole("menu", { name: "More player controls" }),
+      ).getByRole("menuitem", { name: "Sleep Timer" }),
+    );
+
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const sleepMenu = screen.getByRole("menu", {
+      name: "Sleep timer duration",
+    });
+    await waitFor(() =>
+      expect(
+        within(sleepMenu).getByRole("menuitem", { name: "15 minutes" }),
+      ).toHaveFocus(),
+    );
+    await user.click(
+      within(sleepMenu).getByRole("menuitem", { name: "30 minutes" }),
+    );
+    expect(playerMocks.setSleepTimer).toHaveBeenCalledWith(1_800_000);
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveFocus();
   });

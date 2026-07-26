@@ -3,6 +3,7 @@ import {
   persistQueue,
   persistRepeat,
   persistShuffle,
+  persistVolume,
 } from "./playerStorage";
 import type { PlayerTrack, RepeatMode } from "./playerTypes";
 
@@ -11,6 +12,7 @@ export function usePlayerStorage(
   index: number,
   shuffle: boolean,
   repeat: RepeatMode,
+  volume: number,
 ): void {
   useEffect(() => {
     persistShuffle(shuffle);
@@ -23,4 +25,8 @@ export function usePlayerStorage(
   useEffect(() => {
     persistQueue(queue, index);
   }, [queue, index]);
+
+  useEffect(() => {
+    persistVolume(volume);
+  }, [volume]);
 }

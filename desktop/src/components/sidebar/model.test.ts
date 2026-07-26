@@ -39,7 +39,7 @@ describe("sidebar model", () => {
     ).toEqual([
       expect.objectContaining({
         id: "playlist:liked_songs",
-        label: "♥ Liked Songs",
+        label: "Liked Songs",
       }),
       expect.objectContaining({
         id: "playlist:road-trip",

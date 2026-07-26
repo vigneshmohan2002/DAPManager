@@ -33,39 +33,31 @@ export type PlaylistDialog =
 
 export const STATIC_SECTIONS: SidebarSection[] = [
   {
-    // Home is the launch surface rather than another library browser.
-    title: "",
-    items: [{ id: "home", label: "Home" }],
-  },
-  {
     title: "Library",
     items: [
-      { id: "albums", label: "Albums" },
       { id: "artists", label: "Artists" },
+      { id: "albums", label: "Albums" },
       { id: "songs", label: "Songs" },
-      { id: "stats", label: "Listening" },
     ],
   },
   {
-    title: "Discover",
-    items: [
-      { id: "downloads", label: "Downloads" },
-      { id: "releases", label: "New Releases" },
-    ],
+    title: "Presets",
+    items: [{ id: "home", label: "Home" }],
   },
-  {
-    title: "Manage",
-    items: [
-      { id: "audit", label: "Audit" },
-      { id: "duplicates", label: "Duplicates" },
-      { id: "orphans", label: "Orphans" },
-      { id: "fleet", label: "Fleet" },
-      { id: "contributions", label: "Contributions" },
-      { id: "sync", label: "Sync" },
-      { id: "suggest", label: "Suggest" },
-      { id: "settings", label: "Settings" },
-    ],
-  },
+];
+
+export const TOOL_ITEMS: SidebarItem[] = [
+  { id: "stats", label: "Listening" },
+  { id: "downloads", label: "Downloads" },
+  { id: "releases", label: "New Releases" },
+  { id: "audit", label: "Audit" },
+  { id: "duplicates", label: "Duplicates" },
+  { id: "orphans", label: "Orphans" },
+  { id: "fleet", label: "Fleet" },
+  { id: "contributions", label: "Contributions" },
+  { id: "sync", label: "Sync" },
+  { id: "suggest", label: "Suggest" },
+  { id: "settings", label: "Settings" },
 ];
 
 // Static screens use their own id; playlists retain the exact encoded prefix
@@ -83,10 +75,7 @@ export function playlistSidebarItems(
 
   return ordered.map((playlist) => ({
     id: playlistSidebarId(playlist.playlist_id),
-    label:
-      playlist.playlist_id === "liked_songs"
-        ? `♥ ${playlist.name}`
-        : playlist.name,
+    label: playlist.name,
     count: playlist.track_count,
     playlistId: playlist.playlist_id,
     smartRules: playlist.smart_rules,

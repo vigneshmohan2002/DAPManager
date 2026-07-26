@@ -17,19 +17,27 @@ export default function TopBar({
 }: Props) {
   const hasSearch = search !== undefined && onSearch !== undefined;
   return (
-    <header className="doppler-toolbar titlebar-drag h-12 shrink-0 border-b border-[var(--color-border)] flex items-center gap-2 px-3">
-      {onBack ? (
+    <header className="doppler-toolbar titlebar-drag flex h-[52px] shrink-0 items-center gap-3 border-b border-[var(--color-border)] px-4">
+      <div className="titlebar-nodrag flex shrink-0 items-center">
         <button
           type="button"
-          onClick={onBack}
+          onClick={() => onBack?.()}
+          disabled={!onBack}
           aria-label="Back"
-          className="doppler-control titlebar-nodrag grid h-7 w-7 place-items-center rounded-md"
+          className="doppler-control grid h-7 w-7 place-items-center rounded"
         >
-          <Icon name="back" size={15} />
+          <Icon name="back" size={17} />
         </button>
-      ) : (
-        <span className="w-1" />
-      )}
+        <span className="mx-1 h-5 w-px bg-[var(--color-border)]" />
+        <button
+          type="button"
+          disabled
+          aria-label="Forward"
+          className="doppler-control grid h-7 w-7 place-items-center rounded"
+        >
+          <Icon name="forward" size={17} />
+        </button>
+      </div>
       <div className="flex-1 min-w-0">
         <h1 className="text-[13px] font-medium leading-tight truncate">
           {title}
@@ -41,20 +49,30 @@ export default function TopBar({
         ) : null}
       </div>
       {hasSearch ? (
-        <label className="titlebar-nodrag relative block">
-          <Icon
-            name="search"
-            size={13}
-            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]"
-          />
-          <input
-            type="search"
-            placeholder="Search"
-            value={search}
-            onChange={(e) => onSearch(e.target.value)}
-            className="h-7 w-52 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)] py-1 pl-7 pr-2 text-[11px] text-[var(--color-text)] shadow-inner placeholder:text-[var(--color-text-muted)]"
-          />
-        </label>
+        <div className="titlebar-nodrag flex items-center gap-2">
+          <button
+            type="button"
+            disabled
+            aria-label="Sort"
+            className="doppler-control grid h-7 w-7 place-items-center rounded"
+          >
+            <Icon name="sort" size={16} />
+          </button>
+          <label className="relative block w-[clamp(132px,24vw,324px)]">
+            <Icon
+              name="search"
+              size={14}
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]"
+            />
+            <input
+              type="search"
+              placeholder="Search"
+              value={search}
+              onChange={(e) => onSearch(e.target.value)}
+              className="h-7 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-toolbar-control)] py-1 pl-8 pr-2 text-[12px] text-[var(--color-text)] shadow-inner placeholder:text-[var(--color-text-muted)]"
+            />
+          </label>
+        </div>
       ) : null}
     </header>
   );

@@ -10,6 +10,7 @@ export type IconName =
   | "downloads"
   | "duplicates"
   | "fleet"
+  | "forward"
   | "heart"
   | "home"
   | "listening"
@@ -28,9 +29,11 @@ export type IconName =
   | "settings"
   | "shuffle"
   | "sleep"
+  | "sort"
   | "songs"
   | "suggest"
-  | "sync";
+  | "sync"
+  | "volume";
 
 type Props = {
   name: IconName;
@@ -168,6 +171,8 @@ function glyph(name: IconName): ReactNode {
       );
     case "back":
       return <path d="m14.5 5-7 7 7 7" />;
+    case "forward":
+      return <path d="m9.5 5 7 7-7 7" />;
     case "close":
       return <path d="m6 6 12 12M18 6 6 18" />;
     case "shuffle":
@@ -211,6 +216,20 @@ function glyph(name: IconName): ReactNode {
       );
     case "sleep":
       return <path d="M19.5 15.5A8 8 0 0 1 8.5 4.5a8 8 0 1 0 11 11Z" />;
+    case "volume":
+      return (
+        <>
+          <path d="M4 10v4h4l5 4V6l-5 4z" />
+          <path d="M16 9a4.5 4.5 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" />
+        </>
+      );
+    case "sort":
+      return (
+        <>
+          <path d="M9 6h11M9 12h11M9 18h11" />
+          <path d="M4 5h1v3M3.5 8H6M3.5 12h2L3.5 15H6M3.5 18h2.5l-2.5 3h2.5" />
+        </>
+      );
     case "lyrics":
       return (
         <>

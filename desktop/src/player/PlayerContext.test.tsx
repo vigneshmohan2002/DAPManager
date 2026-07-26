@@ -29,6 +29,7 @@ class FakeAudio {
   currentTime = 0;
   duration = 0;
   paused = true;
+  volume = 1;
   private listeners = new Map<string, Set<EventListener>>();
 
   constructor() {
@@ -111,6 +112,7 @@ function PlayerHarness() {
       <output data-testid="queue">{player.queue.map((track) => track.mbid).join(",")}</output>
       <output data-testid="shuffle">{String(player.shuffle)}</output>
       <output data-testid="repeat">{player.repeat}</output>
+      <output data-testid="volume">{player.volume}</output>
       <output data-testid="playing">{String(player.isPlaying)}</output>
       <output data-testid="position">{player.position}</output>
       <output data-testid="duration">{player.duration}</output>
@@ -133,6 +135,9 @@ function PlayerHarness() {
       <button onClick={player.prev}>Previous</button>
       <button onClick={player.toggleShuffle}>Toggle shuffle</button>
       <button onClick={player.cycleRepeat}>Cycle repeat</button>
+      <button onClick={() => player.setVolume(0.4)}>Set volume</button>
+      <button onClick={() => player.setVolume(2)}>Set volume high</button>
+      <button onClick={() => player.setVolume(-1)}>Set volume low</button>
       <button onClick={() => player.setSleepTimer(20)}>Set sleep timer</button>
     </div>
   );
@@ -194,10 +199,12 @@ describe("PlayerProvider persistence and traversal contracts", () => {
         "seek",
         "setSleepTimer",
         "setTrackLikedInQueue",
+        "setVolume",
         "shuffle",
         "sleepTimerExpiresAt",
         "toggle",
         "toggleShuffle",
+        "volume",
       ]
         .sort()
         .join(","),
@@ -211,14 +218,18 @@ describe("PlayerProvider persistence and traversal contracts", () => {
     );
     localStorage.setItem("dap.player.shuffle", "1");
     localStorage.setItem("dap.player.repeat", "one");
+    localStorage.setItem("dap.player.volume", "0.35");
 
     renderPlayer();
+    const audio = FakeAudio.instances[0]!;
 
     expect(screen.getByTestId("queue")).toHaveTextContent("track-1,track-2");
     expect(screen.getByTestId("current")).toHaveTextContent("track-2");
     expect(screen.getByTestId("index")).toHaveTextContent("1");
     expect(screen.getByTestId("shuffle")).toHaveTextContent("true");
     expect(screen.getByTestId("repeat")).toHaveTextContent("one");
+    expect(screen.getByTestId("volume")).toHaveTextContent("0.35");
+    expect(audio.volume).toBe(0.35);
     await waitFor(() =>
       expect(JSON.parse(localStorage.getItem("dap.player.queue") ?? "{}")).toEqual({
         v: 1,
@@ -226,6 +237,30 @@ describe("PlayerProvider persistence and traversal contracts", () => {
         index: 1,
       }),
     );
+  });
+
+  it("controls the audio element, clamps volume, and persists changes", async () => {
+    const user = userEvent.setup();
+    renderPlayer();
+    const audio = FakeAudio.instances[0]!;
+
+    expect(screen.getByTestId("volume")).toHaveTextContent("1");
+    expect(audio.volume).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Set volume" }));
+    expect(screen.getByTestId("volume")).toHaveTextContent("0.4");
+    expect(audio.volume).toBe(0.4);
+    expect(localStorage.getItem("dap.player.volume")).toBe("0.4");
+
+    await user.click(screen.getByRole("button", { name: "Set volume high" }));
+    expect(screen.getByTestId("volume")).toHaveTextContent("1");
+    expect(audio.volume).toBe(1);
+    expect(localStorage.getItem("dap.player.volume")).toBe("1");
+
+    await user.click(screen.getByRole("button", { name: "Set volume low" }));
+    expect(screen.getByTestId("volume")).toHaveTextContent("0");
+    expect(audio.volume).toBe(0);
+    expect(localStorage.getItem("dap.player.volume")).toBe("0");
   });
 
   it("persists queue replacement and cycles repeat off → all → one → off", async () => {
@@ -276,12 +311,12 @@ describe("PlayerProvider persistence and traversal contracts", () => {
     const user = userEvent.setup();
     renderPlayer();
 
-    expect(getItem).toHaveBeenCalledTimes(3);
+    expect(getItem).toHaveBeenCalledTimes(4);
     await user.click(screen.getByRole("button", { name: "Load queue" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
 
     expect(screen.getByTestId("current")).toHaveTextContent("track-2");
-    expect(getItem).toHaveBeenCalledTimes(3);
+    expect(getItem).toHaveBeenCalledTimes(4);
   });
 
   it("loads an album in API order, starts at index zero, and reports its count", async () => {

@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
-import ContextMenu from "./ContextMenu";
+import { useMemo, useState, type ReactNode } from "react";
+import ContextMenu, { type ContextMenuEntry } from "./ContextMenu";
 import Icon, { type IconName } from "./Icon";
 import {
   STATIC_SECTIONS,
+  TOOL_ITEMS,
   type SidebarItem,
   type SidebarSection,
 } from "./sidebar/model";
@@ -55,11 +56,11 @@ export default function Sidebar({
   onPlaylistCreated,
   onPlaylistDeleted,
 }: Props) {
-  const isMac =
-    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
   const toast = useToast();
+  const [toolsMenu, setToolsMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const {
-    playlists,
     playlistItems,
     playlistError,
     menu,
@@ -80,46 +81,64 @@ export default function Sidebar({
     showToast: toast.show,
   });
 
+  const likedPlaylist = playlistItems.find(
+    (item) => item.playlistId === "liked_songs",
+  );
+  const regularPlaylistItems = playlistItems.filter(
+    (item) => item.playlistId !== "liked_songs",
+  );
+  const primarySections = STATIC_SECTIONS.map((section) =>
+    section.title === "Presets" && likedPlaylist
+      ? { ...section, items: [...section.items, likedPlaylist] }
+      : section,
+  );
+
   const playlistSection: RenderSection = {
     title: "Playlists",
-    accessory: (
-      <button
-        onClick={openCreateDialog}
-        disabled={!ready}
-        title="New playlist"
-        aria-label="New playlist"
-        className="doppler-control grid h-5 w-5 place-items-center rounded"
-      >
-        <span className="text-base leading-none">+</span>
-      </button>
-    ),
-    items: playlistItems,
+    items: regularPlaylistItems,
   };
 
+  const toolsMenuEntries = useMemo<ContextMenuEntry[]>(
+    () => [
+      { kind: "label", text: "DAPManager" },
+      {
+        kind: "item",
+        label: "Search…",
+        onSelect: onOpenSearch,
+      },
+      { kind: "separator" },
+      ...TOOL_ITEMS.map((item) => ({
+        kind: "item" as const,
+        label: item.label,
+        onSelect: () => onSelect(item.id),
+      })),
+    ],
+    [onOpenSearch, onSelect],
+  );
+  const toolActive = TOOL_ITEMS.some((item) => item.id === activeId);
+
   return (
-    <aside className="doppler-sidebar w-[196px] shrink-0 border-r border-[var(--color-border)] flex flex-col">
-      <div className="titlebar-drag h-11 shrink-0" />
-      <div className="px-2.5 pb-2 titlebar-nodrag">
-        <button
-          onClick={onOpenSearch}
-          className="doppler-control w-full flex h-7 items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)]/70 px-2 text-[11px] shadow-inner"
-        >
-          <Icon name="search" size={13} />
-          <span>Search</span>
-          <span className="ml-auto text-[9px] tracking-wide text-[var(--color-text-muted)]">
-            {isMac ? "⌘K" : "Ctrl K"}
-          </span>
-        </button>
-      </div>
+    <aside className="doppler-sidebar flex h-full w-[220px] shrink-0 flex-col border-r border-[var(--color-border)]">
+      <div className="titlebar-drag h-[52px] shrink-0" />
       <nav className="flex-1 overflow-y-auto px-2.5 pb-3">
-        {STATIC_SECTIONS.map((section) => (
+        {primarySections.map((section) => (
           <Section
             key={section.title}
             section={section}
             activeId={activeId}
             onSelect={onSelect}
+            onContextMenuItem={(item, event) => {
+              if (!item.playlistId) return;
+              event.preventDefault();
+              openMenu(item, event.clientX, event.clientY);
+            }}
           />
         ))}
+        <Section
+          section={{ title: "Collections", items: [] }}
+          activeId={activeId}
+          onSelect={onSelect}
+        />
         <Section
           section={playlistSection}
           activeId={activeId}
@@ -137,7 +156,7 @@ export default function Sidebar({
               >
                 Failed to load
               </div>
-            ) : playlists.length === 0 ? (
+            ) : regularPlaylistItems.length === 0 ? (
               <div className="px-2 py-1 text-[10px] text-[var(--color-text-muted)] italic">
                 No playlists yet.
               </div>
@@ -145,12 +164,50 @@ export default function Sidebar({
           }
         />
       </nav>
+      <div className="group titlebar-nodrag relative flex h-[38px] shrink-0 items-center border-t border-[var(--color-border)] px-2">
+        <button
+          type="button"
+          onClick={openCreateDialog}
+          disabled={!ready}
+          title="New playlist"
+          aria-label="New Playlist/Collection"
+          className="doppler-control flex h-7 min-w-0 flex-1 items-center gap-2 rounded px-1.5 text-left text-[12px] font-medium"
+        >
+          <span className="text-[19px] font-light leading-none">+</span>
+          <span className="truncate">New Playlist/Collection</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Open DAPManager tools"
+          aria-haspopup="menu"
+          aria-expanded={toolsMenu !== null}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setToolsMenu({ x: rect.right - 4, y: rect.top });
+          }}
+          className={`doppler-control absolute right-2 grid h-7 w-7 shrink-0 place-items-center rounded bg-[var(--color-bg-sidebar)] transition-opacity ${
+            toolActive || toolsMenu
+              ? "opacity-100"
+              : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+          }`}
+        >
+          <Icon name="settings" size={14} />
+        </button>
+      </div>
       {menuEntries && menu ? (
         <ContextMenu
           x={menu.x}
           y={menu.y}
           entries={menuEntries}
           onClose={closeMenu}
+        />
+      ) : null}
+      {toolsMenu ? (
+        <ContextMenu
+          x={toolsMenu.x}
+          y={toolsMenu.y}
+          entries={toolsMenuEntries}
+          onClose={() => setToolsMenu(null)}
         />
       ) : null}
       {dialog ? (
@@ -190,7 +247,7 @@ function Section({
   return (
     <div className="mb-3.5">
       {showHeading && (
-        <div className="px-2 pb-1 flex items-center justify-between text-[10px] font-medium text-[var(--color-text-muted)]">
+        <div className="flex items-center justify-between px-2 pb-1 text-[11px] font-semibold text-[var(--color-text-subtle)]">
           <span>{section.title}</span>
           {section.accessory ?? null}
         </div>
@@ -210,7 +267,7 @@ function Section({
               <button
                 onClick={() => onSelect(item.id)}
                 onContextMenu={(event) => onContextMenuItem?.(item, event)}
-                className={`w-full flex h-6 items-center gap-1.5 rounded px-2 text-left text-[11px] transition-colors ${
+                className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors ${
                   active
                     ? "doppler-selection font-medium"
                     : "text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)]/55"
@@ -218,8 +275,12 @@ function Section({
               >
                 <Icon
                   name={icon}
-                  size={13}
-                  className={active ? "text-[var(--color-accent)]" : ""}
+                  size={15}
+                  className={
+                    section.title === "Library" || active
+                      ? "text-[var(--color-accent)]"
+                      : ""
+                  }
                 />
                 {item.smartRules ? (
                   <span

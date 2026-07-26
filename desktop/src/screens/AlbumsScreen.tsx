@@ -63,7 +63,11 @@ export default function AlbumsScreen({ ready, onOpen }: Props) {
       <TopBar
         title="Albums"
         subtitle={
-          search
+          loading
+            ? undefined
+            : error
+              ? "Unavailable"
+              : search
             ? `${filtered.length} of ${albums.length}`
             : `${albums.length} ${albums.length === 1 ? "album" : "albums"}`
         }
@@ -82,7 +86,7 @@ export default function AlbumsScreen({ ready, onOpen }: Props) {
             No albums yet. Scan your library to populate.
           </div>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-x-4 gap-y-5">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(156px,194px))] gap-x-5 gap-y-6">
             {filtered.map((a) => (
               <AlbumCard
                 key={a.id}

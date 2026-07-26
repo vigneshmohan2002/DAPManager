@@ -31,6 +31,9 @@ function App() {
   const [queueOpen, setQueueOpen] = useState(false);
   const [lyricsOpen, setLyricsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [compactSidePanels, setCompactSidePanels] = useState(
+    typeof window !== "undefined" && window.innerWidth <= 1050,
+  );
   const toggleQueue = useCallback(() => {
     setQueueOpen((open) => !open);
     setLyricsOpen(false);
@@ -98,6 +101,7 @@ function App() {
   useEffect(() => {
     const onResize = () => {
       setIsMini(window.innerWidth <= 220 && window.innerHeight <= 220);
+      setCompactSidePanels(window.innerWidth <= 1050);
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -149,6 +153,8 @@ function App() {
     isMini,
     bootingSlowly,
   });
+  const sidePanelCoversContent =
+    compactSidePanels && (queueOpen || lyricsOpen);
 
   // Show setup wizard on fresh installs (no config.json). Checked
   // before the booting guard so the wizard shows even though status
@@ -181,43 +187,51 @@ function App() {
         {surface.kind === "miniPlayer" ? (
           <MiniPlayer />
         ) : (
-          <div className="dap-app-shell h-screen w-screen flex flex-col">
-            <div className="flex-1 flex min-h-0">
-              <Sidebar
-                activeId={activeSidebarId(route)}
-                onSelect={handleSidebarSelect}
-                onOpenSearch={() => setSearchOpen(true)}
-                ready={status === "ready"}
-                playlistsVersion={playlistsVersion}
-                onPlaylistsChanged={bumpPlaylists}
-                onPlaylistCreated={handlePlaylistCreated}
-                onPlaylistDeleted={handlePlaylistDeleted}
-              />
-              <main className="doppler-content flex-1 flex flex-col min-w-0">
-                <ScreenRenderer
-                  route={route}
-                  status={status}
-                  backendError={backendError}
-                  playlistsVersion={playlistsVersion}
-                  onNavigate={navigate}
+          <div className="dap-app-shell flex h-screen w-screen">
+            <Sidebar
+              activeId={activeSidebarId(route)}
+              onSelect={handleSidebarSelect}
+              onOpenSearch={() => setSearchOpen(true)}
+              ready={status === "ready"}
+              playlistsVersion={playlistsVersion}
+              onPlaylistsChanged={bumpPlaylists}
+              onPlaylistCreated={handlePlaylistCreated}
+              onPlaylistDeleted={handlePlaylistDeleted}
+            />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="dap-content-row relative flex min-h-0 flex-1">
+                <main
+                  aria-hidden={sidePanelCoversContent || undefined}
+                  inert={sidePanelCoversContent}
+                  className="doppler-content flex min-w-0 flex-1 flex-col"
+                >
+                  <ScreenRenderer
+                    route={route}
+                    status={status}
+                    backendError={backendError}
+                    playlistsVersion={playlistsVersion}
+                    onNavigate={navigate}
+                    onPlaylistsChanged={bumpPlaylists}
+                  />
+                </main>
+                <LyricsPane
+                  open={lyricsOpen}
+                  onClose={() => setLyricsOpen(false)}
+                />
+                <QueuePanel
+                  open={queueOpen}
+                  onClose={() => setQueueOpen(false)}
                   onPlaylistsChanged={bumpPlaylists}
                 />
-              </main>
-              <LyricsPane
-                open={lyricsOpen}
-                onClose={() => setLyricsOpen(false)}
-              />
-              <QueuePanel
-                open={queueOpen}
-                onClose={() => setQueueOpen(false)}
+              </div>
+              <PlayerBar
+                queueOpen={queueOpen}
+                onToggleQueue={toggleQueue}
+                lyricsOpen={lyricsOpen}
+                onToggleLyrics={toggleLyrics}
+                onPlaylistsChanged={bumpPlaylists}
               />
             </div>
-            <PlayerBar
-              queueOpen={queueOpen}
-              onToggleQueue={toggleQueue}
-              lyricsOpen={lyricsOpen}
-              onToggleLyrics={toggleLyrics}
-            />
             <SearchOverlay
               open={searchOpen}
               onClose={() => setSearchOpen(false)}

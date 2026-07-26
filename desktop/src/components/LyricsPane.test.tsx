@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,6 +39,10 @@ import LyricsPane from "./LyricsPane";
 
 describe("LyricsPane", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1200,
+    });
     playerMocks.current = {
       mbid: "track-1",
       title: "First Light",
@@ -111,5 +116,42 @@ describe("LyricsPane", () => {
       true,
     );
     expect(await screen.findByText("Replacement lyrics")).toBeInTheDocument();
+  });
+
+  it("acts as a compact drawer, closes with Escape, and restores focus", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 900,
+    });
+    const user = userEvent.setup();
+
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open lyrics
+          </button>
+          <LyricsPane open={open} onClose={() => setOpen(false)} />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "Open lyrics" });
+    await user.click(trigger);
+
+    expect(
+      screen.getByRole("dialog", { name: "Lyrics" }),
+    ).toBeInTheDocument();
+    const close = screen.getByRole("button", { name: "Close lyrics" });
+    await waitFor(() => expect(close).toHaveFocus());
+
+    await user.keyboard("{Escape}");
+
+    expect(
+      screen.queryByRole("dialog", { name: "Lyrics" }),
+    ).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });

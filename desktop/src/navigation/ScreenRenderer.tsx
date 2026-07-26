@@ -1,6 +1,5 @@
 import AlbumDetailScreen from "../screens/AlbumDetailScreen";
 import AlbumsScreen from "../screens/AlbumsScreen";
-import ArtistDetailScreen from "../screens/ArtistDetailScreen";
 import ArtistsScreen from "../screens/ArtistsScreen";
 import AuditScreen from "../screens/AuditScreen";
 import ContributionsScreen from "../screens/ContributionsScreen";
@@ -56,12 +55,14 @@ export default function ScreenRenderer({
       );
     case "artist":
       return (
-        <ArtistDetailScreen
-          artist={route.artist}
-          onBack={() => onNavigate({ type: "closeArtist" })}
+        <ArtistsScreen
+          ready={ready}
+          selectedArtist={route.artist}
+          onOpen={(artist) => onNavigate({ type: "openArtist", artist })}
           onOpenAlbum={(album) =>
             onNavigate({ type: "openAlbum", album })
           }
+          onBack={() => onNavigate({ type: "closeArtist" })}
         />
       );
     case "playlist":
@@ -158,6 +159,7 @@ function renderContentScreen({
         <ArtistsScreen
           ready={ready}
           onOpen={(artist) => onNavigate({ type: "openArtist", artist })}
+          onOpenAlbum={(album) => onNavigate({ type: "openAlbum", album })}
         />
       );
     case "audit":

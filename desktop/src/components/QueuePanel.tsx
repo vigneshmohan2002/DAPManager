@@ -4,13 +4,19 @@ import { usePlayer } from "../player/PlayerContext";
 import Artwork from "./Artwork";
 import Icon from "./Icon";
 import { useToast } from "./Toast";
+import { useResponsiveSidePanel } from "./useResponsiveSidePanel";
 
 type Props = {
   open: boolean;
   onClose: () => void;
+  onPlaylistsChanged?: () => void;
 };
 
-export default function QueuePanel({ open, onClose }: Props) {
+export default function QueuePanel({
+  open,
+  onClose,
+  onPlaylistsChanged,
+}: Props) {
   const {
     queue,
     index,
@@ -22,6 +28,8 @@ export default function QueuePanel({ open, onClose }: Props) {
   } = usePlayer();
   const toast = useToast();
   const [base, setBase] = useState("");
+  const { closeButtonRef, compact, handleKeyDown } =
+    useResponsiveSidePanel(open, onClose);
 
   useEffect(() => {
     if (!open) return;
@@ -47,23 +55,24 @@ export default function QueuePanel({ open, onClose }: Props) {
     setTrackLikedInQueue(mbid, next);
     try {
       const result = await setTrackLiked(mbid, next);
-      if (result.success) return;
+      if (result.success) {
+        if (!wasLiked) onPlaylistsChanged?.();
+        return;
+      }
       setTrackLikedInQueue(mbid, wasLiked);
       toast.show(result.message ?? "Could not save like", "err");
     } catch (error) {
       setTrackLikedInQueue(mbid, wasLiked);
       toast.show(`Could not save like: ${String(error)}`, "err");
     }
-    // Auto-created Liked Songs playlist refresh is intentionally
-    // skipped here — the queue panel doesn't own the playlists-
-    // version counter. Users will see the pin appear next time the
-    // sidebar refreshes (next playlist mutation or screen change).
   };
 
   return (
     <aside
       aria-label="Playback queue"
-      className="w-[21rem] min-w-[18rem] max-w-[22rem] shrink-0 border-l border-[var(--color-border)] bg-[var(--color-bg-elevated)] flex flex-col"
+      role={compact ? "dialog" : "complementary"}
+      onKeyDown={handleKeyDown}
+      className="doppler-side-panel flex w-[21rem] min-w-[18rem] max-w-[22rem] shrink-0 flex-col border-l border-[var(--color-border)] bg-[var(--color-bg-elevated)]"
     >
       <header className="h-[54px] shrink-0 border-b border-[var(--color-border)] flex items-center px-4 gap-2">
         <div className="flex-1 min-w-0">
@@ -83,6 +92,7 @@ export default function QueuePanel({ open, onClose }: Props) {
           Clear
         </button>
         <button
+          ref={closeButtonRef}
           type="button"
           onClick={onClose}
           aria-label="Close queue"

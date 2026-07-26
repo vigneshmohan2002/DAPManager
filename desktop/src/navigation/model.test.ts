@@ -55,6 +55,20 @@ describe("navigation model", () => {
     );
   });
 
+  it("keeps an artist deep link as the selected persistent browser route", () => {
+    const selected = navigationReducer(INITIAL_NAVIGATION_STATE, {
+      type: "openArtist",
+      artist,
+    });
+
+    expect(selected).toEqual({ kind: "artist", artist });
+    expect(activeSidebarId(selected)).toBe("artists");
+    expect(navigationReducer(selected, { type: "closeArtist" })).toEqual({
+      kind: "screen",
+      screen: "artists",
+    });
+  });
+
   it("replaces an open album without nesting its return route", () => {
     const first = navigationReducer(INITIAL_NAVIGATION_STATE, {
       type: "openAlbum",

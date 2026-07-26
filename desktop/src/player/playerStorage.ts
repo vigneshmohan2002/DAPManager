@@ -5,10 +5,12 @@ export const PLAYER_STORAGE_KEYS = {
   shuffle: "dap.player.shuffle",
   repeat: "dap.player.repeat",
   queue: "dap.player.queue",
+  volume: "dap.player.volume",
 } as const;
 
 // Bump this only when the persisted queue shape changes incompatibly.
 export const PLAYER_QUEUE_VERSION = 1;
+export const PLAYER_DEFAULT_VOLUME = 1;
 
 export type PersistedQueue = {
   v: number;
@@ -21,6 +23,7 @@ export type PersistedPlayerState = {
   index: number;
   shuffle: boolean;
   repeat: RepeatMode;
+  volume: number;
 };
 
 type StorageReader = Pick<Storage, "getItem">;
@@ -61,6 +64,19 @@ function readStorageValue(
   }
 }
 
+export function clampPlayerVolume(
+  volume: number,
+  fallback = PLAYER_DEFAULT_VOLUME,
+): number {
+  if (!Number.isFinite(volume)) return fallback;
+  return Math.min(1, Math.max(0, volume));
+}
+
+export function decodePersistedVolume(raw: string | null): number {
+  if (raw === null || raw.trim() === "") return PLAYER_DEFAULT_VOLUME;
+  return clampPlayerVolume(Number(raw));
+}
+
 export function decodePersistedQueue(raw: string | null): PersistedQueue {
   if (!raw) return emptyQueue();
 
@@ -89,7 +105,13 @@ export function readPersistedPlayerState(
   storage: StorageReader | null = browserStorage(),
 ): PersistedPlayerState {
   if (!storage) {
-    return { queue: [], index: 0, shuffle: false, repeat: "off" };
+    return {
+      queue: [],
+      index: 0,
+      shuffle: false,
+      repeat: "off",
+      volume: PLAYER_DEFAULT_VOLUME,
+    };
   }
 
   const persistedQueue = decodePersistedQueue(
@@ -100,12 +122,14 @@ export function readPersistedPlayerState(
     PLAYER_STORAGE_KEYS.shuffle,
   );
   const repeatValue = readStorageValue(storage, PLAYER_STORAGE_KEYS.repeat);
+  const volumeValue = readStorageValue(storage, PLAYER_STORAGE_KEYS.volume);
   return {
     queue: persistedQueue.queue,
     index: persistedQueue.index,
     shuffle: shuffleValue === "1",
     repeat:
       repeatValue === "all" || repeatValue === "one" ? repeatValue : "off",
+    volume: decodePersistedVolume(volumeValue),
   };
 }
 
@@ -146,6 +170,21 @@ export function persistRepeat(
   if (!storage) return;
   try {
     storage.setItem(PLAYER_STORAGE_KEYS.repeat, repeat);
+  } catch {
+    // Fall back to session-only state.
+  }
+}
+
+export function persistVolume(
+  volume: number,
+  storage: StorageWriter | null = browserStorage(),
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(
+      PLAYER_STORAGE_KEYS.volume,
+      String(clampPlayerVolume(volume)),
+    );
   } catch {
     // Fall back to session-only state.
   }

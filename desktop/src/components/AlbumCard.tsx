@@ -65,10 +65,10 @@ export default function AlbumCard({
         className="aspect-square w-full rounded-[5px] shadow-[var(--shadow-artwork)]"
         imageClassName="transition-transform duration-200 group-hover:scale-[1.015]"
       />
-      <span className="block mt-1.5 truncate text-[11px] font-medium leading-[1.35] text-[var(--color-text)]">
+      <span className="mt-2 block truncate text-[13px] font-medium leading-[1.35] text-[var(--color-text)]">
         {album.title}
       </span>
-      <span className="mt-0.5 block truncate text-[10px] leading-[1.3] text-[var(--color-text-muted)]">
+      <span className="mt-0.5 block truncate text-[11px] leading-[1.3] text-[var(--color-text-muted)]">
         {album.artist}
       </span>
     </button>
