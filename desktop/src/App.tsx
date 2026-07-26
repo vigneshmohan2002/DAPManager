@@ -155,7 +155,7 @@ function App() {
   // screen renderer can surface the inline error message.
   if (surface.kind === "booting") {
     return (
-      <div className="h-screen w-screen flex flex-col items-center justify-center bg-[var(--color-bg)]">
+      <div className="dap-app-shell h-screen w-screen flex flex-col items-center justify-center">
         <div className="titlebar-drag absolute inset-x-0 top-0 h-10" />
         <div className="w-5 h-5 border-2 border-[var(--color-text-muted)]/30 border-t-[var(--color-text-muted)] rounded-full animate-spin" />
         {surface.showDependencyHint && (
@@ -173,7 +173,7 @@ function App() {
         {surface.kind === "miniPlayer" ? (
           <MiniPlayer />
         ) : (
-          <div className="h-screen w-screen flex flex-col">
+          <div className="dap-app-shell h-screen w-screen flex flex-col">
             <div className="flex-1 flex min-h-0">
               <Sidebar
                 activeId={activeSidebarId(route)}
@@ -185,7 +185,7 @@ function App() {
                 onPlaylistCreated={handlePlaylistCreated}
                 onPlaylistDeleted={handlePlaylistDeleted}
               />
-              <main className="flex-1 flex flex-col min-w-0">
+              <main className="doppler-content flex-1 flex flex-col min-w-0">
                 <ScreenRenderer
                   route={route}
                   status={status}

@@ -1,14 +1,56 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #141414;
-  --color-bg-elevated: #1c1c1e;
-  --color-bg-sidebar: #161618;
-  --color-surface: #222224;
-  --color-border: #2a2a2c;
-  --color-text: #f2f2f2;
-  --color-text-muted: #8e8e93;
-  --color-accent: #ff2d55;
+  --color-bg: #f5f5f6;
+  --color-content: #ffffff;
+  --color-bg-elevated: #fafafa;
+  --color-bg-sidebar: #ebe8e8;
+  --color-surface: #e9eaec;
+  --color-border: rgb(31 35 40 / 12%);
+  --color-text: #242529;
+  --color-text-muted: #72757c;
+  --color-accent: #416f98;
+  --color-accent-soft: #e8eff5;
+  --color-danger: #c83f52;
+  --color-liked: #dc4f6a;
+}
+
+:root {
+  color-scheme: light;
+  --color-bg: #f5f5f6;
+  --color-content: #ffffff;
+  --color-bg-elevated: #fafafa;
+  --color-bg-sidebar: rgb(235 232 232 / 96%);
+  --color-surface: #e9eaec;
+  --color-border: rgb(31 35 40 / 12%);
+  --color-text: #242529;
+  --color-text-muted: #72757c;
+  --color-accent: #416f98;
+  --color-accent-soft: #e8eff5;
+  --color-danger: #c83f52;
+  --color-liked: #dc4f6a;
+  --shadow-window: 0 18px 50px rgb(0 0 0 / 18%);
+  --shadow-artwork: 0 3px 12px rgb(24 28 34 / 18%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --color-bg: #1a1a1c;
+    --color-content: #202023;
+    --color-bg-elevated: #252528;
+    --color-bg-sidebar: rgb(37 35 37 / 96%);
+    --color-surface: #303034;
+    --color-border: rgb(255 255 255 / 11%);
+    --color-text: #f1f1f2;
+    --color-text-muted: #9a9a9f;
+    --color-accent: #8eb5d6;
+    --color-accent-soft: #2d3943;
+    --color-danger: #ff7787;
+    --color-liked: #ff7892;
+    --shadow-window: 0 18px 50px rgb(0 0 0 / 42%);
+    --shadow-artwork: 0 3px 14px rgb(0 0 0 / 48%);
+  }
 }
 
 html,
@@ -16,11 +58,86 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--color-bg);
+  background: transparent;
   color: var(--color-text);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
     Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.dap-app-shell {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.doppler-sidebar {
+  background: var(--color-bg-sidebar);
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: blur(24px) saturate(1.15);
+}
+
+.doppler-content {
+  background: var(--color-content);
+}
+
+.doppler-toolbar {
+  background: color-mix(in srgb, var(--color-content) 92%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+
+.doppler-control {
+  color: var(--color-text-muted);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.doppler-control:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-surface) 76%, transparent);
+  color: var(--color-text);
+}
+
+.doppler-control:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.doppler-control:disabled {
+  opacity: 0.35;
+}
+
+.doppler-selection {
+  background: color-mix(in srgb, var(--color-surface) 86%, transparent);
+  color: var(--color-text);
+}
+
+.doppler-hairline {
+  border-color: var(--color-border);
 }
 
 .titlebar-drag {
@@ -32,8 +149,8 @@ body,
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -41,10 +158,13 @@ body,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3a3a3c;
-  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-text-muted) 38%, transparent);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4c;
+  background: color-mix(in srgb, var(--color-text-muted) 58%, transparent);
+  background-clip: padding-box;
 }

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import ContextMenu from "./ContextMenu";
+import Icon, { type IconName } from "./Icon";
 import {
   STATIC_SECTIONS,
   type SidebarItem,
@@ -24,6 +25,24 @@ type Props = {
 
 type RenderSection = SidebarSection & {
   accessory?: ReactNode;
+};
+
+const STATIC_ICONS: Record<string, IconName> = {
+  home: "home",
+  albums: "albums",
+  artists: "artists",
+  songs: "songs",
+  stats: "listening",
+  downloads: "downloads",
+  releases: "releases",
+  audit: "audit",
+  duplicates: "duplicates",
+  orphans: "orphans",
+  fleet: "fleet",
+  contributions: "contributions",
+  sync: "sync",
+  suggest: "suggest",
+  settings: "settings",
 };
 
 export default function Sidebar({
@@ -68,29 +87,31 @@ export default function Sidebar({
         onClick={openCreateDialog}
         disabled={!ready}
         title="New playlist"
-        className="text-lg leading-none px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40"
+        aria-label="New playlist"
+        className="doppler-control grid h-5 w-5 place-items-center rounded"
       >
-        +
+        <span className="text-base leading-none">+</span>
       </button>
     ),
     items: playlistItems,
   };
 
   return (
-    <aside className="w-60 shrink-0 bg-[var(--color-bg-sidebar)] border-r border-[var(--color-border)] flex flex-col">
-      <div className="titlebar-drag h-10 shrink-0" />
-      <div className="px-3 pb-3 titlebar-nodrag">
+    <aside className="doppler-sidebar w-[196px] shrink-0 border-r border-[var(--color-border)] flex flex-col">
+      <div className="titlebar-drag h-11 shrink-0" />
+      <div className="px-2.5 pb-2 titlebar-nodrag">
         <button
           onClick={onOpenSearch}
-          className="w-full flex items-center gap-2 px-3 py-1.5 rounded-md bg-[var(--color-surface)]/70 hover:bg-[var(--color-surface)] text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          className="doppler-control w-full flex h-7 items-center gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-elevated)]/70 px-2 text-[11px] shadow-inner"
         >
+          <Icon name="search" size={13} />
           <span>Search</span>
-          <span className="ml-auto text-xs tracking-wide border border-[var(--color-border)] rounded px-1.5 py-0.5">
+          <span className="ml-auto text-[9px] tracking-wide text-[var(--color-text-muted)]">
             {isMac ? "⌘K" : "Ctrl K"}
           </span>
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto px-3 pb-4">
+      <nav className="flex-1 overflow-y-auto px-2.5 pb-3">
         {STATIC_SECTIONS.map((section) => (
           <Section
             key={section.title}
@@ -111,13 +132,13 @@ export default function Sidebar({
           footer={
             playlistError ? (
               <div
-                className="px-3 py-1 text-xs text-[var(--color-accent)] truncate"
+                className="px-2 py-1 text-[10px] text-[var(--color-danger)] truncate"
                 title={playlistError}
               >
                 Failed to load
               </div>
             ) : playlists.length === 0 ? (
-              <div className="px-3 py-1 text-xs text-[var(--color-text-muted)] italic">
+              <div className="px-2 py-1 text-[10px] text-[var(--color-text-muted)] italic">
                 No playlists yet.
               </div>
             ) : null
@@ -167,38 +188,50 @@ function Section({
   // without rendering a heading row.
   const showHeading = section.title.length > 0 || section.accessory;
   return (
-    <div className="mb-6">
+    <div className="mb-3.5">
       {showHeading && (
-        <div className="px-3 pb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+        <div className="px-2 pb-1 flex items-center justify-between text-[10px] font-medium text-[var(--color-text-muted)]">
           <span>{section.title}</span>
           {section.accessory ?? null}
         </div>
       )}
-      <ul className="space-y-0.5">
+      <ul className="space-y-px">
         {section.items.map((item) => {
           const active = item.id === activeId;
+          const icon =
+            STATIC_ICONS[item.id] ??
+            (item.id.startsWith("playlist:")
+              ? item.id === "playlist:liked_songs"
+                ? "heart"
+                : "playlist"
+              : "playlist");
           return (
             <li key={item.id}>
               <button
                 onClick={() => onSelect(item.id)}
                 onContextMenu={(event) => onContextMenuItem?.(item, event)}
-                className={`w-full flex items-center text-left px-3 py-1.5 rounded-md text-sm transition-colors ${
+                className={`w-full flex h-6 items-center gap-1.5 rounded px-2 text-left text-[11px] transition-colors ${
                   active
-                    ? "bg-[var(--color-surface)] text-[var(--color-text)]"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)]/50"
+                    ? "doppler-selection font-medium"
+                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface)]/55"
                 }`}
               >
+                <Icon
+                  name={icon}
+                  size={13}
+                  className={active ? "text-[var(--color-accent)]" : ""}
+                />
                 {item.smartRules ? (
                   <span
                     title="Smart playlist (rule-based)"
-                    className="mr-1 shrink-0 text-[var(--color-accent)]"
+                    className="shrink-0 text-[8px] text-[var(--color-accent)]"
                   >
-                    ★
+                    ◆
                   </span>
                 ) : null}
                 <span className="truncate">{item.label}</span>
                 {item.count !== undefined ? (
-                  <span className="ml-auto shrink-0 text-xs text-[var(--color-text-muted)]">
+                  <span className="ml-auto shrink-0 text-[9px] tabular-nums text-[var(--color-text-muted)]">
                     {item.count}
                   </span>
                 ) : null}
