@@ -47,7 +47,10 @@ export default function SongsScreen({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SongSortKey>("artist");
   const [direction, setDirection] = useState<SongSortDirection>("asc");
-  const [catalogOnly, setCatalogOnly] = useState(false);
+  // A satellite's normal library is the master's streamable catalog. Default
+  // to including those rows; otherwise a correctly configured streaming-only
+  // satellite appears to have no songs at all.
+  const [catalogOnly, setCatalogOnly] = useState(true);
   const [showOrphans, setShowOrphans] = useState(false);
   const [menu, setMenu] = useState<SongMenuState | null>(null);
 

@@ -113,7 +113,7 @@ describe("SongsScreen list and playback contract", () => {
     expect(screen.queryByText("Target closer")).not.toBeInTheDocument();
   });
 
-  it("removes unavailable tracks and remaps the clicked row to its queue index", async () => {
+  it("includes streamable catalog rows by default and remaps playback", async () => {
     render(
       <SongsScreen
         ready
@@ -131,7 +131,7 @@ describe("SongsScreen list and playback contract", () => {
 
     expect(apiMocks.fetchAllTracks).toHaveBeenCalledWith({
       playlistId: "playlist-1",
-      localOnly: true,
+      localOnly: false,
       includeOrphans: false,
     });
     expect(playerMocks.play).toHaveBeenCalledTimes(1);
@@ -236,7 +236,7 @@ describe("SongsScreen list and playback contract", () => {
     await waitFor(() =>
       expect(apiMocks.fetchAllTracks).toHaveBeenLastCalledWith({
         playlistId: undefined,
-        localOnly: false,
+        localOnly: true,
         includeOrphans: false,
       }),
     );
