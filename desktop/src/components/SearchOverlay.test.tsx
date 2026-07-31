@@ -12,11 +12,23 @@ const apiMocks = vi.hoisted(() => ({
 const playerMocks = vi.hoisted(() => ({
   play: vi.fn(),
 }));
+const completionMocks = vi.hoisted(() => ({
+  requestAlbumDownload: vi.fn(),
+  postAction: vi.fn(),
+}));
+const toastMocks = vi.hoisted(() => ({ show: vi.fn() }));
 
 vi.mock("../lib/api", () => apiMocks);
 vi.mock("../player/PlayerContext", () => ({
   usePlayer: () => playerMocks,
 }));
+vi.mock("../lib/api/downloads", () => ({
+  requestAlbumDownload: completionMocks.requestAlbumDownload,
+}));
+vi.mock("../lib/api/sync", () => ({
+  postAction: completionMocks.postAction,
+}));
+vi.mock("./Toast", () => ({ useToast: () => toastMocks }));
 
 import SearchOverlay from "./SearchOverlay";
 
@@ -69,6 +81,10 @@ describe("SearchOverlay", () => {
       { name: "Massive Attack", album_count: 2, track_count: 20 },
     ]);
     apiMocks.searchTracks.mockResolvedValue([]);
+    completionMocks.postAction.mockResolvedValue({
+      success: true,
+      message: "Task started.",
+    });
   });
 
   it("loads library lookups and routes album and artist results", async () => {
@@ -135,6 +151,54 @@ describe("SearchOverlay", () => {
       0,
     );
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("offers exact completion from an album search-list row", async () => {
+    const releaseMbid = "461eac33-7edd-481a-a7d1-089ec6fc01af";
+    apiMocks.fetchAlbums.mockResolvedValue([
+      {
+        id: releaseMbid,
+        title: "Blue Lines",
+        artist: "Massive Attack",
+        track_count: 9,
+      },
+    ]);
+    completionMocks.requestAlbumDownload.mockResolvedValue({
+      success: true,
+      queued: true,
+      message: "queued",
+      request: {
+        id: 9,
+        release_mbid: releaseMbid,
+        title: "Blue Lines",
+        artist: "Massive Attack",
+        track_count: 9,
+        stage: "queued",
+        detail: "Waiting for the master download queue",
+        completed_tracks: 1,
+      },
+    });
+    const user = userEvent.setup();
+    renderSearch();
+    await user.type(
+      screen.getByRole("textbox", { name: "Search your library" }),
+      "blue",
+    );
+
+    fireEvent.contextMenu((await screen.findByText("Blue Lines")).closest("button")!, {
+      clientX: 42,
+      clientY: 52,
+    });
+    await user.click(
+      screen.getByRole("menuitem", { name: "Complete Album" }),
+    );
+
+    await waitFor(() =>
+      expect(completionMocks.requestAlbumDownload).toHaveBeenCalledWith(
+        releaseMbid,
+      ),
+    );
+    expect(completionMocks.postAction).toHaveBeenCalledWith("/api/download");
   });
 
   it("closes with Escape", () => {

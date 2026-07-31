@@ -1,11 +1,32 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Album } from "../lib/api";
+
+const completionMocks = vi.hoisted(() => ({
+  requestAlbumDownload: vi.fn(),
+  postAction: vi.fn(),
+}));
+const toastMocks = vi.hoisted(() => ({ show: vi.fn() }));
+
+vi.mock("../lib/api/downloads", () => ({
+  requestAlbumDownload: completionMocks.requestAlbumDownload,
+}));
+vi.mock("../lib/api/sync", () => ({
+  postAction: completionMocks.postAction,
+}));
+vi.mock("./Toast", () => ({ useToast: () => toastMocks }));
+
 import AlbumCard from "./AlbumCard";
 
 const album: Album = {
-  id: "album-1",
+  id: "461eac33-7edd-481a-a7d1-089ec6fc01af",
   title: "Test Album",
   artist: "Test Artist",
   track_count: 12,
@@ -25,6 +46,28 @@ function renderCard(overrides: {
 }
 
 describe("AlbumCard", () => {
+  beforeEach(() => {
+    completionMocks.requestAlbumDownload.mockResolvedValue({
+      success: true,
+      queued: true,
+      message: "queued",
+      request: {
+        id: 7,
+        release_mbid: album.id,
+        title: album.title,
+        artist: album.artist,
+        track_count: album.track_count,
+        stage: "queued",
+        detail: "Waiting for the master download queue",
+        completed_tracks: 1,
+      },
+    });
+    completionMocks.postAction.mockResolvedValue({
+      success: true,
+      message: "Task started.",
+    });
+  });
+
   it("exposes a semantic, named album button", () => {
     renderCard();
 
@@ -121,6 +164,51 @@ describe("AlbumCard", () => {
     fireEvent.click(screen.getByRole("button"));
 
     expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it("offers exact album completion from the card context menu", async () => {
+    const user = userEvent.setup();
+    renderCard();
+
+    fireEvent.contextMenu(screen.getByRole("button"), {
+      clientX: 24,
+      clientY: 36,
+    });
+    await user.click(
+      screen.getByRole("menuitem", { name: "Complete Album" }),
+    );
+
+    await waitFor(() =>
+      expect(completionMocks.requestAlbumDownload).toHaveBeenCalledWith(
+        album.id,
+      ),
+    );
+    expect(completionMocks.postAction).toHaveBeenCalledWith("/api/download");
+    expect(toastMocks.show).toHaveBeenCalledWith(
+      "Completing Test Album — verified FLAC download started.",
+      "ok",
+    );
+  });
+
+  it("fails closed for an album without an exact release ID", async () => {
+    const user = userEvent.setup();
+    render(
+      <AlbumCard
+        album={{ ...album, id: "Test Album|Test Artist" }}
+        coverUrl="http://localhost/cover.jpg"
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button"));
+    await user.click(
+      screen.getByRole("menuitem", { name: "Complete Album" }),
+    );
+
+    expect(completionMocks.requestAlbumDownload).not.toHaveBeenCalled();
+    expect(toastMocks.show).toHaveBeenCalledWith(
+      "This album needs an exact MusicBrainz release ID before it can be completed safely.",
+      "err",
+    );
   });
 
   it("cancels a pending click when the card unmounts", () => {

@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import {
@@ -15,7 +16,9 @@ import {
   type SearchTrackResult,
 } from "../lib/api";
 import { usePlayer } from "../player/PlayerContext";
+import ContextMenu from "./ContextMenu";
 import Icon, { type IconName } from "./Icon";
+import { useAlbumCompletion } from "./useAlbumCompletion";
 
 type Props = {
   open: boolean;
@@ -37,10 +40,16 @@ export default function SearchOverlay({
   const [artists, setArtists] = useState<Artist[]>([]);
   const [tracks, setTracks] = useState<SearchTrackResult[]>([]);
   const [loadedLookups, setLoadedLookups] = useState(false);
+  const [albumMenu, setAlbumMenu] = useState<{
+    album: Album;
+    x: number;
+    y: number;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const { play } = usePlayer();
+  const { completeAlbum, completingId } = useAlbumCompletion();
 
   // Load albums+artists lazily on first open so the overlay is cheap to
   // mount on app start. Tracks are queried per-keystroke since the full
@@ -260,6 +269,14 @@ export default function SearchOverlay({
                       }}
                       primary={a.title}
                       secondary={a.artist}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setAlbumMenu({
+                          album: a,
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
                     />
                   ))}
                 </Section>
@@ -281,6 +298,24 @@ export default function SearchOverlay({
           )}
         </div>
       </div>
+      {albumMenu ? (
+        <ContextMenu
+          x={albumMenu.x}
+          y={albumMenu.y}
+          entries={[
+            {
+              kind: "item",
+              label:
+                completingId === albumMenu.album.id
+                  ? "Completing Album…"
+                  : "Complete Album",
+              disabled: completingId === albumMenu.album.id,
+              onSelect: () => void completeAlbum(albumMenu.album),
+            },
+          ]}
+          onClose={() => setAlbumMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -309,11 +344,13 @@ function ResultRow({
   primary,
   secondary,
   onClick,
+  onContextMenu,
   disabled,
 }: {
   primary: string;
   secondary: string;
   onClick: () => void;
+  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
 }) {
   return (
@@ -321,6 +358,7 @@ function ResultRow({
       <button
         type="button"
         onClick={onClick}
+        onContextMenu={onContextMenu}
         disabled={disabled}
         className="flex w-full flex-col rounded-md px-2.5 py-1.5 text-left hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-40"
       >

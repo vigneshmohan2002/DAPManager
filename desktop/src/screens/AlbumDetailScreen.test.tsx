@@ -25,6 +25,10 @@ const playerMocks = vi.hoisted(() => ({
 }));
 
 const toastMocks = vi.hoisted(() => ({ show: vi.fn() }));
+const completionMocks = vi.hoisted(() => ({
+  requestAlbumDownload: vi.fn(),
+  postAction: vi.fn(),
+}));
 
 vi.mock("../lib/api", () => apiMocks);
 vi.mock("../player/PlayerContext", () => ({
@@ -40,6 +44,12 @@ vi.mock("../player/PlayerContext", () => ({
 }));
 vi.mock("../components/Toast", () => ({
   useToast: () => toastMocks,
+}));
+vi.mock("../lib/api/downloads", () => ({
+  requestAlbumDownload: completionMocks.requestAlbumDownload,
+}));
+vi.mock("../lib/api/sync", () => ({
+  postAction: completionMocks.postAction,
 }));
 
 import AlbumDetailScreen from "./AlbumDetailScreen";
@@ -84,6 +94,10 @@ describe("AlbumDetailScreen", () => {
     apiMocks.albumCoverUrl.mockReturnValue("http://localhost/cover.jpg");
     apiMocks.backendUrl.mockResolvedValue("http://localhost:5001");
     apiMocks.setTrackLiked.mockResolvedValue({ success: true });
+    completionMocks.postAction.mockResolvedValue({
+      success: true,
+      message: "Task started.",
+    });
   });
 
   it("shows a loading summary and disables Play while tracks load", () => {
@@ -219,6 +233,46 @@ describe("AlbumDetailScreen", () => {
       tracks.map((track) => ({ ...track, albumId: album.id })),
       0,
     );
+  });
+
+  it("offers exact completion when the album cover is right-clicked", async () => {
+    const exactAlbum = {
+      ...album,
+      id: "461eac33-7edd-481a-a7d1-089ec6fc01af",
+    };
+    apiMocks.fetchAlbumTracks.mockResolvedValue([makeTrack(1)]);
+    completionMocks.requestAlbumDownload.mockResolvedValue({
+      success: true,
+      queued: true,
+      message: "queued",
+      request: {
+        id: 8,
+        release_mbid: exactAlbum.id,
+        title: exactAlbum.title,
+        artist: exactAlbum.artist,
+        track_count: exactAlbum.track_count,
+        stage: "queued",
+        detail: "Waiting for the master download queue",
+        completed_tracks: 1,
+      },
+    });
+    const user = userEvent.setup();
+    renderAlbum(exactAlbum);
+
+    fireEvent.contextMenu(await screen.findByAltText("Test Album cover"), {
+      clientX: 30,
+      clientY: 40,
+    });
+    await user.click(
+      screen.getByRole("menuitem", { name: "Complete Album" }),
+    );
+
+    await waitFor(() =>
+      expect(completionMocks.requestAlbumDownload).toHaveBeenCalledWith(
+        exactAlbum.id,
+      ),
+    );
+    expect(completionMocks.postAction).toHaveBeenCalledWith("/api/download");
   });
 
   it("clears stale rows and search when switching directly between albums", async () => {

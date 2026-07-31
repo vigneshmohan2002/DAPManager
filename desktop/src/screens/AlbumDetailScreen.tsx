@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import Artwork from "../components/Artwork";
+import ContextMenu from "../components/ContextMenu";
 import Icon from "../components/Icon";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
+import { useAlbumCompletion } from "../components/useAlbumCompletion";
 import {
   albumCoverUrl,
   backendUrl,
@@ -34,6 +36,9 @@ export default function AlbumDetailScreen({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [coverMenu, setCoverMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const {
     play,
     current,
@@ -44,7 +49,9 @@ export default function AlbumDetailScreen({
     setTrackLikedInQueue,
   } = usePlayer();
   const toast = useToast();
+  const { completeAlbum, completingId } = useAlbumCompletion();
   const displayArtist = albumDisplayArtist(album);
+  const completing = completingId === album.id;
 
   useEffect(() => {
     let cancelled = false;
@@ -141,12 +148,20 @@ export default function AlbumDetailScreen({
         ) : null}
         <div className="relative px-6 py-7">
           <div className="mb-8 flex gap-7">
-            <Artwork
-              src={coverUrl}
-              alt={`${album.title} cover`}
-              loading="eager"
-              className="h-52 w-52 shrink-0 rounded-[6px] shadow-[var(--shadow-artwork)]"
-            />
+            <div
+              className="h-52 w-52 shrink-0"
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setCoverMenu({ x: event.clientX, y: event.clientY });
+              }}
+            >
+              <Artwork
+                src={coverUrl}
+                alt={`${album.title} cover`}
+                loading="eager"
+                className="h-full w-full rounded-[6px] shadow-[var(--shadow-artwork)]"
+              />
+            </div>
             <div className="flex min-w-0 flex-col justify-end pb-1">
               <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-muted)]">
                 {displayArtist}
@@ -262,6 +277,21 @@ export default function AlbumDetailScreen({
           )}
         </div>
       </div>
+      {coverMenu ? (
+        <ContextMenu
+          x={coverMenu.x}
+          y={coverMenu.y}
+          entries={[
+            {
+              kind: "item",
+              label: completing ? "Completing Album…" : "Complete Album",
+              disabled: completing,
+              onSelect: () => void completeAlbum(album),
+            },
+          ]}
+          onClose={() => setCoverMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
