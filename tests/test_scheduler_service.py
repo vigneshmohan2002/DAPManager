@@ -60,6 +60,40 @@ def test_sync_builder_preserves_startup_policy_and_overlap_gate(caplog):
     assert "Sync All tick deferred: already running" in caplog.text
 
 
+def test_sync_builder_defaults_legacy_satellites_to_startup_sync():
+    scheduler_factory = MagicMock(return_value=MagicMock())
+
+    build_sync_scheduler(
+        config_values={"device_role": "satellite"},
+        db_path="/tmp/library.db",
+        config_context=object(),
+        task_manager=MagicMock(),
+        task_target=MagicMock(),
+        scheduler_factory=scheduler_factory,
+    )
+
+    assert scheduler_factory.call_args.args[0] == 0
+    assert scheduler_factory.call_args.kwargs == {"run_on_startup": True}
+
+
+def test_sync_builder_respects_explicit_satellite_startup_opt_out():
+    scheduler_factory = MagicMock(return_value=MagicMock())
+
+    build_sync_scheduler(
+        config_values={
+            "device_role": "satellite",
+            "sync_on_startup": False,
+        },
+        db_path="/tmp/library.db",
+        config_context=object(),
+        task_manager=MagicMock(),
+        task_target=MagicMock(),
+        scheduler_factory=scheduler_factory,
+    )
+
+    assert scheduler_factory.call_args.kwargs == {"run_on_startup": False}
+
+
 def test_release_watcher_builder_enforces_authority_and_configuration():
     scheduler_factory = MagicMock()
 

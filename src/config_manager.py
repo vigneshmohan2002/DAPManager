@@ -80,6 +80,19 @@ def is_authority_config(values: ConfigMapping) -> bool:
     return device_role_from_config(values) in AUTHORITY_DEVICE_ROLES
 
 
+def sync_on_startup_from_config(values: ConfigMapping) -> bool:
+    """Resolve launch-sync policy, defaulting satellites to a background pull.
+
+    An explicit setting always wins. Older configs predate this key, so their
+    role supplies the compatibility default: satellites refresh their remote
+    catalogue when opened, while catalogue-owning devices remain opt-in.
+    """
+    configured = values.get("sync_on_startup")
+    if configured is not None:
+        return bool(configured)
+    return device_role_from_config(values) == "satellite"
+
+
 def synchronize_authority_fields(values: MutableConfigMapping) -> bool:
     """Synchronize the canonical role and its legacy serialized mirror.
 

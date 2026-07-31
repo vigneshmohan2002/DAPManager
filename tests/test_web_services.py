@@ -86,6 +86,7 @@ def test_build_public_config_applies_defaults_and_redacts_secrets():
     assert payload["config"]["music_library_path"] == "/music"
     assert payload["config"]["slsk_password"] == ""
     assert payload["config"]["device_role"] == "master"
+    assert payload["config"]["sync_on_startup"] is False
     assert "library_maintenance_interval_seconds" in payload["config"]
     assert payload["config"]["lidarr_acquisition_handoff_enabled"] is False
     assert "lidarr_acquisition_handoff_enabled" in payload["editable_keys"]
@@ -100,6 +101,12 @@ def test_build_public_config_applies_defaults_and_redacts_secrets():
         in lidarr_groups[0]["keys"]
     )
     assert "slsk_password" in payload["secret_keys"]
+
+
+def test_build_public_config_exposes_satellite_startup_sync_default():
+    payload = build_public_config({"device_role": "satellite"})
+
+    assert payload["config"]["sync_on_startup"] is True
 
 
 def test_config_update_normalizes_role_and_preserves_blank_secrets():

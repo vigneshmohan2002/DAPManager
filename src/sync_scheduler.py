@@ -10,7 +10,8 @@ If ``sync_on_startup`` is set, fires once ~1 s after start() so the
 dashboard shows fresh cursors without the user waiting a full interval.
 
 Design notes (docs/roadmap.md #2):
-- Disabled when ``sync_interval_seconds`` is ``0`` / missing.
+- With no interval, an enabled startup run executes once and then exits.
+- Otherwise disabled when ``sync_interval_seconds`` is ``0`` / missing.
 - Runs as a daemon thread so it dies with the process.
 - No exponential backoff on failure — logs at WARNING and moves on.
 """
@@ -46,12 +47,13 @@ class SyncScheduler:
 
     @property
     def enabled(self) -> bool:
-        return self.interval_seconds > 0
+        return self.interval_seconds > 0 or self.run_on_startup
 
     def start(self) -> None:
         if not self.enabled:
             logger.info(
-                "SyncScheduler disabled (sync_interval_seconds <= 0)."
+                "SyncScheduler disabled (no startup run and "
+                "sync_interval_seconds <= 0)."
             )
             return
         if self._thread and self._thread.is_alive():
@@ -80,6 +82,9 @@ class SyncScheduler:
             while not self._safe_trigger(reason="startup"):
                 if self._stop.wait(STARTUP_RETRY_SECONDS):
                     return
+
+        if self.interval_seconds <= 0:
+            return
 
         while not self._stop.is_set():
             if self._stop.wait(self.interval_seconds):

@@ -14,6 +14,7 @@ from src.config_keys import (
 from src.config_manager import (
     ConfigManager,
     normalize_device_role,
+    sync_on_startup_from_config,
     synchronize_authority_fields,
 )
 from src.config_paths import ensure_parent_dir
@@ -135,6 +136,7 @@ def build_public_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     """Return the stable Settings payload with configured secrets redacted."""
     redacted = {**DEFAULT_VALUES, **raw}
     synchronize_authority_fields(redacted)
+    redacted["sync_on_startup"] = sync_on_startup_from_config(raw)
     for key in SECRET_KEYS:
         if key in redacted and redacted[key]:
             redacted[key] = ""

@@ -37,6 +37,23 @@ def test_run_on_startup_fires_once():
     assert len(calls) == 1
 
 
+def test_startup_only_scheduler_runs_once_without_periodic_interval():
+    calls = []
+    sched = SyncScheduler(
+        0,
+        lambda: calls.append(time.monotonic()),
+        run_on_startup=True,
+        startup_delay_seconds=0.01,
+    )
+
+    assert sched.enabled is True
+    sched.start()
+    time.sleep(0.06)
+    sched.stop()
+
+    assert len(calls) == 1
+
+
 def test_interval_ticks_fire():
     # Interval of 1s; we expect >=2 calls in ~2.5s with on_startup=False.
     # Uses a short interval to keep the test fast; clamping is not the

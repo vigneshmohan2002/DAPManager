@@ -11,6 +11,7 @@ from contextlib import AbstractContextManager
 from typing import Any, Callable, Optional, Protocol, Tuple
 
 from src.contracts import ConfigMapping
+from src.config_manager import sync_on_startup_from_config
 
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ def build_sync_scheduler(
     """Construct the periodic Sync All scheduler without starting it."""
     interval = int(config_values.get("sync_interval_seconds") or 0)
     on_startup = (
-        bool(config_values.get("sync_on_startup") or False)
+        sync_on_startup_from_config(config_values)
         if run_on_startup is None
         else bool(run_on_startup)
     )

@@ -109,6 +109,7 @@ fn build_satellite_config(master_url: &str, api_token: &str, home_dir: &Path) ->
         "slsk_password": "",
         "master_url": master_url,
         "report_inventory_to_host": false,
+        "sync_on_startup": true,
     });
     if !api_token.is_empty() {
         cfg["api_token"] = Value::String(api_token.to_string());
@@ -204,6 +205,7 @@ mod tests {
         assert_eq!(written["master_url"], "http://master.tail.ts.net:5001");
         assert_eq!(written["device_role"], "satellite");
         assert_eq!(written["is_master"], false);
+        assert_eq!(written["sync_on_startup"], true);
         assert!(written.get("dap_manager_host_url").is_none());
         assert!(written.get("api_token").is_none());
     }
