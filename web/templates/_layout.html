@@ -20,12 +20,7 @@
     <meta name="application-name" content="DAPManager">
     <meta name="theme-color" content="#111111">
     <script src="/static/pwa-register.js?v=3" defer></script>
-    <script>
-        // Browser sessions authenticate through an HttpOnly same-site cookie,
-        // so media elements and fetch() both work without exposing the token
-        // to page JavaScript. Kept as a helper for the player templates.
-        window.dapApiUrl = function (url) { return url; };
-    </script>
+    <script src="/static/js/base.js"></script>
 </head>
 
 <body class="bg-[var(--color-bg)] text-[var(--color-text)] m-0 p-0">
