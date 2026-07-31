@@ -2341,6 +2341,13 @@ def test_exact_album_flow_acoustically_verifies_then_manifest_wins(
     release_mbid = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
     staged = os.path.join(temp_dirs["downloads"], "03 Source.flac")
     _write_tagged_flac(staged, SATELLITE_RECORDINGS[0], release_mbid)
+    tag_service.write_tags(
+        staged,
+        exact_manifest_tag_metadata(
+            _exact_album_manifest(release_mbid),
+            SATELLITE_RECORDINGS[0],
+        ),
+    )
     if not embedded_recording:
         source = FLAC(staged)
         del source["musicbrainz_trackid"]

@@ -763,6 +763,43 @@ def test_release_bound_identification_rejects_ambiguous_recordings(tmp_path):
     get_release.assert_not_called()
 
 
+def test_release_bound_identification_uses_expected_equal_top_recording(
+    tmp_path,
+):
+    path = tmp_path / "manifest-tie.flac"
+    path.write_bytes(b"fingerprint input")
+    release_id = "95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    other_recording = "00000000-0000-4000-8000-000000000001"
+    expected_recording = "00000000-0000-4000-8000-000000000002"
+    response = {"results": [
+        {"score": 1.0, "recordings": [{"id": other_recording}]},
+        {"score": 1.0, "recordings": [{"id": expected_recording}]},
+    ]}
+
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file",
+        return_value=(180.0, "FP"),
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value=response,
+    ), patch(
+        "src.tag_service.mb.get_release_by_id",
+        return_value=_release_with_recording(release_id, expected_recording),
+    ) as get_release, patch("src.tag_service.mb.configure"):
+        candidate = tag_service.identify_file_for_release(
+            str(path),
+            "key",
+            release_id,
+            expected_recording,
+        )
+
+    assert candidate is not None
+    assert candidate["score"] == 1.0
+    assert candidate["meta"]["mbid"] == expected_recording
+    assert candidate["meta"]["release_mbid"] == release_id
+    get_release.assert_called_once()
+
+
 @pytest.mark.parametrize("unsafe_score", [float("inf"), float("nan"), -0.1, 1.1])
 def test_safe_auto_candidate_rejects_nonfinite_or_out_of_range_score(
     unsafe_score,

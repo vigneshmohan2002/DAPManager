@@ -121,6 +121,31 @@ def _tags(position):
     }
 
 
+def test_complete_source_tags_bind_one_exact_manifest_recording():
+    tags = {
+        "title": "Closing",
+        "artist": " album ARTIST ",
+        "album": "Exact Album (EP)",
+        "album_artist": "Album Artist",
+        "date": "2020-02-07",
+        "track_number": "2",
+        "track_total": "2",
+        "disc_number": "1",
+        "disc_total": "1",
+        "mbid": "",
+        "release_mbid": "",
+        "release_track_mbid": "",
+    }
+
+    assert fallback.match_exact_manifest_recording(_manifest(), tags) == (
+        RECORDINGS[1]
+    )
+    assert fallback.match_exact_manifest_recording(
+        _manifest(),
+        {**tags, "title": "Different Track"},
+    ) == ""
+
+
 @pytest.fixture
 def staged_album(tmp_path):
     staging = tmp_path / "staging"

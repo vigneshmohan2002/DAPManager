@@ -35,6 +35,9 @@ _ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$")
 _OMITTABLE_TITLE_SUFFIX_RE = re.compile(
     r"^(?P<title>.+?)\s+\((?:intro|interlude|outro|skit)\)$"
 )
+_OMITTABLE_ALBUM_TYPE_SUFFIX_RE = re.compile(
+    r"^(?P<title>.+?)\s+\((?:album|ep|lp|single)\)$"
+)
 _AUDIO_SUFFIXES = (
     ".flac",
     ".mp3",
@@ -174,6 +177,22 @@ def _title_matches(source: str, expected: str) -> bool:
     return bool(
         suffix_match
         and source_normalized == suffix_match.group("title").strip()
+    )
+
+
+def _album_title_matches(source: str, expected: str) -> bool:
+    source_normalized = _normalize_text(source)
+    expected_normalized = _normalize_text(expected)
+    if not source_normalized or not expected_normalized:
+        return False
+    if source_normalized == expected_normalized:
+        return True
+    suffix_match = _OMITTABLE_ALBUM_TYPE_SUFFIX_RE.fullmatch(
+        source_normalized
+    )
+    return bool(
+        suffix_match
+        and suffix_match.group("title").strip() == expected_normalized
     )
 
 
@@ -349,6 +368,99 @@ def _parse_expected_tracks(
         ):
             return (), "The persisted release does not contain a complete track set"
     return tuple(tracks), ""
+
+
+def match_exact_manifest_recording(
+    album_manifest: Mapping[str, Any],
+    source_tags: Mapping[str, Any],
+) -> str:
+    """Return one manifest recording proven by complete source tag context.
+
+    This association is used only to disambiguate equal-top AcoustID
+    recording identities. It deliberately requires the exact disc/track
+    position, totals, title, artists, album, and date; incomplete or
+    conflicting tags leave the recording unbound so acoustic ambiguity still
+    fails closed.
+    """
+    if not isinstance(album_manifest, Mapping) or not isinstance(
+        source_tags,
+        Mapping,
+    ):
+        return ""
+    tracks, error = _parse_expected_tracks(album_manifest)
+    if error:
+        return ""
+
+    track_position, composite_track_total = _number_value(
+        str(source_tags.get("track_number") or "")
+    )
+    track_total, _ = _number_value(
+        str(source_tags.get("track_total") or "")
+    )
+    disc_position, composite_disc_total = _number_value(
+        str(source_tags.get("disc_number") or "")
+    )
+    disc_total, _ = _number_value(
+        str(source_tags.get("disc_total") or "")
+    )
+    if composite_track_total:
+        if track_total and track_total != composite_track_total:
+            return ""
+        track_total = composite_track_total
+    if composite_disc_total:
+        if disc_total and disc_total != composite_disc_total:
+            return ""
+        disc_total = composite_disc_total
+    if not all((track_position, track_total, disc_position, disc_total)):
+        return ""
+
+    matches = [
+        track
+        for track in tracks
+        if track.medium_track == (disc_position, track_position)
+    ]
+    if len(matches) != 1:
+        return ""
+    track = matches[0]
+    if (track.track_total, track.disc_total) != (track_total, disc_total):
+        return ""
+    if not _title_matches(str(source_tags.get("title") or ""), track.title):
+        return ""
+    if _normalize_text(source_tags.get("artist")) != _normalize_text(
+        track.artist
+    ):
+        return ""
+    if not _album_title_matches(
+        str(source_tags.get("album") or ""),
+        str(album_manifest.get("title") or ""),
+    ):
+        return ""
+    if _normalize_text(source_tags.get("album_artist")) != _normalize_text(
+        album_manifest.get("artist")
+    ):
+        return ""
+    if _normalize_text(source_tags.get("date")) != _normalize_text(track.date):
+        return ""
+    source_recording = str(source_tags.get("mbid") or "").strip()
+    if source_recording and (
+        canonical_recording_mbid(source_recording) != track.recording_mbid
+    ):
+        return ""
+    source_release = str(source_tags.get("release_mbid") or "").strip()
+    if source_release and (
+        canonical_release_mbid(source_release)
+        != canonical_release_mbid(album_manifest.get("release_mbid"))
+    ):
+        return ""
+    source_release_track = str(
+        source_tags.get("release_track_mbid") or ""
+    ).strip()
+    if source_release_track and (
+        canonical_release_mbid(source_release_track)
+        != track.release_track_mbid
+    ):
+        return ""
+    return track.recording_mbid
 
 
 def _path_has_symlink_component(root: str, path: str) -> bool:

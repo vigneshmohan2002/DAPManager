@@ -676,7 +676,30 @@ def identify_file_for_release(
         candidate_scores.items(),
         key=lambda item: (-item[1], item[0]),
     )
-    if (
+    identified_recording, score = ranked_candidates[0]
+    if expected_recording:
+        expected_score = candidate_scores.get(expected_recording)
+        if expected_score is None or not math.isclose(
+            expected_score,
+            score,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            logger.warning(
+                "identify_file_for_release: AcoustID winner %s did not match "
+                "expected recording %s",
+                identified_recording,
+                expected_recording,
+            )
+            return None
+        # AcoustID can attach one fingerprint to duplicate MusicBrainz
+        # recording entities. When the persisted exact-release manifest has
+        # already identified one of equal-top candidates, selecting that
+        # entity is deterministic and does not override stronger acoustic
+        # evidence. A lower-scoring expected identity still fails above.
+        identified_recording = expected_recording
+        score = expected_score
+    elif (
         len(ranked_candidates) > 1
         and ranked_candidates[0][1] - ranked_candidates[1][1]
         < ACOUSTID_AMBIGUITY_MARGIN
@@ -686,15 +709,6 @@ def identify_file_for_release(
             "(%.3f vs %.3f)",
             ranked_candidates[0][1],
             ranked_candidates[1][1],
-        )
-        return None
-    identified_recording, score = ranked_candidates[0]
-    if expected_recording and identified_recording != expected_recording:
-        logger.warning(
-            "identify_file_for_release: AcoustID winner %s did not match "
-            "expected recording %s",
-            identified_recording,
-            expected_recording,
         )
         return None
 

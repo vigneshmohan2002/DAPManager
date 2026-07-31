@@ -32,6 +32,7 @@ from . import tag_service
 from .exact_album_fallback import (
     ExactAlbumFallbackPlan,
     build_exact_album_fallback_plan,
+    match_exact_manifest_recording,
 )
 from .lidarr_client import LidarrClient, LidarrError
 from .jellyfin_client import JellyfinClient
@@ -1939,6 +1940,7 @@ class Downloader:
         expected_release = ""
         expected_recordings = set()
         expected_queue_recording = None
+        expected_manifest_recording = ""
         if not is_album_mode and item.mbid_guess:
             expected_queue_recording = canonical_recording_mbid(item.mbid_guess)
             if expected_queue_recording is None:
@@ -1967,6 +1969,10 @@ class Downloader:
                 for value in album_manifest.get("recording_mbids", ())
             }
             expected_recordings.discard(None)
+            expected_manifest_recording = match_exact_manifest_recording(
+                album_manifest,
+                tag_service.read_current_tags(file_path),
+            )
             if (
                 embedded_before_lookup
                 and embedded_before_lookup not in expected_recordings
@@ -2012,7 +2018,11 @@ class Downloader:
             tagged_meta, tag_tier, tag_score = self._auto_tag_file(
                 file_path,
                 expected_release_mbid=expected_release,
-                expected_recording_mbid=expected_queue_recording or "",
+                expected_recording_mbid=(
+                    expected_queue_recording
+                    or expected_manifest_recording
+                    or ""
+                ),
             )
         if album_manifest is not None and tag_tier != "green":
             logger.warning(
