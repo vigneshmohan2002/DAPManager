@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -19,15 +20,25 @@ export default function WaveformSeeker({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const playbackRef = useRef({ position, duration });
+  const drawRef = useRef<() => void>(() => undefined);
+  const animationFrameRef = useRef(0);
+  playbackRef.current = { position, duration };
+
+  const scheduleDraw = useCallback(() => {
+    if (animationFrameRef.current) return;
+    animationFrameRef.current = requestAnimationFrame(() => {
+      animationFrameRef.current = 0;
+      drawRef.current();
+    });
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
 
-    let raf = 0;
     const draw = () => {
-      raf = 0;
       const dpr = window.devicePixelRatio || 1;
       const cssW = container.clientWidth;
       const cssH = container.clientHeight;
@@ -47,8 +58,11 @@ export default function WaveformSeeker({
       const unfilled =
         getComputedStyle(canvas).getPropertyValue("--color-surface").trim() ||
         "#3a3a3c";
+      const playback = playbackRef.current;
       const playedFrac =
-        duration > 0 ? Math.min(1, Math.max(0, position / duration)) : 0;
+        playback.duration > 0
+          ? Math.min(1, Math.max(0, playback.position / playback.duration))
+          : 0;
       const playedX = playedFrac * cssW;
 
       const n = peaks.length;
@@ -66,19 +80,23 @@ export default function WaveformSeeker({
       }
     };
 
-    const schedule = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(draw);
-    };
-
-    schedule();
-    const ro = new ResizeObserver(schedule);
+    drawRef.current = draw;
+    scheduleDraw();
+    const ro = new ResizeObserver(scheduleDraw);
     ro.observe(container);
     return () => {
       ro.disconnect();
-      if (raf) cancelAnimationFrame(raf);
+      drawRef.current = () => undefined;
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = 0;
+      }
     };
-  }, [peaks, position, duration]);
+  }, [peaks, scheduleDraw]);
+
+  useEffect(() => {
+    scheduleDraw();
+  }, [duration, position, scheduleDraw]);
 
   const seekFromEvent = (clientX: number, rect: DOMRect) => {
     if (duration <= 0) return;

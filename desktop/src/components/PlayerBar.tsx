@@ -10,6 +10,7 @@ import { backendUrl, setTrackLiked, streamUrl } from "../lib/api";
 import { useWaveformPeaks } from "../lib/useWaveformPeaks";
 import { enterMiniPlayer } from "../lib/window";
 import { usePlayer } from "../player/PlayerContext";
+import { useSmoothPlaybackPosition } from "../player/playbackClock";
 import Icon, { type IconName } from "./Icon";
 import { useToast } from "./Toast";
 import WaveformSeeker from "./WaveformSeeker";
@@ -208,7 +209,14 @@ export default function PlayerBar({
     sleepTimerExpiresAt === null
       ? null
       : Math.max(0, Math.ceil((sleepTimerExpiresAt - nowTick) / 60_000));
-  const progress = duration > 0 ? (position / duration) * 100 : 0;
+  const displayPosition = useSmoothPlaybackPosition({
+    position,
+    duration,
+    isPlaying,
+    trackKey: current?.mbid ?? null,
+  });
+  const progress =
+    duration > 0 ? (displayPosition / duration) * 100 : 0;
   const peaks = useWaveformPeaks(
     current && base ? streamUrl(base, current.mbid) : null,
     current?.mbid ?? null,
@@ -323,11 +331,11 @@ export default function PlayerBar({
           </div>
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-[10px] tabular-nums text-[var(--color-text-muted)]">
-          <span className="w-8 text-right">{formatTime(position)}</span>
+          <span className="w-8 text-right">{formatTime(displayPosition)}</span>
           {peaks ? (
             <WaveformSeeker
               peaks={peaks}
-              position={position}
+              position={displayPosition}
               duration={duration}
               onSeek={seek}
             />
@@ -338,7 +346,7 @@ export default function PlayerBar({
               min={0}
               max={duration || 0}
               step={0.1}
-              value={position}
+              value={displayPosition}
               onChange={(event) => seek(Number(event.target.value))}
               disabled={!current || duration <= 0}
               className="doppler-range h-4 flex-1 cursor-pointer appearance-none bg-transparent disabled:cursor-default"
@@ -348,7 +356,9 @@ export default function PlayerBar({
             />
           )}
           <span className="w-8">
-            {current ? `-${formatTime(Math.max(0, duration - position))}` : "0:00"}
+            {current
+              ? `-${formatTime(Math.max(0, duration - displayPosition))}`
+              : "0:00"}
           </span>
         </div>
       </div>

@@ -38,6 +38,7 @@ import { useMediaSession } from "./useMediaSession";
 import { usePlaybackTelemetry } from "./usePlaybackTelemetry";
 import { usePlayerStorage } from "./usePlayerStorage";
 import { useSleepTimer } from "./useSleepTimer";
+import { PlaybackAudioProvider } from "./playbackClock";
 
 export type { PlayerTrack, RepeatMode } from "./playerTypes";
 
@@ -371,7 +372,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <PlaybackAudioProvider audio={audio}>
+      <Ctx.Provider value={value}>{children}</Ctx.Provider>
+    </PlaybackAudioProvider>
+  );
 }
 
 export function usePlayer(): PlayerState {
