@@ -33,10 +33,6 @@ UNDOCUMENTED_PATHS = frozenset({
     "/api/download/albums/requests/{}",
     "/api/download/albums/search",
     "/api/download/request",
-    "/api/downloads/clear-completed",
-    "/api/downloads/list",
-    "/api/downloads/{}",
-    "/api/downloads/{}/retry",
     "/api/duplicates",
     "/api/duplicates/resolve",
     "/api/fleet/summary",
@@ -120,6 +116,7 @@ def build_spec(server_url: Optional[str] = None) -> dict:
             {"name": "Suggestions", "description": "Queue track suggestions on a configured master."},
             {"name": "Metadata", "description": "MusicBrainz artist tags and generated mixes."},
             {"name": "Library", "description": "Browse the catalog."},
+            {"name": "Downloads", "description": "Inspect and recover the master download queue."},
             {"name": "Health", "description": "Liveness / status."},
         ],
         "paths": {
@@ -429,6 +426,75 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                     "responses": {"200": ok, "400": err("items array required"), "409": err("master_url not configured"), "502": err("master unreachable")},
                 }
             },
+            "/api/downloads/list": {
+                "get": {
+                    "tags": ["Downloads"],
+                    "summary": "List queue rows and retained staging usage",
+                    "responses": {
+                        "200": {
+                            "description": "Queue and residue report",
+                            "content": {"application/json": {"schema": {
+                                "$ref": "#/components/schemas/DownloadQueueEnvelope"
+                            }}},
+                        },
+                        "503": err("not initialized"),
+                    },
+                }
+            },
+            "/api/downloads/{item_id}/retry": {
+                "post": {
+                    "tags": ["Downloads"],
+                    "summary": "Reset one failed queue row for retry",
+                    "parameters": [{
+                        "name": "item_id", "in": "path", "required": True,
+                        "schema": {"type": "integer", "minimum": 1},
+                    }],
+                    "responses": {"200": ok, "404": err("row not failed")},
+                }
+            },
+            "/api/downloads/{item_id}/residue": {
+                "delete": {
+                    "tags": ["Downloads"],
+                    "summary": "Permanently delete retained staging for a failed row",
+                    "description": "Only DAPManager-owned top-level staging directories are eligible. Active work is refused.",
+                    "parameters": [{
+                        "name": "item_id", "in": "path", "required": True,
+                        "schema": {"type": "integer", "minimum": 1},
+                    }],
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object", "required": ["confirm"],
+                        "properties": {"confirm": {"type": "boolean", "enum": [True]}},
+                    }}}},
+                    "responses": {
+                        "200": ok,
+                        "400": err("confirmation required"),
+                        "404": err("queue row not found"),
+                        "409": err("work is active"),
+                    },
+                }
+            },
+            "/api/downloads/{item_id}": {
+                "delete": {
+                    "tags": ["Downloads"],
+                    "summary": "Remove one queue row without deleting retained files",
+                    "parameters": [{
+                        "name": "item_id", "in": "path", "required": True,
+                        "schema": {"type": "integer", "minimum": 1},
+                    }],
+                    "responses": {
+                        "200": ok,
+                        "404": err("queue row not found"),
+                        "409": err("active work or retained files"),
+                    },
+                }
+            },
+            "/api/downloads/clear-completed": {
+                "post": {
+                    "tags": ["Downloads"],
+                    "summary": "Remove completed queue rows",
+                    "responses": {"200": ok},
+                }
+            },
         },
         "components": {
             "securitySchemes": {
@@ -579,6 +645,45 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                         "message": {"type": "string"},
                     },
                 },
+                "DownloadQueueItem": {
+                    "type": "object",
+                    "required": ["id", "query", "status"],
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "query": {"type": "string"},
+                        "status": {"type": "string", "enum": ["pending", "failed", "success"]},
+                        "last_attempt": {"type": "string", "nullable": True},
+                        "attempt_count": {"type": "integer"},
+                        "max_attempts": {"type": "integer"},
+                        "next_attempt_at": {"type": "string", "nullable": True},
+                        "is_paused": {"type": "boolean"},
+                        "is_quarantined": {"type": "boolean"},
+                        "last_error": {"type": "string", "nullable": True},
+                        "retained_bytes": {"type": "integer", "minimum": 0},
+                        "retained_directories": {"type": "integer", "minimum": 0},
+                        "retained_files": {"type": "integer", "minimum": 0},
+                        "retained_kinds": {"type": "array", "items": {
+                            "type": "string", "enum": ["attempt", "quarantine"]
+                        }},
+                    },
+                },
+                "DownloadQueueEnvelope": {
+                    "type": "object",
+                    "required": ["success", "items", "residue"],
+                    "properties": {
+                        "success": {"type": "boolean"},
+                        "items": {"type": "array", "items": {
+                            "$ref": "#/components/schemas/DownloadQueueItem"
+                        }},
+                        "residue": {"type": "object", "properties": {
+                            "total_bytes": {"type": "integer"},
+                            "total_directories": {"type": "integer"},
+                            "total_files": {"type": "integer"},
+                            "unmatched_item_ids": {"type": "array", "items": {"type": "integer"}},
+                            "errors": {"type": "array", "items": {"type": "string"}},
+                        }},
+                    },
+                },
             },
         },
         "security": [{"bearerAuth": []}],
@@ -599,7 +704,7 @@ local subset and can contribute music they acquired independently.
 
 ## Auth
 When `api_token` is set in config, every `/api/*` call (except `/api/healthz`,
-`/api/status`, and this spec) needs `Authorization: Bearer <token>`. The web UI
+and this spec) needs `Authorization: Bearer <token>`. The web UI
 uses `/auth` to establish an HttpOnly same-site cookie instead of embedding the
 secret in HTML; GET/HEAD also accept `?token=` for browser media URLs. In open
 mode (no token) the API is unauthenticated — LAN/Tailscale only.

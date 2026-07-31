@@ -189,7 +189,7 @@ describe("desktop API runtime decoding", () => {
     await expect(api.detectPublicUrl()).resolves.toEqual({ source: "none" });
   });
 
-  it("retains server-supported smart rules that the editor does not expose", async () => {
+  it("retains server-supported smart rules for editor round-tripping", async () => {
     const api = await loadApiWithResponses(
       jsonResponse({
         playlists: [
@@ -435,6 +435,10 @@ describe("desktop API runtime decoding", () => {
       is_paused: false,
       is_quarantined: true,
       last_error: "Exact release remains incomplete",
+      retained_bytes: 1048576,
+      retained_directories: 2,
+      retained_files: 10,
+      retained_kinds: ["attempt", "quarantine"],
     };
     const api = await loadApiWithResponses(
       jsonResponse({

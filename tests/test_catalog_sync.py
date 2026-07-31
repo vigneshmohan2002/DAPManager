@@ -402,7 +402,7 @@ def test_main_run_playlist_pull_uses_config_master_url(db):
 # Playlist push
 # ---------------------------------------------------------------------------
 
-def test_push_playlists_sends_only_rows_after_cursor(db):
+def test_push_playlists_replays_boundary_and_sends_newer_rows(db):
     import time
 
     db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
@@ -418,15 +418,18 @@ def test_push_playlists_sends_only_rows_after_cursor(db):
 
     client = CatalogClient(db=db, master_url="http://host.local:5001")
     payload = {
-        "success": True, "received": 1, "accepted": 1, "stale": 0, "skipped": 0,
-        "results": [{"playlist_id": "new", "result": "inserted"}],
+        "success": True, "received": 2, "accepted": 1, "stale": 1, "skipped": 0,
+        "results": [
+            {"playlist_id": "old", "result": "stale"},
+            {"playlist_id": "new", "result": "inserted"},
+        ],
     }
     with patch.object(client.session, "post", return_value=_mock_response(payload)) as mock_post:
         summary = client.push_playlists()
 
     sent = mock_post.call_args.kwargs["json"]["playlists"]
-    assert [p["playlist_id"] for p in sent] == ["new"]
-    assert summary["sent"] == 1
+    assert [p["playlist_id"] for p in sent] == ["old", "new"]
+    assert summary["sent"] == 2
     assert summary["accepted"] == 1
     # Cursor advances
     assert db.get_sync_state(PLAYLIST_PUSH_STATE_KEY) != cutoff

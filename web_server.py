@@ -15,6 +15,10 @@ from src.services import album_task_service
 from src.services import album_download_request_service
 from src.services import contribution_service
 from src.services import download_discovery_service
+from src.services.download_residue_service import (
+    remove_download_residue,
+    scan_download_residue,
+)
 from src.services import fleet_service
 from src.services import library_application_service
 from src.services import listening_service
@@ -2233,7 +2237,8 @@ def get_catalog():
     Query params:
       since: ISO-ish timestamp (matching SQLite CURRENT_TIMESTAMP format,
              e.g. '2026-04-17 12:00:00'). Optional. If present, only rows
-             with updated_at > since are returned.
+             with updated_at >= since are returned. The inclusive boundary
+             safely replays same-second writes rather than losing them.
 
     Response:
       { success, as_of, count, tracks: [...] }
@@ -2319,7 +2324,8 @@ def get_playlists_delta():
 
     Query params:
       since: optional ISO-ish timestamp. Only playlists with
-             updated_at > since are returned.
+             updated_at >= since are returned. Boundary rows may be replayed
+             and are applied idempotently by the receiver.
 
     Response shape mirrors /api/catalog:
       { success, as_of, count, playlists: [...] }
@@ -3144,10 +3150,14 @@ def get_downloads_list():
     try:
         with DatabaseManager(config.db_path) as db:
             items = db.get_all_downloads()
+        residue = scan_download_residue(config.downloads_dir)
+        residue_by_id = {item.item_id: item for item in residue.items}
+        queue_item_ids = {item.id for item in items}
 
         # Convert to JSON serializable
         data = []
         for item in items:
+            retained = residue_by_id.get(item.id)
             data.append(
                 {
                     "id": item.id,
@@ -3166,10 +3176,29 @@ def get_downloads_list():
                     "is_paused": item.is_paused,
                     "is_quarantined": item.is_quarantined,
                     "last_error": item.last_error,
+                    "retained_bytes": retained.bytes if retained else 0,
+                    "retained_directories": (
+                        retained.directory_count if retained else 0
+                    ),
+                    "retained_files": retained.file_count if retained else 0,
+                    "retained_kinds": list(retained.kinds) if retained else [],
                 }
             )
 
-        return jsonify({"success": True, "items": data})
+        return jsonify({
+            "success": True,
+            "items": data,
+            "residue": {
+                "total_bytes": residue.total_bytes,
+                "total_directories": residue.total_directories,
+                "total_files": residue.total_files,
+                "unmatched_item_ids": sorted(
+                    item_id for item_id in residue_by_id
+                    if item_id not in queue_item_ids
+                ),
+                "errors": list(residue.errors),
+            },
+        })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 
@@ -3199,6 +3228,54 @@ def retry_download_item(item_id):
         return jsonify({"success": False, "message": str(e)}), 500
 
 
+@app.route("/api/downloads/<int:item_id>/residue", methods=["DELETE"])
+def delete_download_residue(item_id):
+    """Delete retained staging only after explicit, state-checked consent."""
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "DELETE",
+            f"/api/downloads/{item_id}/residue",
+            api_token=config.get("api_token") or "",
+            json_body=request.get_json(silent=True),
+        )
+        return jsonify(result.payload), result.status_code
+
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") is not True:
+        return jsonify({
+            "success": False,
+            "message": "Explicit residue deletion confirmation is required",
+        }), 400
+
+    try:
+        with DatabaseManager(config.db_path) as db:
+            item = db.get_download(item_id)
+        if item is None:
+            return jsonify({
+                "success": False,
+                "message": "Download queue row not found",
+            }), 404
+        if item.claim_owner or item.status == "pending":
+            return jsonify({
+                "success": False,
+                "message": "Retained files cannot be removed while work is active",
+            }), 409
+
+        removed = remove_download_residue(config.downloads_dir, item_id)
+        return jsonify({
+            "success": True,
+            "removed_bytes": removed.removed_bytes,
+            "removed_directories": removed.removed_directories,
+            "removed_files": removed.removed_files,
+        })
+    except Exception as e:
+        logger.exception("Download residue removal failed for queue item %s", item_id)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/downloads/<int:item_id>", methods=["DELETE"])
 def delete_download_item(item_id):
     if not config:
@@ -3213,6 +3290,29 @@ def delete_download_item(item_id):
         return jsonify(result.payload), result.status_code
     try:
         with DatabaseManager(config.db_path) as db:
+            item = db.get_download(item_id)
+            if item is None:
+                return jsonify({
+                    "success": False,
+                    "message": "Download queue row not found",
+                }), 404
+            if item.claim_owner:
+                return jsonify({
+                    "success": False,
+                    "message": "Active download work cannot be removed",
+                }), 409
+            residue = scan_download_residue(config.downloads_dir)
+            retained = next(
+                (row for row in residue.items if row.item_id == item_id),
+                None,
+            )
+            if retained and retained.directory_count:
+                return jsonify({
+                    "success": False,
+                    "message": (
+                        "Delete retained files before removing this queue row"
+                    ),
+                }), 409
             db.remove_from_queue(item_id)
         return jsonify({"success": True})
     except Exception as e:

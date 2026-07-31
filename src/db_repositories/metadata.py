@@ -43,7 +43,7 @@ class MetadataRepository(SQLiteRepository):
         sql = "SELECT track_mbid, lrc, synced, source, fetched_at FROM lyrics"
         params: tuple = ()
         if since_iso:
-            sql += " WHERE fetched_at > ?"
+            sql += " WHERE fetched_at >= ?"
             params = (since_iso,)
         sql += " ORDER BY fetched_at ASC"
         cursor = self.conn.execute(sql, params)

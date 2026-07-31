@@ -438,7 +438,7 @@ class PlaylistRepository(SQLiteRepository):
         if since_iso:
             cursor.execute(
                 "SELECT playlist_id, name, spotify_url, updated_at, "
-                "deleted_at, smart_rules FROM playlists WHERE updated_at > ? "
+                "deleted_at, smart_rules FROM playlists WHERE updated_at >= ? "
                 "ORDER BY updated_at ASC",
                 (since_iso,),
             )

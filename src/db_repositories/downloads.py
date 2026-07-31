@@ -253,6 +253,17 @@ class DownloadRepository(SQLiteRepository):
         finally:
             cursor.close()
 
+    def fetch_one(self, item_id: int) -> Optional[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT * FROM download_queue WHERE id = ?",
+                (item_id,),
+            )
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+
     def retry(self, item_id: int) -> bool:
         cursor = self.conn.cursor()
         try:

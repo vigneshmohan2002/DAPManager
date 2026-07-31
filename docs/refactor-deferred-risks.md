@@ -6,14 +6,12 @@ that refactor: each item can change a public contract or synchronization
 behavior and therefore needs its own characterization, decision, and focused
 change.
 
-## Smart-playlist field drift
+## Smart-playlist field drift — resolved
 
-The Python rules engine accepts the `genre` and `is_liked` fields in addition
-to the fields offered by the desktop rule editor. The desktop wire type and
-decoder retain those fields so existing web-created playlists remain visible,
-but the editor does not offer field controls or specialized boolean handling
-for them. Editing such a playlist is therefore not a fully supported
-round-trip.
+The desktop editor now offers the Python rules engine's `genre` and `is_liked`
+fields. Liked rules use a boolean Yes/No control and equality-only operator;
+genre rules retain the server-supported text operators. Existing rules now
+round-trip without silently narrowing the server contract.
 
 Relevant boundaries:
 
@@ -22,10 +20,8 @@ Relevant boundaries:
 - `desktop/src/lib/smartRules.ts`: desktop editor field/operator model.
 - `desktop/src/lib/api/playlists.ts`: runtime ruleset decoder.
 
-Follow-up decision: either bring the editor to parity with the existing wire
-contract, or explicitly version/reject rules that a client cannot edit.
-Characterize existing stored `genre` and `is_liked` rules before changing the
-editing behavior.
+Frontend tests characterize the field list, boolean coercion, operators, and
+validation while the backend continues to revalidate every submitted ruleset.
 
 ## OpenAPI metadata drift
 
@@ -60,15 +56,14 @@ Follow-up decision: define whether the native app must honor a working-directory
 legacy config. Preserve packaged first-run seeding and never overwrite an
 existing config.
 
-## Second-resolution delta cursors
+## Second-resolution delta cursors — resolved
 
-SQLite `CURRENT_TIMESTAMP` and the synchronized `updated_at` values have
-second-level precision. Catalog and playlist delta reads use a strict
-`updated_at > since` boundary. A write that receives the same timestamp as the
-server `as_of` cursor can sit exactly on the boundary and be absent from the
-next pull. The snapshot-before-read ordering prevents the usual concurrent
-write gap, but it does not create a total order among writes in the same
-second.
+SQLite `CURRENT_TIMESTAMP` and the synchronized timestamp values have
+second-level precision. Catalog, playlist, and lyrics delta reads now replay
+the inclusive cursor boundary (`>=`). Their receivers already use idempotent
+upserts or stale-row rejection, so the repeated boundary is harmless and a
+same-second write cannot be skipped permanently. Artist-tag snapshots already
+used an inclusive boundary.
 
 Relevant boundaries:
 
@@ -77,7 +72,6 @@ Relevant boundaries:
 - `src/db_repositories/playlists.py::get_since`
 - cursor persistence in `src/catalog_sync.py`
 
-Follow-up options include replaying an inclusive boundary with idempotent
-upserts, using higher-resolution timestamps, or using a compound monotonic
-cursor. Any option changes synchronization semantics and needs master/satellite
-regression tests before adoption.
+Regression tests cover exact-boundary catalog, playlist, and lyrics rows. A
+compound monotonic cursor remains a possible future scalability optimization,
+but is no longer required for correctness.

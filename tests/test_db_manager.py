@@ -170,6 +170,8 @@ def test_download_queue(db):
     assert len(queue) == 1
     assert queue[0].search_query == "foo bar"
     assert queue[0].status == "pending"
+    assert db.get_download(queue[0].id).search_query == "foo bar"
+    assert db.get_download(99999) is None
 
     # Update status
     db.update_download_status(queue[0].id, "success")
@@ -712,16 +714,30 @@ def test_add_or_update_track_bumps_updated_at_on_rewrite(db):
 
 
 def test_get_catalog_since_returns_delta(db):
-    import time
-
     db.add_or_update_track(Track(mbid="c1", title="Old", artist="A"))
-    cutoff = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
-    time.sleep(1.1)
+    db.conn.execute(
+        "UPDATE tracks SET updated_at = '2020-01-01 00:00:00' "
+        "WHERE mbid = 'c1'"
+    )
     db.add_or_update_track(Track(mbid="c2", title="New", artist="B"))
+    db.conn.commit()
 
-    delta = db.get_catalog_since(cutoff)
+    delta = db.get_catalog_since("2020-06-01 00:00:00")
     mbids = {row["mbid"] for row in delta}
     assert mbids == {"c2"}
+
+
+def test_get_catalog_since_replays_exact_timestamp_boundary(db):
+    db.add_or_update_track(Track(mbid="c1", title="Boundary", artist="A"))
+    db.conn.execute(
+        "UPDATE tracks SET updated_at = '2026-07-31 12:00:00' "
+        "WHERE mbid = 'c1'"
+    )
+    db.conn.commit()
+
+    rows = db.get_catalog_since("2026-07-31 12:00:00")
+
+    assert [row["mbid"] for row in rows] == ["c1"]
 
 
 def test_get_catalog_since_no_filter_returns_all(db):
@@ -884,26 +900,41 @@ def test_link_track_bumps_playlist_updated_at_on_new_membership(db):
 
 
 def test_get_playlists_since_returns_delta_with_tracks(db):
-    import time
-
     db.add_or_update_track(Track(mbid="t1", title="T", artist="A"))
     db.add_or_update_track(Track(mbid="t2", title="T2", artist="B"))
     db.add_or_update_playlist(Playlist(playlist_id="p_old", name="Old", spotify_url=""))
     db.link_track_to_playlist("p_old", "t1", 0)
-
-    cutoff = db.conn.execute("SELECT CURRENT_TIMESTAMP AS t").fetchone()["t"]
-    time.sleep(1.1)
+    db.conn.execute(
+        "UPDATE playlists SET updated_at = '2020-01-01 00:00:00' "
+        "WHERE playlist_id = 'p_old'"
+    )
 
     db.add_or_update_playlist(Playlist(playlist_id="p_new", name="New", spotify_url=""))
     db.link_track_to_playlist("p_new", "t2", 0)
+    db.conn.commit()
 
-    delta = db.get_playlists_since(cutoff)
+    delta = db.get_playlists_since("2020-06-01 00:00:00")
     ids = {pl["playlist_id"] for pl in delta}
     assert ids == {"p_new"}
 
     new_pl = delta[0]
     assert new_pl["name"] == "New"
     assert new_pl["tracks"] == [{"track_mbid": "t2", "track_order": 0}]
+
+
+def test_get_playlists_since_replays_exact_timestamp_boundary(db):
+    db.add_or_update_playlist(
+        Playlist(playlist_id="p1", name="Boundary", spotify_url="")
+    )
+    db.conn.execute(
+        "UPDATE playlists SET updated_at = '2026-07-31 12:00:00' "
+        "WHERE playlist_id = 'p1'"
+    )
+    db.conn.commit()
+
+    rows = db.get_playlists_since("2026-07-31 12:00:00")
+
+    assert [row["playlist_id"] for row in rows] == ["p1"]
 
 
 def test_get_playlists_since_no_filter_returns_all(db):
@@ -2247,6 +2278,19 @@ def test_get_lyrics_since_filters_by_fetched_at_cursor(db):
     db.conn.commit()
     rows = db.get_lyrics_since("2020-06-01 00:00:00")
     assert [r["track_mbid"] for r in rows] == ["m2"]
+
+
+def test_get_lyrics_since_replays_exact_timestamp_boundary(db):
+    db.upsert_lyrics("m1", "boundary", synced=False, source="manual")
+    db.conn.execute(
+        "UPDATE lyrics SET fetched_at = '2026-07-31 12:00:00' "
+        "WHERE track_mbid = 'm1'"
+    )
+    db.conn.commit()
+
+    rows = db.get_lyrics_since("2026-07-31 12:00:00")
+
+    assert [row["track_mbid"] for row in rows] == ["m1"]
 
 
 def test_apply_lyrics_row_inserts_new_and_marks_stale(db):

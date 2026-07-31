@@ -38,6 +38,7 @@ EXPECTED_API_ROUTES = {
     ("/api/download/request", "request_download", ("POST",)),
     ("/api/downloads/<int:item_id>", "delete_download_item", ("DELETE",)),
     ("/api/downloads/<int:item_id>/retry", "retry_download_item", ("POST",)),
+    ("/api/downloads/<int:item_id>/residue", "delete_download_residue", ("DELETE",)),
     ("/api/downloads/clear-completed", "clear_completed_downloads", ("POST",)),
     ("/api/downloads/list", "get_downloads_list", ("GET",)),
     ("/api/duplicates", "get_duplicates", ("GET",)),
@@ -203,3 +204,17 @@ def test_contribution_paths_are_documented():
     for p in ("/api/save_config", "/api/contribute", "/api/contributions",
               "/api/contributions/{id}/upload"):
         assert p in spec["paths"], p
+
+
+def test_download_recovery_contract_is_documented():
+    spec = build_spec()
+    assert "/api/downloads/list" in spec["paths"]
+    assert "/api/downloads/{item_id}/residue" in spec["paths"]
+    schema = spec["components"]["schemas"]["DownloadQueueItem"]
+    assert {
+        "attempt_count",
+        "is_quarantined",
+        "last_error",
+        "retained_bytes",
+        "retained_directories",
+    } <= set(schema["properties"])

@@ -18,6 +18,9 @@ from web_server import build_suggestion_items, TaskManager
         ("/player", "/static/js/player.js", True),
         ("/satellite", "/static/js/satellite.js", True),
         ("/", "/static/js/dashboard.js", True),
+        ("/orphans", "/static/js/orphans.js", True),
+        ("/contributions", "/static/js/contributions.js", True),
+        ("/fleet", "/static/js/fleet.js", True),
     ],
 )
 def test_browser_pages_load_external_controllers(
@@ -3151,8 +3154,15 @@ def _config_file_present(monkeypatch, tmp_path):
     monkeypatch.setattr("web_server.CONFIG_FILE", str(cfg_path))
 
 
-def test_downloads_list_returns_serialized_items(client, mock_config, _config_file_present):
+def test_downloads_list_returns_serialized_items(
+    client,
+    mock_config,
+    _config_file_present,
+    tmp_path,
+):
     from datetime import datetime, timezone
+
+    mock_config.downloads_dir = str(tmp_path)
 
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
@@ -3188,8 +3198,19 @@ def test_downloads_list_returns_serialized_items(client, mock_config, _config_fi
             "is_paused": False,
             "is_quarantined": True,
             "last_error": "Exact release remains incomplete",
+            "retained_bytes": 0,
+            "retained_directories": 0,
+            "retained_files": 0,
+            "retained_kinds": [],
         }
     ]
+    assert body["residue"] == {
+        "errors": [],
+        "total_bytes": 0,
+        "total_directories": 0,
+        "total_files": 0,
+        "unmatched_item_ids": [],
+    }
 
 
 def test_downloads_list_serializes_empty_retry_metadata_as_null(
@@ -3233,6 +3254,67 @@ def test_retry_download_flips_failed_to_pending(client, mock_config, _config_fil
     inst.retry_download.assert_called_once_with(42)
 
 
+def test_delete_download_residue_requires_explicit_confirmation(
+    client,
+    mock_config,
+    _config_file_present,
+):
+    res = client.delete('/api/downloads/42/residue', json={})
+
+    assert res.status_code == 400
+    assert "confirmation" in res.get_json()["message"]
+
+
+def test_delete_download_residue_refuses_active_work(
+    client,
+    mock_config,
+    _config_file_present,
+):
+    with patch('web_server.DatabaseManager') as MockDB:
+        item = MagicMock(status="pending", claim_owner="runner")
+        MockDB.return_value.__enter__.return_value.get_download.return_value = item
+
+        res = client.delete(
+            '/api/downloads/42/residue',
+            json={"confirm": True},
+        )
+
+    assert res.status_code == 409
+    assert "active" in res.get_json()["message"]
+
+
+def test_delete_download_residue_removes_only_failed_item_evidence(
+    client,
+    mock_config,
+    _config_file_present,
+):
+    removed = MagicMock(
+        removed_bytes=1024,
+        removed_directories=2,
+        removed_files=10,
+    )
+    with patch('web_server.DatabaseManager') as MockDB, patch(
+        'web_server.remove_download_residue',
+        return_value=removed,
+    ) as remove:
+        item = MagicMock(status="failed", claim_owner=None)
+        MockDB.return_value.__enter__.return_value.get_download.return_value = item
+
+        res = client.delete(
+            '/api/downloads/42/residue',
+            json={"confirm": True},
+        )
+
+    assert res.status_code == 200
+    assert res.get_json() == {
+        "success": True,
+        "removed_bytes": 1024,
+        "removed_directories": 2,
+        "removed_files": 10,
+    }
+    remove.assert_called_once_with(mock_config.downloads_dir, 42)
+
+
 def test_retry_download_404s_when_row_not_failed(client, mock_config, _config_file_present):
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
@@ -3246,14 +3328,42 @@ def test_retry_download_404s_when_row_not_failed(client, mock_config, _config_fi
     assert res.get_json()["success"] is False
 
 
-def test_delete_download_removes_row(client, mock_config, _config_file_present):
+def test_delete_download_removes_row(
+    client,
+    mock_config,
+    _config_file_present,
+    tmp_path,
+):
+    mock_config.downloads_dir = str(tmp_path)
     with patch('web_server.DatabaseManager') as MockDB:
         inst = MockDB.return_value.__enter__.return_value
+        inst.get_download.return_value = MagicMock(claim_owner=None)
         res = client.delete('/api/downloads/7')
 
     assert res.status_code == 200
     assert res.get_json() == {"success": True}
     inst.remove_from_queue.assert_called_once_with(7)
+
+
+def test_delete_download_refuses_to_orphan_retained_files(
+    client,
+    mock_config,
+    _config_file_present,
+    tmp_path,
+):
+    mock_config.downloads_dir = str(tmp_path)
+    retained = tmp_path / ".dap-quarantine-7-evidence"
+    retained.mkdir()
+    (retained / "track.flac").write_bytes(b"evidence")
+    with patch('web_server.DatabaseManager') as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_download.return_value = MagicMock(claim_owner=None)
+
+        res = client.delete('/api/downloads/7')
+
+    assert res.status_code == 409
+    assert "retained files" in res.get_json()["message"]
+    inst.remove_from_queue.assert_not_called()
 
 
 def test_clear_completed_returns_removed_count(client, mock_config, _config_file_present):

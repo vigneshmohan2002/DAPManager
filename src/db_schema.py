@@ -424,7 +424,12 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
                 logger.info("Added column: download_queue.%s", column)
         if legacy_download_queue_retry_state:
             cursor.execute(
-                "UPDATE download_queue SET is_quarantined = 1 "
+                "UPDATE download_queue SET is_quarantined = 1, "
+                "last_error = CASE "
+                "WHEN TRIM(COALESCE(last_error, '')) = '' THEN "
+                "'Legacy failed item quarantined during safety migration; "
+                "review retained files and exact release before retrying' "
+                "ELSE last_error END "
                 "WHERE status = 'failed'"
             )
             if cursor.rowcount:
@@ -432,6 +437,14 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
                     "Quarantined %d legacy failed download(s)",
                     cursor.rowcount,
                 )
+        cursor.execute(
+            "UPDATE download_queue SET last_error = "
+            "'Legacy failed item quarantined during safety migration; "
+            "review retained files and exact release before retrying' "
+            "WHERE status = 'failed' AND is_quarantined = 1 "
+            "AND attempt_count = 0 "
+            "AND TRIM(COALESCE(last_error, '')) = ''"
+        )
         # This index is created after the additive migrations so opening a
         # pre-lease database cannot fail in ``create_tables`` before the new
         # columns exist.

@@ -282,10 +282,11 @@ class CatalogClient:
     def push_playlists(self) -> PlaylistPushResult:
         """Push locally-edited playlists to the master.
 
-        Selects playlists with updated_at > last_playlist_push, POSTs them
+        Selects playlists with updated_at >= last_playlist_push, POSTs them
         in one batch, and on success advances the cursor to the snapshot
-        time taken at the start of the push. Edits that landed mid-push
-        keep an updated_at > snapshot so they get picked up next round.
+        time taken at the start of the push. Inclusive boundary replay is
+        intentional: last-writer-wins marks unchanged rows stale, while
+        same-second edits cannot fall through a strict timestamp gap.
 
         The master applies last-writer-wins, so retrying a push after a
         network blip is safe — stale duplicates just come back as 'stale'.

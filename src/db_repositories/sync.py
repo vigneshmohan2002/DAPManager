@@ -57,7 +57,11 @@ class SyncRepository(SQLiteRepository):
         )
         params: tuple = ()
         if since_iso:
-            sql += " WHERE updated_at > ?"
+            # Inclusive replay is intentional. SQLite's default timestamps
+            # have one-second precision, so a row written on the exact cursor
+            # boundary would otherwise be lost forever. Catalog upserts are
+            # idempotent, making one boundary replay safe.
+            sql += " WHERE updated_at >= ?"
             params = (since_iso,)
         sql += " ORDER BY updated_at ASC"
         cursor = self.conn.cursor()

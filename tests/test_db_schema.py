@@ -109,7 +109,10 @@ def test_schema_module_migrates_legacy_download_queue_idempotently():
     assert row["is_quarantined"] == 1
     assert row["claim_owner"] is None
     assert row["next_attempt_at"] is None
-    assert row["last_error"] is None
+    assert row["last_error"] == (
+        "Legacy failed item quarantined during safety migration; "
+        "review retained files and exact release before retrying"
+    )
     pending = conn.execute(
         "SELECT * FROM download_queue WHERE status = 'pending'"
     ).fetchone()

@@ -4,6 +4,7 @@ import { useToast } from "../components/Toast";
 import {
   clearCompletedDownloads,
   deleteDownload,
+  deleteDownloadResidue,
   fetchDownloads,
   fetchStatus,
   postAction,
@@ -92,6 +93,10 @@ export default function DownloadsScreen({ ready }: Props) {
 
   const running = Boolean(status?.running);
   const completedCount = buckets.success.length;
+  const retainedTotal = (items ?? []).reduce(
+    (total, item) => total + (item.retained_bytes ?? 0),
+    0,
+  );
   const queueIsBusy = running;
 
   const onRunDownloader = async () => {
@@ -124,6 +129,25 @@ export default function DownloadsScreen({ ready }: Props) {
       toast.show(result.message || "Remove failed", "err");
       return;
     }
+    load();
+  };
+
+  const onDeleteResidue = async (item: DownloadQueueItem) => {
+    const retainedBytes = item.retained_bytes ?? 0;
+    if (retainedBytes <= 0) return;
+    if (
+      !window.confirm(
+        `Permanently delete ${formatBytes(retainedBytes)} of retained download files for this failed item? The files cannot be recovered.`,
+      )
+    ) return;
+    setBusyId(item.id);
+    const result = await deleteDownloadResidue(item.id);
+    setBusyId(null);
+    if (!result.success) {
+      toast.show(result.message || "File cleanup failed", "err");
+      return;
+    }
+    toast.show(`Freed ${formatBytes(result.removed_bytes)}.`, "ok");
     load();
   };
 
@@ -180,6 +204,11 @@ export default function DownloadsScreen({ ready }: Props) {
           >
             Clear completed
           </button>
+          {retainedTotal > 0 ? (
+            <span className="text-xs text-amber-300">
+              {formatBytes(retainedTotal)} retained from failed attempts
+            </span>
+          ) : null}
         </section>
 
         {error ? (
@@ -195,6 +224,7 @@ export default function DownloadsScreen({ ready }: Props) {
               busyId={busyId}
               onRetry={onRetry}
               onRemove={onRemove}
+              onDeleteResidue={onDeleteResidue}
               loading={items === null}
             />
           ))
@@ -228,6 +258,7 @@ function Section({
   busyId,
   onRetry,
   onRemove,
+  onDeleteResidue,
   loading,
 }: {
   label: string;
@@ -237,6 +268,7 @@ function Section({
   busyId: number | null;
   onRetry: (id: number) => void;
   onRemove: (id: number) => void;
+  onDeleteResidue: (item: DownloadQueueItem) => void;
   loading: boolean;
 }) {
   return (
@@ -292,6 +324,15 @@ function Section({
                         Retry
                       </button>
                     ) : null}
+                    {showRetry && (r.retained_bytes ?? 0) > 0 ? (
+                      <button
+                        onClick={() => onDeleteResidue(r)}
+                        disabled={busyId === r.id}
+                        className="text-xs px-2 py-1 rounded mr-2 bg-[var(--color-surface)] border border-rose-500/50 text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
+                      >
+                        Delete retained files
+                      </button>
+                    ) : null}
                     <button
                       onClick={() => onRemove(r.id)}
                       disabled={busyId === r.id}
@@ -343,8 +384,25 @@ function FailedDownloadDetails({ item }: { item: DownloadQueueItem }) {
           <span className="font-medium">Last error:</span> {item.last_error}
         </div>
       ) : null}
+      {(item.retained_bytes ?? 0) > 0 ? (
+        <div className="text-xs text-amber-300">
+          Retained files: {formatBytes(item.retained_bytes ?? 0)} in{" "}
+          {item.retained_directories ?? 0} staging director{item.retained_directories === 1 ? "y" : "ies"}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / 1024 ** index;
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
 function attemptLabel(item: DownloadQueueItem): string | null {

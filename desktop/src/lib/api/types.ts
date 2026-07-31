@@ -504,9 +504,18 @@ export type DownloadQueueItem = {
   is_paused?: boolean;
   is_quarantined?: boolean;
   last_error?: string | null;
+  retained_bytes?: number;
+  retained_directories?: number;
+  retained_files?: number;
+  retained_kinds?: Array<"attempt" | "quarantine">;
 };
 
 export type ClearCompletedResult = ActionResult & { removed: number };
+export type RemoveDownloadResidueResult = ActionResult & {
+  removed_bytes: number;
+  removed_directories: number;
+  removed_files: number;
+};
 
 export type AlbumReleaseCandidate = {
   release_mbid: string;

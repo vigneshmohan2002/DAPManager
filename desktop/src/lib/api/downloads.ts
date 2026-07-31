@@ -16,6 +16,7 @@ import type {
   WantedReleasesResult,
   DownloadQueueItem,
   ClearCompletedResult,
+  RemoveDownloadResidueResult,
   AlbumReleaseCandidate,
   AlbumDownloadRequest,
   AlbumDownloadRequestResult,
@@ -69,6 +70,15 @@ function isDownloadQueueItem(value: unknown): value is DownloadQueueItem {
     (value.is_quarantined === undefined ||
       typeof value.is_quarantined === "boolean") &&
     (value.last_error === undefined || isNullableString(value.last_error))
+    && (value.retained_bytes === undefined || isNumber(value.retained_bytes))
+    && (value.retained_directories === undefined || isNumber(value.retained_directories))
+    && (value.retained_files === undefined || isNumber(value.retained_files))
+    && (
+      value.retained_kinds === undefined ||
+      (Array.isArray(value.retained_kinds) && value.retained_kinds.every(
+        (kind) => kind === "attempt" || kind === "quarantine",
+      ))
+    )
   );
 }
 
@@ -338,11 +348,44 @@ export async function retryDownload(id: number): Promise<ActionResult> {
 export async function deleteDownload(id: number): Promise<ActionResult> {
   const url = await backendUrl();
   const r = await apiFetch(`${url}/api/downloads/${id}`, { method: "DELETE" });
-  if (!r.ok) return { success: false, message: `delete: ${r.status}` };
+  if (!r.ok) {
+    return {
+      success: false,
+      message: await responseMessage(r, `delete: ${r.status}`),
+    };
+  }
   const data = await readJsonRecord(r);
   return {
     success: Boolean(data.success),
     message: String(data.message ?? ""),
+  };
+}
+
+export async function deleteDownloadResidue(
+  id: number,
+): Promise<RemoveDownloadResidueResult> {
+  const url = await backendUrl();
+  const r = await apiFetch(`${url}/api/downloads/${id}/residue`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  });
+  if (!r.ok) {
+    return {
+      success: false,
+      message: await responseMessage(r, `delete residue: ${r.status}`),
+      removed_bytes: 0,
+      removed_directories: 0,
+      removed_files: 0,
+    };
+  }
+  const data = await readJsonRecord(r);
+  return {
+    success: Boolean(data.success),
+    message: isString(data.message) ? data.message : "",
+    removed_bytes: numericValue(data.removed_bytes),
+    removed_directories: numericValue(data.removed_directories),
+    removed_files: numericValue(data.removed_files),
   };
 }
 

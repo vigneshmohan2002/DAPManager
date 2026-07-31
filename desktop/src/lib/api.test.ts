@@ -14,6 +14,7 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "contributeTrack",
   "createPlaylist",
   "deleteDownload",
+  "deleteDownloadResidue",
   "deletePlaylist",
   "deleteTrackFile",
   "detectPublicUrl",

@@ -7,6 +7,7 @@ import DownloadsScreen from "./DownloadsScreen";
 const apiMocks = vi.hoisted(() => ({
   clearCompletedDownloads: vi.fn(),
   deleteDownload: vi.fn(),
+  deleteDownloadResidue: vi.fn(),
   fetchDownloads: vi.fn(),
   fetchStatus: vi.fn(),
   postAction: vi.fn(),
@@ -33,6 +34,10 @@ const failedRows = [
     is_paused: false,
     is_quarantined: true,
     last_error: "Exact release remains incomplete",
+    retained_bytes: 1073741824,
+    retained_directories: 2,
+    retained_files: 10,
+    retained_kinds: ["attempt", "quarantine"],
   },
   {
     id: 2,
@@ -79,6 +84,12 @@ describe("DownloadsScreen retry state", () => {
       success: true,
       message: "queued",
     });
+    apiMocks.deleteDownloadResidue.mockResolvedValue({
+      success: true,
+      removed_bytes: 1073741824,
+      removed_directories: 2,
+      removed_files: 10,
+    });
   });
 
   it("shows quarantine, pause, scheduled retry, attempt, and error details", async () => {
@@ -98,6 +109,10 @@ describe("DownloadsScreen retry state", () => {
     expect(quarantinedRow).toHaveTextContent(
       "Last error: Exact release remains incomplete",
     );
+    expect(quarantinedRow).toHaveTextContent("Retained files: 1.0 GiB");
+    expect(
+      screen.getByText("1.0 GiB retained from failed attempts"),
+    ).toBeInTheDocument();
     expect(within(pausedRow!).getByText("Paused")).toBeInTheDocument();
     expect(within(pausedRow!).getByText("Attempt 1/3")).toBeInTheDocument();
     expect(
@@ -117,5 +132,24 @@ describe("DownloadsScreen retry state", () => {
     await waitFor(() => expect(apiMocks.retryDownload).toHaveBeenCalledWith(1));
     expect(toast.show).toHaveBeenCalledWith("Queued for retry.", "ok");
     expect(apiMocks.fetchDownloads).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires confirmation before permanently deleting retained files", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<DownloadsScreen ready />);
+
+    const row = (await screen.findByText("Quarantined album")).closest("tr");
+    await user.click(
+      within(row!).getByRole("button", { name: "Delete retained files" }),
+    );
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("cannot be recovered"),
+    );
+    await waitFor(() =>
+      expect(apiMocks.deleteDownloadResidue).toHaveBeenCalledWith(1),
+    );
+    expect(toast.show).toHaveBeenCalledWith("Freed 1.0 GiB.", "ok");
   });
 });

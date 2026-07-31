@@ -1201,8 +1201,10 @@ class DatabaseManager:
     def get_catalog_since(self, since_iso: Optional[str] = None) -> List[dict]:
         """Return catalog-shape rows (device-agnostic fields + updated_at).
 
-        If ``since_iso`` is provided, only rows with updated_at > since_iso
-        are returned. Local-only columns (local_path, dap_path, synced_to_dap)
+        If ``since_iso`` is provided, rows on or after that cursor are
+        returned. The inclusive boundary prevents same-second SQLite writes
+        from being lost; applying a boundary row again is idempotent.
+        Local-only columns (local_path, dap_path, synced_to_dap)
         are deliberately omitted since they don't travel between devices.
         ``is_liked`` rides along because hearts are a user preference, not a
         device-local file fact — likes set on the master should appear on
@@ -1930,6 +1932,10 @@ class DatabaseManager:
             self._row_to_download_item(row)
             for row in self._download_repository.fetch_all()
         ]
+
+    def get_download(self, item_id: int) -> Optional[DownloadItem]:
+        row = self._download_repository.fetch_one(item_id)
+        return self._row_to_download_item(row) if row else None
 
     def retry_download(self, item_id: int) -> bool:
         # Flip a failed row back to 'pending' so the downloader picks it up
