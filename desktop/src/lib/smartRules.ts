@@ -9,11 +9,14 @@ export const SMART_FIELDS: Array<{ field: SmartField; label: string }> = [
   { field: "title", label: "Title" },
   { field: "tag_tier", label: "Tag tier" },
   { field: "tag_score", label: "Tag score" },
+  { field: "genre", label: "Genre" },
+  { field: "is_liked", label: "Liked" },
 ];
 
 const TEXT_OPS: SmartOp[] = ["contains", "equals", "starts_with", "ends_with"];
 const NUMERIC_OPS: SmartOp[] = ["gt", "lt", "equals"];
 const NUMERIC_FIELDS: SmartField[] = ["tag_score"];
+const BOOLEAN_FIELDS: SmartField[] = ["is_liked"];
 
 export const OP_LABELS: Record<SmartOp, string> = {
   contains: "contains",
@@ -28,7 +31,12 @@ export function isNumericField(field: SmartField): boolean {
   return NUMERIC_FIELDS.includes(field);
 }
 
+export function isBooleanField(field: SmartField): boolean {
+  return BOOLEAN_FIELDS.includes(field);
+}
+
 export function opsForField(field: SmartField): SmartOp[] {
+  if (isBooleanField(field)) return ["equals"];
   return isNumericField(field) ? NUMERIC_OPS : TEXT_OPS;
 }
 
@@ -45,8 +53,13 @@ export function defaultRule(): SmartRule {
 // → numeric field forces "gt").
 export function reconcileRule(rule: SmartRule): SmartRule {
   const validOps = opsForField(rule.field);
-  if (validOps.includes(rule.op)) return rule;
-  return { ...rule, op: defaultOpForField(rule.field) };
+  const op = validOps.includes(rule.op)
+    ? rule.op
+    : defaultOpForField(rule.field);
+  if (isBooleanField(rule.field) && typeof rule.value !== "boolean") {
+    return { ...rule, op, value: true };
+  }
+  return { ...rule, op };
 }
 
 // True iff the ruleset would be accepted by the server. Used to gate
@@ -60,6 +73,13 @@ export function isRulesetValid(ruleset: SmartRuleset): boolean {
 
 export function isRuleValid(rule: SmartRule): boolean {
   if (!opsForField(rule.field).includes(rule.op)) return false;
+  if (isBooleanField(rule.field)) {
+    return (
+      typeof rule.value === "boolean" ||
+      String(rule.value).toLowerCase() === "true" ||
+      String(rule.value).toLowerCase() === "false"
+    );
+  }
   const trimmed = String(rule.value ?? "").trim();
   if (!trimmed) return false;
   if (isNumericField(rule.field)) {

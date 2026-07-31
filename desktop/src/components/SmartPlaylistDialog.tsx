@@ -5,6 +5,7 @@ import {
   OP_LABELS,
   SMART_FIELDS,
   defaultRule,
+  isBooleanField,
   isNumericField,
   isRulesetValid,
   opsForField,
@@ -201,6 +202,7 @@ function RuleRow({
 }) {
   const ops = opsForField(rule.field);
   const numeric = isNumericField(rule.field);
+  const boolean = isBooleanField(rule.field);
   return (
     <div className="flex items-center gap-2 text-sm">
       <select
@@ -225,13 +227,25 @@ function RuleRow({
           </option>
         ))}
       </select>
-      <input
-        type={numeric ? "number" : "text"}
-        value={String(rule.value ?? "")}
-        onChange={(e) => onChange({ value: e.target.value })}
-        placeholder={numeric ? "0" : "value"}
-        className="flex-1 px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
-      />
+      {boolean ? (
+        <select
+          aria-label="Liked value"
+          value={String(rule.value).toLowerCase() === "false" ? "false" : "true"}
+          onChange={(e) => onChange({ value: e.target.value === "true" })}
+          className="flex-1 px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]"
+        >
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      ) : (
+        <input
+          type={numeric ? "number" : "text"}
+          value={String(rule.value ?? "")}
+          onChange={(e) => onChange({ value: e.target.value })}
+          placeholder={numeric ? "0" : "value"}
+          className="flex-1 px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
+        />
+      )}
       <button
         onClick={onRemove}
         disabled={!removable}
