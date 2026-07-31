@@ -292,9 +292,22 @@ def _schema_requires_migration(cursor: sqlite3.Cursor) -> bool:
         _columns(cursor, "album_download_request_tracks")
     ):
         return True
+    download_queue_columns = _columns(cursor, "download_queue")
     if not {column for column, _ in DOWNLOAD_QUEUE_MIGRATIONS}.issubset(
-        _columns(cursor, "download_queue")
+        download_queue_columns
     ):
+        return True
+
+    # Data backfills are part of the migration contract too. A previous build
+    # could add the retry columns and quarantine legacy failures before the
+    # explanatory ``last_error`` backfill existed. Treat those rows as pending
+    # migration so the current-schema fast path does not skip the repair.
+    if cursor.execute(
+        "SELECT 1 FROM download_queue "
+        "WHERE status = 'failed' AND is_quarantined = 1 "
+        "AND attempt_count = 0 "
+        "AND TRIM(COALESCE(last_error, '')) = '' LIMIT 1"
+    ).fetchone():
         return True
 
     migration_indexes = {

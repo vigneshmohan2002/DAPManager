@@ -128,6 +128,33 @@ def test_schema_module_migrates_legacy_download_queue_idempotently():
     conn.close()
 
 
+def test_current_schema_backfills_missing_legacy_quarantine_explanation():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    logger = logging.getLogger("test.db_schema.quarantine_backfill")
+    create_tables(conn, logger)
+    migrate_schema(conn, logger)
+    conn.execute(
+        "INSERT INTO download_queue ("
+        "search_query, playlist_id, status, mbid_guess, is_quarantined"
+        ") VALUES (?, ?, 'failed', ?, 1)",
+        ("Artist - Album", "SATELLITE_ALBUM", "release-1"),
+    )
+    conn.commit()
+
+    migrate_schema(conn, logger)
+    migrate_schema(conn, logger)
+
+    row = conn.execute(
+        "SELECT last_error FROM download_queue WHERE mbid_guess = 'release-1'"
+    ).fetchone()
+    assert row["last_error"] == (
+        "Legacy failed item quarantined during safety migration; "
+        "review retained files and exact release before retrying"
+    )
+    conn.close()
+
+
 def test_concurrent_connections_serialize_legacy_download_queue_migration(
     tmp_path,
     monkeypatch,
