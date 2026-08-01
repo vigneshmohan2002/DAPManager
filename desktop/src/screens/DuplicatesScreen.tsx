@@ -20,6 +20,19 @@ type LoadState =
 // from a real path. Mirrors the PySide6 dialog's skip radio.
 const SKIP = "";
 
+function canKeepCandidate(candidate: DuplicateGroup["candidates"][number]) {
+  return (
+    candidate.exists !== false &&
+    candidate.is_safe_file !== false &&
+    candidate.identity_status !== "mismatch" &&
+    candidate.identity_status !== "unknown"
+  );
+}
+
+function canRemoveCandidate(candidate: DuplicateGroup["candidates"][number]) {
+  return candidate.exists === false || canKeepCandidate(candidate);
+}
+
 export default function DuplicatesScreen({ ready }: Props) {
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
   // mbid → chosen keep path, or SKIP. Seeded from each group's
@@ -34,8 +47,7 @@ export default function DuplicatesScreen({ ready }: Props) {
       setLoad({ kind: "loaded", groups });
       const seeded: Record<string, string> = {};
       for (const g of groups) {
-        const rec =
-          g.candidates.find((c) => c.is_recommended) ?? g.candidates[0];
+        const rec = g.candidates.find((c) => c.is_recommended);
         seeded[g.mbid] = rec ? rec.path : SKIP;
       }
       setPicks(seeded);
@@ -57,6 +69,15 @@ export default function DuplicatesScreen({ ready }: Props) {
     return groups.flatMap((g) => {
       const keep = picks[g.mbid];
       if (!keep || keep === SKIP) return [];
+      if (g.release_conflict) return [];
+      const keeper = g.candidates.find((candidate) => candidate.path === keep);
+      if (!keeper || !canKeepCandidate(keeper)) return [];
+      if (
+        g.candidates.some(
+          (candidate) => candidate.path !== keep && !canRemoveCandidate(candidate),
+        )
+      )
+        return [];
       const deletes = g.candidates
         .map((c) => c.path)
         .filter((p) => p !== keep);
@@ -86,7 +107,11 @@ export default function DuplicatesScreen({ ready }: Props) {
     for (const p of plans) {
       const result = await resolveDuplicate(p.mbid, p.keep, p.deletes);
       if (!result.success) {
-        errors.push(result.message || `${p.mbid}: failed`);
+        errors.push(
+          result.message ||
+            `${p.mbid}: ${result.remaining.length} unresolved file(s)`,
+        );
+        errors.push(...result.errors);
         continue;
       }
       resolved += 1;
@@ -219,6 +244,12 @@ function GroupCard({
         <span className="text-[var(--color-text-muted)]"> — </span>
         <span>{group.title}</span>
       </div>
+      {group.release_conflict ? (
+        <div className="mb-2 text-xs text-[var(--color-accent)]">
+          Kept for safety: these files belong to different MusicBrainz album
+          releases and are not interchangeable duplicates.
+        </div>
+      ) : null}
       <div className="space-y-1">
         {group.candidates.map((c) => (
           <label
@@ -230,6 +261,7 @@ function GroupCard({
               name={groupName}
               checked={pick === c.path}
               onChange={() => onPick(c.path)}
+              disabled={!canKeepCandidate(c)}
               className="mt-1 accent-[var(--color-accent)]"
             />
             <span className="flex-1 min-w-0 break-all font-mono text-xs text-[var(--color-text)]">
@@ -237,6 +269,15 @@ function GroupCard({
             </span>
             <span className="text-xs text-[var(--color-text-muted)] whitespace-nowrap">
               score {c.score}
+              {c.exists === false ? (
+                <span className="ml-2 text-[var(--color-accent)]">missing</span>
+              ) : c.is_safe_file === false ? (
+                <span className="ml-2 text-[var(--color-accent)]">unsafe path</span>
+              ) : c.identity_status === "mismatch" ? (
+                <span className="ml-2 text-[var(--color-accent)]">wrong MBID</span>
+              ) : c.identity_status === "unknown" ? (
+                <span className="ml-2 text-[var(--color-accent)]">unverified</span>
+              ) : null}
               {c.is_recommended ? (
                 <span className="ml-2 px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)]">
                   recommended

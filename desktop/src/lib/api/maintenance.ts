@@ -22,7 +22,15 @@ function isDuplicateCandidate(value: unknown): value is DuplicateCandidate {
     isString(value.path) &&
     isNumber(value.score) &&
     (value.is_recommended === undefined ||
-      typeof value.is_recommended === "boolean")
+      typeof value.is_recommended === "boolean") &&
+    (value.exists === undefined || typeof value.exists === "boolean") &&
+    (value.is_safe_file === undefined ||
+      typeof value.is_safe_file === "boolean") &&
+    (value.identity_status === undefined ||
+      value.identity_status === "match" ||
+      value.identity_status === "mismatch" ||
+      value.identity_status === "unknown") &&
+    (value.release_mbid === undefined || isString(value.release_mbid))
   );
 }
 
@@ -32,6 +40,8 @@ function isDuplicateGroup(value: unknown): value is DuplicateGroup {
     isString(value.mbid) &&
     isString(value.artist) &&
     isString(value.title) &&
+    (value.release_conflict === undefined ||
+      typeof value.release_conflict === "boolean") &&
     Array.isArray(value.candidates) &&
     value.candidates.every(isDuplicateCandidate)
   );
@@ -78,10 +88,13 @@ export async function resolveDuplicate(
   const data = await readJsonRecord(r);
   const inner = recordField(data, "result");
   return {
-    success: Boolean(data.success),
+    success: Boolean(data.success) && Boolean(inner.resolved),
     message: String(data.message ?? ""),
     deleted: arrayField(inner, "deleted", isString),
     errors: arrayField(inner, "errors", isString),
+    missing: arrayField(inner, "missing", isString),
+    remaining: arrayField(inner, "remaining", isString),
+    resolved: Boolean(inner.resolved),
   };
 }
 

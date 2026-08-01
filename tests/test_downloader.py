@@ -3302,6 +3302,195 @@ def test_exact_album_already_present_completes_without_staging_or_network(
     assert os.path.isfile(stale_artifact)
 
 
+def test_track_mbid_already_present_completes_without_network(
+    downloader,
+    db,
+    temp_dirs,
+):
+    target = os.path.join(temp_dirs["music_library"], "Track.flac")
+    with open(target, "wb") as handle:
+        handle.write(b"existing audio")
+    db.add_or_update_track(Track(
+        mbid="recording-mbid",
+        title="Track",
+        artist="Artist",
+        local_path=target,
+    ))
+    queue_id = db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="CATALOG",
+        mbid_guess="recording-mbid",
+    ))
+
+    with patch.object(downloader, "_attempt_download") as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_not_called()
+    assert summary.success_count == 1
+    assert summary.network_attempt_count == 0
+    assert db.get_download_status(queue_id) is None
+
+
+@pytest.mark.parametrize("path_state", ["missing", "outside", "symlink"])
+def test_track_mbid_stale_or_unsafe_path_does_not_suppress_download(
+    downloader,
+    db,
+    temp_dirs,
+    path_state,
+):
+    outside = os.path.join(temp_dirs["downloads"], "outside.flac")
+    with open(outside, "wb") as handle:
+        handle.write(b"audio")
+    if path_state == "missing":
+        local_path = os.path.join(temp_dirs["music_library"], "missing.flac")
+    elif path_state == "outside":
+        local_path = outside
+    else:
+        local_path = os.path.join(temp_dirs["music_library"], "link.flac")
+        os.symlink(outside, local_path)
+    db.add_or_update_track(Track(
+        mbid="recording-mbid",
+        title="Track",
+        artist="Artist",
+        local_path=local_path,
+    ))
+    queue_id = db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="CATALOG",
+        mbid_guess="recording-mbid",
+    ))
+
+    with patch.object(downloader, "_attempt_download", return_value=False) as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_called_once()
+    assert summary.failure_count == 1
+    assert db.get_download_status(queue_id) == "failed"
+
+
+def test_unambiguous_legacy_track_already_present_skips_network(
+    downloader,
+    db,
+    temp_dirs,
+):
+    target = os.path.join(temp_dirs["music_library"], "Track.flac")
+    with open(target, "wb") as handle:
+        handle.write(b"audio")
+    db.add_or_update_track(Track(
+        mbid="recording-mbid",
+        title="Track",
+        artist="Artist",
+        local_path=target,
+    ))
+    queue_id = db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="SUGGESTED",
+        mbid_guess="",
+    ))
+
+    with patch.object(downloader, "_attempt_download") as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_not_called()
+    assert summary.success_count == 1
+    assert db.get_download_status(queue_id) is None
+
+
+def test_ambiguous_legacy_track_identity_does_not_suppress_download(
+    downloader,
+    db,
+    temp_dirs,
+):
+    for number in (1, 2):
+        target = os.path.join(temp_dirs["music_library"], f"Track {number}.flac")
+        with open(target, "wb") as handle:
+            handle.write(b"audio")
+        db.add_or_update_track(Track(
+            mbid=f"recording-mbid-{number}",
+            title="Track",
+            artist="Artist",
+            local_path=target,
+        ))
+    queue_id = db.queue_download(DownloadItem(
+        search_query="Artist - Track",
+        playlist_id="SUGGESTED",
+        mbid_guess="",
+    ))
+
+    with patch.object(downloader, "_attempt_download", return_value=False) as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_called_once()
+    assert summary.failure_count == 1
+
+
+def test_complete_legacy_album_inventory_skips_network(
+    downloader,
+    db,
+    temp_dirs,
+):
+    release_mbid = "release-mbid"
+    db.update_album_metadata(release_mbid, "Album", 2)
+    for number in (1, 2):
+        target = os.path.join(temp_dirs["music_library"], f"{number:02d}.flac")
+        with open(target, "wb") as handle:
+            handle.write(b"audio")
+        db.add_or_update_track(Track(
+            mbid=f"recording-{number}",
+            title=f"Track {number}",
+            artist="Artist",
+            album="Album",
+            release_mbid=release_mbid,
+            track_number=number,
+            local_path=target,
+        ))
+    queue_id = db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="COMPLETER",
+        mbid_guess=release_mbid,
+    ))
+
+    with patch.object(downloader, "_attempt_download") as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_not_called()
+    assert summary.success_count == 1
+    assert summary.network_attempt_count == 0
+    assert db.get_download_status(queue_id) is None
+
+
+def test_incomplete_legacy_album_inventory_does_not_suppress_download(
+    downloader,
+    db,
+    temp_dirs,
+):
+    release_mbid = "release-mbid"
+    db.update_album_metadata(release_mbid, "Album", 2)
+    target = os.path.join(temp_dirs["music_library"], "01.flac")
+    with open(target, "wb") as handle:
+        handle.write(b"audio")
+    db.add_or_update_track(Track(
+        mbid="recording-1",
+        title="Track 1",
+        artist="Artist",
+        album="Album",
+        release_mbid=release_mbid,
+        track_number=1,
+        local_path=target,
+    ))
+    queue_id = db.queue_download(DownloadItem(
+        search_query="::ALBUM:: Artist - Album",
+        playlist_id="COMPLETER",
+        mbid_guess=release_mbid,
+    ))
+
+    with patch.object(downloader, "_attempt_download", return_value=False) as network:
+        summary = downloader.run_queue(include_item_ids=[queue_id])
+
+    network.assert_called_once()
+    assert summary.failure_count == 1
+
+
 @patch("subprocess.Popen")
 def test_sldl_silent_wait_checks_claim_heartbeat(mock_popen, downloader):
     released = threading.Event()

@@ -345,12 +345,17 @@ export type DuplicateCandidate = {
   path: string;
   score: number;
   is_recommended?: boolean;
+  exists?: boolean;
+  is_safe_file?: boolean;
+  identity_status?: "match" | "mismatch" | "unknown";
+  release_mbid?: string;
 };
 
 export type DuplicateGroup = {
   mbid: string;
   artist: string;
   title: string;
+  release_conflict?: boolean;
   candidates: DuplicateCandidate[];
 };
 
@@ -359,6 +364,9 @@ export type ResolveDuplicateResult = {
   message: string;
   deleted: string[];
   errors: string[];
+  missing: string[];
+  remaining: string[];
+  resolved: boolean;
 };
 
 export type IncompleteAlbum = {

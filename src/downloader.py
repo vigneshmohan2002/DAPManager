@@ -969,6 +969,126 @@ class Downloader:
             )
         return True
 
+    def _is_usable_library_audio(self, path: object) -> bool:
+        """Require a real audio file contained by the configured library."""
+        candidate = str(path or "").strip()
+        if not candidate.lower().endswith(DOWNLOADED_AUDIO_EXTENSIONS):
+            return False
+        try:
+            path_stat = os.lstat(candidate)
+            resolved_path = os.path.realpath(os.path.abspath(candidate))
+            resolved_root = os.path.realpath(
+                os.path.abspath(self.music_library_dir)
+            )
+            return (
+                not os.path.islink(candidate)
+                and os.path.isfile(candidate)
+                and os.path.commonpath([resolved_path, resolved_root])
+                == resolved_root
+                and path_stat.st_size > 0
+            )
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _legacy_track_query_identity(
+        search_query: str,
+    ) -> Optional[Tuple[str, str]]:
+        """Parse only the exact ``artist - title`` form emitted internally."""
+        if search_query.startswith(ALBUM_QUERY_PREFIX):
+            return None
+        artist, separator, title = search_query.partition(" - ")
+        artist = artist.strip()
+        title = title.strip()
+        if not separator or not artist or not title:
+            return None
+        return artist, title
+
+    def _legacy_album_is_already_present(self, item: DownloadItem) -> bool:
+        if (
+            not item.search_query.startswith(ALBUM_QUERY_PREFIX)
+            or not item.mbid_guess.strip()
+        ):
+            return False
+        inventory = self.db.get_live_release_download_inventory(
+            item.mbid_guess
+        )
+        try:
+            total_tracks = int(inventory.get("total_tracks") or 0)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        tracks = inventory.get("tracks") if isinstance(inventory, Mapping) else []
+        if total_tracks <= 0 or not isinstance(tracks, list):
+            return False
+        positions = set()
+        for track in tracks:
+            if not isinstance(track, Mapping):
+                return False
+            if not self._is_usable_library_audio(track.get("local_path")):
+                return False
+            try:
+                position = (
+                    int(track.get("disc_number") or 1),
+                    int(track.get("track_number") or 0),
+                )
+            except (TypeError, ValueError):
+                return False
+            if position[1] <= 0 or position in positions:
+                return False
+            positions.add(position)
+        return len(positions) == total_tracks
+
+    def _track_is_already_present(self, item: DownloadItem) -> bool:
+        mbid = item.mbid_guess.strip()
+        if mbid:
+            sources = self.db.get_track_sources(mbid)
+            return bool(
+                sources
+                and self._is_usable_library_audio(sources.get("local_path"))
+            )
+
+        identity = self._legacy_track_query_identity(item.search_query)
+        if identity is None:
+            return False
+        matches = self.db.find_live_local_tracks_by_artist_title(
+            identity[0],
+            identity[1],
+        )
+        usable = {
+            str(row.get("mbid") or "").strip()
+            for row in matches
+            if isinstance(row, Mapping)
+            and self._is_usable_library_audio(row.get("local_path"))
+            and str(row.get("mbid") or "").strip()
+        }
+        return len(usable) == 1
+
+    def _complete_claimed_item_if_already_present(
+        self,
+        item: DownloadItem,
+        owner: str,
+    ) -> bool:
+        """Recheck every claimed queue identity immediately before acquisition."""
+        if self._complete_claimed_album_if_already_present(item, owner):
+            return True
+        already_present = (
+            self._legacy_album_is_already_present(item)
+            if item.search_query.startswith(ALBUM_QUERY_PREFIX)
+            else self._track_is_already_present(item)
+        )
+        if not already_present:
+            return False
+        if not self._complete_claimed_item(
+            item,
+            owner,
+            "Skipped acquisition because the item is already present in the master library",
+            1,
+        ):
+            raise DownloadClaimLostError(
+                f"download claim lost for queue item {item.id}"
+            )
+        return True
+
     def run_queue(
         self,
         progress_callback=None,
@@ -1048,7 +1168,7 @@ class Downloader:
             try:
                 with heartbeat:
                     self._active_claim_heartbeat = heartbeat
-                    if self._complete_claimed_album_if_already_present(
+                    if self._complete_claimed_item_if_already_present(
                         item,
                         owner,
                     ):

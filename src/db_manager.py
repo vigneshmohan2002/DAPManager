@@ -453,6 +453,27 @@ class DatabaseManager:
             return None
         return self._library_repository.get_track_local_path(mbid)
 
+    def find_live_local_tracks_by_artist_title(
+        self,
+        artist: str,
+        title: str,
+    ) -> List[dict]:
+        """Return live local rows matching an exact legacy queue identity."""
+        if not artist.strip() or not title.strip():
+            return []
+        return self._library_repository.find_live_local_tracks_by_artist_title(
+            artist.strip(),
+            title.strip(),
+        )
+
+    def get_live_release_download_inventory(self, release_mbid: str) -> dict:
+        """Return the persisted completion evidence for a legacy album job."""
+        if not release_mbid.strip():
+            return {"total_tracks": 0, "tracks": []}
+        return self._library_repository.get_live_release_download_inventory(
+            release_mbid.strip()
+        )
+
     def find_local_tracks_by_identity(
         self,
         *,
@@ -1806,6 +1827,12 @@ class DatabaseManager:
 
     def clear_duplicate(self, mbid: str):
         self._album_maintenance_repository.clear_duplicate(mbid)
+
+    def replace_duplicate_paths(self, mbid: str, file_paths: List[str]):
+        self._album_maintenance_repository.replace_duplicate_paths(
+            mbid,
+            file_paths,
+        )
 
     # --- Album grouping maintenance ---
     def list_split_album_tracks(self) -> List[SplitAlbumTrackRow]:

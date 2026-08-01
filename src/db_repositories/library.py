@@ -717,6 +717,53 @@ class LibraryRepository(SQLiteRepository):
         finally:
             cursor.close()
 
+    def find_live_local_tracks_by_artist_title(
+        self,
+        artist: str,
+        title: str,
+    ) -> List[Dict[str, object]]:
+        """Return exact legacy-identity matches backed by a catalog path."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT mbid, local_path FROM tracks "
+                "WHERE artist = ? COLLATE NOCASE "
+                "AND title = ? COLLATE NOCASE "
+                "AND deleted_at IS NULL "
+                "AND local_path IS NOT NULL AND local_path != ''",
+                (artist, title),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+
+    def get_live_release_download_inventory(
+        self,
+        release_mbid: str,
+    ) -> Dict[str, object]:
+        """Return expected count and live files for one legacy album job."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT total_tracks FROM albums WHERE release_mbid = ? "
+                "COLLATE NOCASE",
+                (release_mbid,),
+            )
+            album = cursor.fetchone()
+            cursor.execute(
+                "SELECT mbid, local_path, disc_number, track_number "
+                "FROM tracks WHERE release_mbid = ? COLLATE NOCASE "
+                "AND deleted_at IS NULL "
+                "AND local_path IS NOT NULL AND local_path != ''",
+                (release_mbid,),
+            )
+            return {
+                "total_tracks": int(album["total_tracks"] or 0) if album else 0,
+                "tracks": [dict(row) for row in cursor.fetchall()],
+            }
+        finally:
+            cursor.close()
+
     def get_live_track_identity(
         self,
         mbid: str,

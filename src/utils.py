@@ -57,6 +57,15 @@ def get_mbid_from_tags(file_path: str):
         return None
 
 
+def get_release_mbid_from_tags(file_path: str):
+    """Return the embedded MusicBrainz release ID when it is readable."""
+    try:
+        f = MediaFile(file_path)
+        return f.mb_albumid
+    except (UnreadableFileError, OSError):
+        return None
+
+
 def write_mbid_to_file(file_path: str, mbid: str):
     try:
         f = MediaFile(file_path)

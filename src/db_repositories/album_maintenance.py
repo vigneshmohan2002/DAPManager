@@ -31,6 +31,23 @@ class AlbumMaintenanceRepository(SQLiteRepository):
         self.conn.commit()
         cursor.close()
 
+    def replace_duplicate_paths(self, mbid: str, file_paths: List[str]) -> None:
+        """Atomically replace one duplicate group after filesystem work."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute("DELETE FROM duplicates WHERE mbid = ?", (mbid,))
+            cursor.executemany(
+                "INSERT INTO duplicates (mbid, file_path) VALUES (?, ?)",
+                [(mbid, path) for path in file_paths],
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
     def list_split_album_tracks(self) -> List[Dict[str, object]]:
         cursor = self.conn.cursor()
         cursor.execute(
