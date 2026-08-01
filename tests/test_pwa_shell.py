@@ -20,9 +20,9 @@ def test_canonical_logo_is_the_unmodified_supplied_png():
 @pytest.mark.parametrize(
     ("page_path", "manifest_path"),
     [
-        ("/", "/static/manifest.json?v=4"),
-        ("/player", "/static/manifest-player.webmanifest?v=4"),
-        ("/satellite", "/static/manifest-satellite.webmanifest?v=4"),
+        ("/", "/static/manifest.json?v=5"),
+        ("/player", "/static/manifest-player.webmanifest?v=5"),
+        ("/satellite", "/static/manifest-satellite.webmanifest?v=5"),
     ],
 )
 def test_installable_pages_use_their_own_manifest_and_png_icons(
@@ -44,13 +44,13 @@ def test_installable_pages_use_their_own_manifest_and_png_icons(
     assert f'<link rel="manifest" href="{manifest_path}">' in html
     assert (
         '<link rel="apple-touch-icon" sizes="180x180" '
-        'href="/static/icons/apple-touch-icon-180.png?v=4">'
+        'href="/static/icons/apple-touch-icon-180.png?v=5">'
     ) in html
     assert (
         '<link rel="icon" type="image/png" sizes="32x32" '
-        'href="/static/icons/favicon-32.png?v=4">'
+        'href="/static/icons/favicon-32.png?v=5">'
     ) in html
-    assert '<script src="/static/pwa-register.js?v=4" defer></script>' in html
+    assert '<script src="/static/pwa-register.js?v=5" defer></script>' in html
     assert "Viggys" not in html
 
 
@@ -142,14 +142,13 @@ def test_standalone_players_explicitly_reveal_css_hidden_artwork():
     assert satellite.count('style.display="block"') >= 3
 
 
-def test_satellite_artwork_falls_back_without_intersection_observer():
+def test_satellite_artwork_does_not_depend_on_intersection_observers():
     source = (
         Path(web_server.app.static_folder) / "js" / "satellite.js"
     ).read_text(encoding="utf-8")
 
-    assert 'typeof IntersectionObserver === "undefined"' in source
     assert 'img.loading = "lazy"' in source
-    assert "revealArtwork();" in source
+    assert "new IntersectionObserver" not in source
 
 
 def test_service_worker_policy_excludes_dynamic_or_sensitive_responses():

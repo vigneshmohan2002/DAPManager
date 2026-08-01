@@ -346,26 +346,14 @@ function renderLibrary(filter="") {
     </div>`
   ).join("");
 
-  // Lazy-load album art when IntersectionObserver is available. Native lazy
-  // loading is also set so browsers without the observer still show artwork.
+  // Assign artwork URLs immediately so rendering does not depend on observers
+  // firing while this panel is hidden. Browsers still defer off-screen fetches
+  // through native lazy loading.
   el.querySelectorAll("img[data-album]").forEach(img => {
-    const revealArtwork = () => {
-      img.loading = "lazy";
-      img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover");
-      img.style.display="block";
-      img.onerror = ()=>img.remove();
-    };
-    if (typeof IntersectionObserver === "undefined") {
-      revealArtwork();
-      return;
-    }
-    const obs = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) {
-        revealArtwork();
-        obs.disconnect();
-      }
-    }, { rootMargin:"100px" });
-    obs.observe(img);
+    img.loading = "lazy";
+    img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover");
+    img.style.display="block";
+    img.onerror = ()=>img.remove();
   });
 
   el.querySelectorAll(".row").forEach(row =>
