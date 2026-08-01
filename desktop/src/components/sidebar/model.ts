@@ -44,11 +44,14 @@ export const STATIC_SECTIONS: SidebarSection[] = [
     title: "Presets",
     items: [{ id: "home", label: "Home" }],
   },
+  {
+    title: "Discover",
+    items: [{ id: "downloads", label: "Downloads" }],
+  },
 ];
 
 export const TOOL_ITEMS: SidebarItem[] = [
   { id: "stats", label: "Listening" },
-  { id: "downloads", label: "Downloads" },
   { id: "releases", label: "New Releases" },
   { id: "audit", label: "Audit" },
   { id: "duplicates", label: "Duplicates" },

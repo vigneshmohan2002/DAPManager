@@ -79,16 +79,20 @@ describe("Sidebar playlist controller", () => {
     ).toBeDisabled();
   });
 
-  it("keeps management routes available through the compact tools menu", async () => {
+  it("keeps downloads visible while management routes stay in the tools menu", async () => {
     const user = userEvent.setup();
     const { props } = renderSidebar();
+
+    await user.click(screen.getByRole("button", { name: "Downloads" }));
+    expect(props.onSelect).toHaveBeenCalledWith("downloads");
 
     await user.click(
       screen.getByRole("button", { name: "Open DAPManager tools" }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "Downloads" }));
-
-    expect(props.onSelect).toHaveBeenCalledWith("downloads");
+    expect(
+      screen.queryByRole("menuitem", { name: "Downloads" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Settings" })).toBeVisible();
   });
 
   it("keeps create payloads and parent notifications unchanged", async () => {
