@@ -17,6 +17,7 @@ from src.downloader import (
     cleanup_empty_download_directories,
     discover_downloaded_audio,
     exact_manifest_tag_metadata,
+    private_sldl_config,
     main_run_downloader,
     parse_download_query,
     primary_artist_album_fallback_query,
@@ -31,6 +32,22 @@ SATELLITE_RECORDINGS = (
     "00000000-0000-4000-8000-000000000001",
     "00000000-0000-4000-8000-000000000002",
 )
+
+
+def _satellite_track_manifest(recordings=SATELLITE_RECORDINGS):
+    return tuple({
+        "position": number,
+        "medium_position": 1,
+        "track_position": number,
+        "track_number": str(number),
+        "recording_mbid": recording,
+        "title": f"Track {number}",
+        "artist": "Artist",
+        "date": "2026",
+        "track_total": len(recordings),
+        "disc_total": 1,
+        "release_track_mbid": f"10000000-0000-4000-8000-{number:012d}",
+    } for number, recording in enumerate(recordings, start=1))
 
 
 def _write_tagged_flac(path, recording_mbid, release_mbid):
@@ -322,29 +339,28 @@ def test_attempt_download_failure(mock_popen, downloader):
 
 
 @patch("subprocess.Popen")
-def test_zero_file_credited_album_retries_with_primary_artist_only(
+def test_later_credited_album_strategy_uses_primary_artist_only(
     mock_popen,
     downloader,
     temp_dirs,
 ):
-    first_process = MagicMock(stdout=[])
-    first_process.returncode = 0
-    second_process = MagicMock(stdout=[])
-    second_process.returncode = 0
+    process = MagicMock(stdout=[])
+    process.returncode = 0
     staged_file = os.path.join(temp_dirs["downloads"], "01 result.flac")
 
     def finish_fallback_with_audio(timeout):
         with open(staged_file, "wb") as handle:
             handle.write(b"candidate")
 
-    second_process.wait.side_effect = finish_fallback_with_audio
-    mock_popen.side_effect = [first_process, second_process]
+    process.wait.side_effect = finish_fallback_with_audio
+    mock_popen.return_value = process
     callback = MagicMock()
     item = DownloadItem(
         id=81,
         search_query="::ALBUM:: A$AP Rocky feat. Frank Ocean - TESTING",
         playlist_id="canonical-playlist",
         mbid_guess="canonical-release-mbid",
+        strategy_index=2,
     )
 
     assert downloader._attempt_download(
@@ -353,18 +369,17 @@ def test_zero_file_credited_album_retries_with_primary_artist_only(
         staging_dir=temp_dirs["downloads"],
     ) is True
 
-    assert mock_popen.call_count == 2
-    first_command = mock_popen.call_args_list[0].args[0]
-    fallback_command = mock_popen.call_args_list[1].args[0]
-    assert first_command[first_command.index("--input") + 1] == (
-        "A$AP Rocky feat. Frank Ocean - TESTING"
-    )
+    assert mock_popen.call_count == 1
+    fallback_command = mock_popen.call_args.args[0]
     assert fallback_command[fallback_command.index("--input") + 1] == (
         "A$AP Rocky - TESTING"
     )
-    for command in (first_command, fallback_command):
-        assert "--album" in command
-        assert command[command.index("--format") + 1] == "flac"
+    assert "--album" in fallback_command
+    assert fallback_command[fallback_command.index("--format") + 1] == "flac"
+    assert "--user" not in fallback_command
+    assert "--pass" not in fallback_command
+    assert "test_pass" not in fallback_command
+    assert "--config" in fallback_command
 
     # Search broadening is command-local: canonical queue evidence is intact.
     assert item.search_query == (
@@ -372,23 +387,17 @@ def test_zero_file_credited_album_retries_with_primary_artist_only(
     )
     assert item.playlist_id == "canonical-playlist"
     assert item.mbid_guess == "canonical-release-mbid"
-    callback.assert_any_call(
-        "No album audio found; retrying with primary artist: "
-        "A$AP Rocky - TESTING"
-    )
 
 
 @patch("subprocess.Popen")
-def test_two_clean_zero_audio_album_results_report_failure(
+def test_clean_zero_audio_strategy_reports_failure_without_mixing_searches(
     mock_popen,
     downloader,
     temp_dirs,
 ):
     first_process = MagicMock(stdout=[])
     first_process.returncode = 0
-    second_process = MagicMock(stdout=[])
-    second_process.returncode = 0
-    mock_popen.side_effect = [first_process, second_process]
+    mock_popen.return_value = first_process
     item = DownloadItem(
         id=84,
         search_query="::ALBUM:: Artist feat. Guest - Album",
@@ -401,7 +410,7 @@ def test_two_clean_zero_audio_album_results_report_failure(
         staging_dir=temp_dirs["downloads"],
     ) is False
 
-    assert mock_popen.call_count == 2
+    assert mock_popen.call_count == 1
 
 
 @patch("subprocess.Popen")
@@ -714,7 +723,7 @@ def test_run_queue_preserves_zero_audio_item_as_failed(
     )
     assert failed[0].playlist_id == "canonical-playlist"
     assert failed[0].mbid_guess == "canonical-release-mbid"
-    assert mock_popen.call_count == 2
+    assert mock_popen.call_count == 1
 
 
 def test_satellite_album_launch_uses_persisted_exact_track_count(
@@ -738,6 +747,7 @@ def test_satellite_album_launch_uses_persisted_exact_track_count(
         detail="Waiting",
         completed_tracks=0,
         recording_mbids=SATELLITE_RECORDINGS,
+        track_manifest=_satellite_track_manifest(),
     )
     item = db.get_downloads(status="pending")[0]
 
@@ -783,6 +793,7 @@ def test_missing_downloader_binary_marks_satellite_tracker_failed(
         detail="Waiting",
         completed_tracks=0,
         recording_mbids=SATELLITE_RECORDINGS,
+        track_manifest=_satellite_track_manifest(),
     )
 
     with patch.object(
@@ -822,7 +833,20 @@ def test_failed_credited_album_command_does_not_masquerade_as_zero_result(
 
     mock_popen.assert_called_once()
     assert "test_pass" not in exc_info.value.cmd
-    assert "<redacted>" in exc_info.value.cmd
+    assert "--pass" not in exc_info.value.cmd
+    assert "--user" not in exc_info.value.cmd
+    assert "--config" in exc_info.value.cmd
+
+
+def test_private_sldl_config_has_restricted_mode_and_is_removed(tmp_path):
+    with private_sldl_config("private-user", "private-password", directory=str(tmp_path)) as path:
+        assert os.path.exists(path)
+        assert os.stat(path).st_mode & 0o777 == 0o600
+        contents = open(path, encoding="utf-8").read()
+        assert contents == (
+            "username = private-user\npassword = private-password\n"
+        )
+    assert not os.path.exists(path)
 
 
 @patch("subprocess.Popen")
@@ -1583,6 +1607,7 @@ def test_satellite_album_request_tracks_download_import_and_verified_success(
         detail="Waiting",
         completed_tracks=0,
         recording_mbids=SATELLITE_RECORDINGS,
+        track_manifest=_satellite_track_manifest(),
     )
 
     def attempt(_item, callback=None, *, staging_dir=None):
@@ -1596,7 +1621,7 @@ def test_satellite_album_request_tracks_download_import_and_verified_success(
                 handle.write(b"flac")
         return True
 
-    def process(file_path, _item, _album_mode, _manifest=None):
+    def process(file_path, _item, _album_mode, *_manifest_evidence):
         number = int(os.path.basename(file_path).split(".")[0])
         os.remove(file_path)
         target = os.path.join(temp_dirs["music_library"], f"{number:02d}.flac")
@@ -1605,6 +1630,17 @@ def test_satellite_album_request_tracks_download_import_and_verified_success(
             SATELLITE_RECORDINGS[number - 1],
             release_mbid,
         )
+        audio = FLAC(target)
+        audio["title"] = f"Track {number}"
+        audio["tracknumber"] = str(number)
+        audio["tracktotal"] = "2"
+        audio["discnumber"] = "1"
+        audio["disctotal"] = "1"
+        audio["date"] = "2026"
+        audio["musicbrainz_releasetrackid"] = (
+            f"10000000-0000-4000-8000-{number:012d}"
+        )
+        audio.save()
         db.add_or_update_track(Track(
             mbid=SATELLITE_RECORDINGS[number - 1],
             title=f"Track {number}",
@@ -1612,10 +1648,24 @@ def test_satellite_album_request_tracks_download_import_and_verified_success(
             album="Album",
             release_mbid=release_mbid,
             local_path=target,
+            track_number=number,
+            disc_number=1,
         ))
         return ProcessedDownload(path=target, library_changed=True)
 
+    def accepted_plan(file_paths, *_args):
+        return ExactAlbumFallbackPlan(
+            dict(zip(file_paths, SATELLITE_RECORDINGS)),
+            audio_payload_sha256_by_path={path: "a" * 64 for path in file_paths},
+            file_snapshot_by_path={path: (1, 2, 3, 4, 5) for path in file_paths},
+        )
+
     with patch.object(downloader, "_attempt_download", side_effect=attempt), \
+         patch.object(
+             downloader,
+             "_prepare_exact_album_fallback",
+             side_effect=accepted_plan,
+         ), \
          patch.object(
              downloader,
              "_process_downloaded_file",
@@ -1624,7 +1674,7 @@ def test_satellite_album_request_tracks_download_import_and_verified_success(
         downloader.run_queue()
 
     tracker = db.get_album_download_request(request_id)
-    assert tracker["stage"] == "success"
+    assert tracker["stage"] == "success", tracker
     assert tracker["completed_tracks"] == 2
     assert "2 FLAC" in tracker["detail"]
     assert db.get_download_status(queue_id) is None
@@ -1677,13 +1727,16 @@ def test_satellite_album_request_fails_closed_when_musicbrainz_set_incomplete(
              downloader,
              "_process_downloaded_file",
              side_effect=process,
-         ):
+         ) as process_file:
         downloader.run_queue()
 
     tracker = db.get_album_download_request(request_id)
     assert tracker["stage"] == "failed"
-    assert "1 of 2" in tracker["detail"]
+    assert "1 complete FLAC" in tracker["detail"]
+    assert "nothing was imported" in tracker["detail"]
     assert db.get_download_status(queue_id) == "failed"
+    process_file.assert_not_called()
+    assert db.get_track_by_mbid(SATELLITE_RECORDINGS[0]) is None
 
 
 def test_satellite_album_rejects_wrong_recording_before_import_or_mirror(
@@ -3123,7 +3176,7 @@ def test_run_queue_processes_only_its_initial_snapshot_once(
     assert db.get_download_status(queued_during_run[0]) == "pending"
 
 
-def test_retained_exact_album_is_reused_and_extras_are_quarantined(
+def test_retained_exact_album_with_extra_audio_is_rejected_as_non_bijective(
     downloader,
     db,
     temp_dirs,
@@ -3156,41 +3209,27 @@ def test_retained_exact_album_is_reused_and_extras_are_quarantined(
         with open(path, "wb") as handle:
             handle.write(b"flac")
 
-    def process(path, *_args):
-        if path == extra:
-            return None
-        os.remove(path)
-        target = os.path.join(temp_dirs["music_library"], "01 Track.flac")
-        _write_tagged_flac(target, recording_mbid, release_mbid)
-        db.add_or_update_track(Track(
-            mbid=recording_mbid,
-            title="Track",
-            artist="Artist",
-            album="Album",
-            release_mbid=release_mbid,
-            local_path=target,
-        ))
-        return ProcessedDownload(target, True)
-
     with patch.object(downloader, "_attempt_download") as network, \
          patch.object(
              downloader,
              "_process_downloaded_file",
-             side_effect=process,
-         ):
+         ) as process_file:
         summary = downloader.run_queue(
             include_item_ids=[queue_id],
             allow_network=False,
         )
 
     network.assert_not_called()
-    assert summary.success_count == 1
-    assert summary.failure_count == 0
+    assert summary.success_count == 0
+    assert summary.failure_count == 1
     assert summary.reused_staging_count == 1
     assert summary.quarantined_staging_count == 1
     assert summary.network_attempt_count == 0
-    assert db.get_download_status(queue_id) is None
-    assert db.get_album_download_request(request_id)["stage"] == "success"
+    assert db.get_download_status(queue_id) == "failed"
+    tracker = db.get_album_download_request(request_id)
+    assert tracker["stage"] == "failed"
+    assert "nothing was imported" in tracker["detail"]
+    process_file.assert_not_called()
     quarantine = [
         name for name in os.listdir(temp_dirs["downloads"])
         if name.startswith(f".dap-quarantine-{queue_id}-")
@@ -3538,7 +3577,9 @@ def test_fresh_download_stops_below_free_space_floor(
     assert summary.failure_count == 1
     assert summary.network_attempt_count == 0
     failed = db.get_downloads(status="failed")[0]
-    assert failed.is_quarantined is True
+    assert failed.is_quarantined is False
+    assert failed.failure_class == "blocked_disk"
+    assert failed.attempt_count == 0
     assert "19.0 GiB free" in (failed.last_error or "")
 
 

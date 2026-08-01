@@ -3194,7 +3194,16 @@ def test_downloads_list_returns_serialized_items(
         item.is_paused = False
         item.is_quarantined = True
         item.last_error = "Exact release remains incomplete"
+        item.target_key = "query:beck - loser"
+        item.phase = "failed"
+        item.failure_class = "validation_rejected"
+        item.blocked_reason = None
+        item.strategy_index = 1
         inst.get_all_downloads.return_value = [item]
+        inst.get_download_worker_state.return_value = {
+            "is_paused": 0,
+            "state": "idle",
+        }
 
         res = client.get('/api/downloads/list')
 
@@ -3213,12 +3222,18 @@ def test_downloads_list_returns_serialized_items(
             "is_paused": False,
             "is_quarantined": True,
             "last_error": "Exact release remains incomplete",
+            "target_key": "query:beck - loser",
+            "phase": "failed",
+            "failure_class": "validation_rejected",
+            "blocked_reason": None,
+            "strategy_index": 1,
             "retained_bytes": 0,
             "retained_directories": 0,
             "retained_files": 0,
             "retained_kinds": [],
         }
     ]
+    assert body["worker"] == {"is_paused": 0, "state": "idle"}
     assert body["residue"] == {
         "errors": [],
         "total_bytes": 0,
@@ -3246,8 +3261,17 @@ def test_downloads_list_serializes_empty_retry_metadata_as_null(
             is_paused=False,
             is_quarantined=False,
             last_error=None,
+            target_key="query:portishead - roads",
+            phase="queued",
+            failure_class=None,
+            blocked_reason=None,
+            strategy_index=0,
         )
         inst.get_all_downloads.return_value = [item]
+        inst.get_download_worker_state.return_value = {
+            "is_paused": 1,
+            "state": "paused",
+        }
 
         res = client.get('/api/downloads/list')
 
@@ -3255,6 +3279,39 @@ def test_downloads_list_serializes_empty_retry_metadata_as_null(
     payload = res.get_json()["items"][0]
     assert payload["next_attempt_at"] is None
     assert payload["last_error"] is None
+
+
+def test_download_worker_state_and_controls_are_exposed_on_master(
+    client,
+    mock_config,
+    _config_file_present,
+    monkeypatch,
+):
+    mock_config.is_master = True
+    worker = MagicMock()
+    monkeypatch.setattr(web_server, "download_worker", worker)
+    with patch("web_server.DatabaseManager") as MockDB:
+        inst = MockDB.return_value.__enter__.return_value
+        inst.get_download_worker_state.return_value = {
+            "is_paused": 0,
+            "state": "idle",
+            "detail": "No due download items",
+        }
+        state = client.get("/api/downloads/worker")
+
+    assert state.status_code == 200
+    assert state.get_json()["worker"]["state"] == "idle"
+    assert client.post("/api/downloads/worker/pause").get_json() == {
+        "success": True,
+        "paused": True,
+    }
+    assert client.post("/api/downloads/worker/resume").get_json() == {
+        "success": True,
+        "paused": False,
+    }
+    worker.set_paused.assert_any_call(True)
+    worker.set_paused.assert_any_call(False)
+    worker.wake.assert_called()
 
 
 def test_retry_download_flips_failed_to_pending(client, mock_config, _config_file_present):

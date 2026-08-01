@@ -38,6 +38,7 @@ DEFAULT_VALUES: Final[Dict[str, ConfigValue]] = {
     "lidarr_acquisition_handoff_enabled": False,
     "library_maintenance_interval_seconds": 604800,
     "library_maintenance_on_startup": False,
+    "download_worker_max_acquisitions": 2,
 }
 
 EDITABLE_KEYS: Final[FrozenSet[str]] = frozenset({
@@ -52,6 +53,7 @@ EDITABLE_KEYS: Final[FrozenSet[str]] = frozenset({
     "remove_ft",
     "desperate_mode",
     "strict_quality",
+    "download_worker_max_acquisitions",
     "jellyfin_url",
     "jellyfin_api_key",
     "jellyfin_user_id",
@@ -116,6 +118,7 @@ GROUPS: Final[List[ConfigGroup]] = [
         "remove_ft",
         "desperate_mode",
         "strict_quality",
+        "download_worker_max_acquisitions",
     ]),
     ("Jellyfin", [
         "jellyfin_url",

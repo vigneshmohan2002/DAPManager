@@ -44,12 +44,16 @@ def _reset_web_server_state():
     web_server.sync_scheduler = None
     web_server.release_watcher_scheduler = None
     web_server.library_maintenance_scheduler = None
+    web_server.download_worker = None
     yield
+    if web_server.download_worker is not None:
+        web_server.download_worker.stop()
     web_server.config = None
     web_server.task_manager = None
     web_server.sync_scheduler = None
     web_server.release_watcher_scheduler = None
     web_server.library_maintenance_scheduler = None
+    web_server.download_worker = None
 
 
 @pytest.fixture(autouse=True)

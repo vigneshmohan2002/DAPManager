@@ -53,6 +53,7 @@ AcoustIDCoverageState = Literal[
     "has_results",
     "unavailable",
 ]
+AcousticEvidenceState = Literal["confirm", "inconclusive", "contradict", "unavailable"]
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,16 @@ class AcoustIDCoverage:
 
     state: AcoustIDCoverageState
     result_count: int = 0
+
+
+@dataclass(frozen=True)
+class AcousticEvidence:
+    """Acoustic evidence relative to one persisted recording identity."""
+
+    state: AcousticEvidenceState
+    expected_score: Optional[float] = None
+    winning_score: Optional[float] = None
+    winning_recording_mbid: str = ""
 
 _CANONICAL_FLAC_TAGS = frozenset({
     "title",
@@ -488,6 +499,76 @@ def probe_acoustid_coverage(
     if not results:
         return AcoustIDCoverage("no_results")
     return AcoustIDCoverage("has_results", len(results))
+
+
+def classify_acoustic_recording_evidence(
+    filepath: str,
+    api_key: str,
+    expected_recording_mbid: str,
+) -> AcousticEvidence:
+    """Classify raw AcoustID scores without requiring edition coverage.
+
+    A strong different winner is a contradiction. Empty, low-confidence, or
+    near-tied results are inconclusive; transport/fingerprint failures remain
+    unavailable so callers retain files and revalidate rather than accepting.
+    """
+    expected = _canonical_uuid(expected_recording_mbid)
+    if not expected or not api_key or not filepath or not os.path.isfile(filepath):
+        return AcousticEvidence("unavailable")
+    try:
+        duration, fingerprint = acoustid.fingerprint_file(filepath)
+        response = acoustid.lookup(
+            api_key,
+            fingerprint,
+            duration,
+            meta=["recordings", "releases", "tracks", "usermeta", "releasegroups"],
+        )
+    except Exception as exc:
+        logger.warning(
+            "classify_acoustic_recording_evidence failed for %s: %s",
+            os.path.basename(filepath),
+            exc,
+        )
+        return AcousticEvidence("unavailable")
+    if not isinstance(response, Mapping) or response.get("status") != "ok":
+        return AcousticEvidence("unavailable")
+    results = response.get("results")
+    if not isinstance(results, list):
+        return AcousticEvidence("unavailable")
+    scores: Dict[str, float] = {}
+    for result in results:
+        if not isinstance(result, Mapping):
+            continue
+        try:
+            score = float(result.get("score", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            continue
+        for recording in result.get("recordings") or ():
+            if not isinstance(recording, Mapping):
+                continue
+            recording_mbid = _canonical_uuid(recording.get("id"))
+            if recording_mbid:
+                scores[recording_mbid] = max(score, scores.get(recording_mbid, -1.0))
+    if not scores:
+        return AcousticEvidence("inconclusive")
+    winner, winning_score = sorted(
+        scores.items(), key=lambda item: (-item[1], item[0])
+    )[0]
+    expected_score = scores.get(expected)
+    if expected_score is not None and (
+        winning_score - expected_score < ACOUSTID_AMBIGUITY_MARGIN
+    ):
+        state: AcousticEvidenceState = (
+            "confirm" if expected_score >= CONFIDENCE_GREEN else "inconclusive"
+        )
+        return AcousticEvidence(state, expected_score, winning_score, winner)
+    if winning_score >= CONFIDENCE_GREEN:
+        return AcousticEvidence(
+            "contradict", expected_score, winning_score, winner
+        )
+    return AcousticEvidence("inconclusive", expected_score, winning_score, winner)
 
 
 def identify_file(

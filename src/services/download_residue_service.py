@@ -51,6 +51,14 @@ class DownloadResidueRemoval:
     removed_files: int
 
 
+@dataclass(frozen=True)
+class DownloadResidueCleanup:
+    removed_bytes: int
+    removed_directories: int
+    removed_files: int
+    remaining_bytes: int
+
+
 @dataclass
 class _MutableResidue:
     bytes: int = 0
@@ -190,4 +198,60 @@ def remove_download_residue(
         removed_bytes=before.bytes if before else 0,
         removed_directories=removed_directories,
         removed_files=before.file_count if before else 0,
+    )
+
+
+def enforce_download_residue_budget(
+    downloads_dir: str,
+    *,
+    max_bytes: int = 2 * 1024 ** 3,
+    max_age_seconds: int = 24 * 60 * 60,
+    now: Optional[float] = None,
+) -> DownloadResidueCleanup:
+    """Bound failed-attempt evidence without touching active staging.
+
+    Only ``.dap-quarantine-*`` directories are eligible. Evidence older than
+    the TTL is removed first, then the oldest remaining evidence is removed
+    until the byte cap is satisfied. Symlinks and ordinary download folders
+    remain out of scope.
+    """
+    if max_bytes < 0 or max_age_seconds < 0:
+        raise ValueError("residue limits must not be negative")
+    current_time = float(now if now is not None else datetime.now().timestamp())
+    candidates: List[tuple[float, str, int, int]] = []
+    try:
+        entries = list(os.scandir(downloads_dir))
+    except FileNotFoundError:
+        entries = []
+
+    for entry in entries:
+        owner = _owned_directory(entry)
+        if owner is None or owner[1] != "quarantine":
+            continue
+        byte_count, file_count, newest_mtime = _directory_usage(entry.path)
+        try:
+            directory_mtime = entry.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            directory_mtime = current_time
+        evidence_mtime = newest_mtime if newest_mtime is not None else directory_mtime
+        candidates.append((evidence_mtime, entry.path, byte_count, file_count))
+
+    total_bytes = sum(candidate[2] for candidate in candidates)
+    removed_bytes = removed_directories = removed_files = 0
+    for modified_at, path, byte_count, file_count in sorted(candidates):
+        expired = current_time - modified_at >= max_age_seconds
+        over_budget = total_bytes > max_bytes
+        if not expired and not over_budget:
+            continue
+        shutil.rmtree(path)
+        total_bytes -= byte_count
+        removed_bytes += byte_count
+        removed_directories += 1
+        removed_files += file_count
+
+    return DownloadResidueCleanup(
+        removed_bytes=removed_bytes,
+        removed_directories=removed_directories,
+        removed_files=removed_files,
+        remaining_bytes=max(0, total_bytes),
     )

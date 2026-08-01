@@ -659,6 +659,9 @@ class AlbumDownloadRequestRepository(SQLiteRepository):
         completed_tracks: int = 0,
         *,
         quarantine: bool = False,
+        failure_class: str = "retryable",
+        blocked_reason: str = "",
+        advance_strategy: bool = False,
         base_delay_seconds: int = 300,
         max_delay_seconds: int = 86400,
         now: Optional[datetime] = None,
@@ -724,6 +727,8 @@ class AlbumDownloadRequestRepository(SQLiteRepository):
             cursor.execute(
                 "UPDATE download_queue SET status = 'failed', "
                 "last_attempt = ?, next_attempt_at = ?, last_error = ?, "
+                "phase = 'failed', failure_class = ?, blocked_reason = ?, "
+                "strategy_index = strategy_index + ?, "
                 "is_quarantined = CASE WHEN ? THEN 1 ELSE is_quarantined END, "
                 "claim_owner = NULL, claim_expires_at = NULL, "
                 "claim_heartbeat_at = NULL WHERE id = ? AND claim_owner = ? "
@@ -732,6 +737,9 @@ class AlbumDownloadRequestRepository(SQLiteRepository):
                     failed_timestamp,
                     next_attempt_timestamp,
                     bounded_error,
+                    str(failure_class or "retryable")[-100:],
+                    str(blocked_reason or "")[-1000:] or None,
+                    int(bool(advance_strategy)),
                     int(should_quarantine),
                     int(queue_item_id),
                     str(owner or ""),

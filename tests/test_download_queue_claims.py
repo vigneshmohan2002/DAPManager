@@ -73,6 +73,114 @@ def test_claim_next_supports_narrow_allowlist_and_per_run_exclusions(db):
     ) is None
 
 
+def test_idempotent_target_key_returns_existing_active_queue_row(db):
+    first = db.queue_download(DownloadItem(
+        "::ALBUM:: Artist - Album",
+        "SATELLITE_ALBUM",
+        "95FB59ED-1ECE-419B-B62F-AEF31E0EBF36",
+    ))
+    duplicate = db.queue_download(DownloadItem(
+        "::ALBUM:: differently formatted display text",
+        "SATELLITE_ALBUM",
+        "95fb59ed-1ece-419b-b62f-aef31e0ebf36",
+    ))
+
+    assert duplicate == first
+    rows = db.get_all_downloads()
+    assert len(rows) == 1
+    assert rows[0].target_key == (
+        "release:95fb59ed-1ece-419b-b62f-aef31e0ebf36"
+    )
+
+
+def test_non_consuming_claim_defers_retry_budget_until_network_start(db):
+    item_id = _queue(db)
+    claimed = db.claim_next_download(
+        "worker", now=T0, consume_attempt=False
+    )
+    assert claimed is not None
+    assert claimed.attempt_count == 0
+    assert claimed.last_attempt is None
+
+    started = db.start_download_network_attempt(
+        item_id, "worker", strategy_index=1, now=T0 + timedelta(seconds=1)
+    )
+    assert started is not None
+    assert started.attempt_count == 1
+    assert started.strategy_index == 1
+    assert started.phase == "acquiring"
+
+
+def test_worker_lease_is_singleton_and_pause_is_durable(db):
+    assert db.get_download_worker_state()["is_paused"] == 1
+    db.set_download_worker_paused(False)
+    assert db.claim_download_worker("worker-a", 60, now=T0) is True
+    assert db.claim_download_worker("worker-b", 60, now=T0) is False
+    assert db.heartbeat_download_worker(
+        "worker-a",
+        60,
+        state="running",
+        current_item_id=42,
+        detail="Acquiring exact release",
+        now=T0 + timedelta(seconds=10),
+    ) is True
+    state = db.get_download_worker_state()
+    assert state["state"] == "running"
+    assert state["current_item_id"] == 42
+
+    db.set_download_worker_paused(True)
+    assert db.heartbeat_download_worker(
+        "worker-a", 60, state="running", now=T0 + timedelta(seconds=11)
+    ) is False
+    assert db.release_download_worker("worker-a", "paused") is True
+    assert db.get_download_worker_state()["is_paused"] == 1
+
+
+def test_attempt_history_is_sanitized_callers_persisted_after_queue_success(db):
+    item_id = _queue(db)
+    attempt_id = db.create_download_attempt(
+        item_id,
+        "release:release-artist - album",
+        strategy="musicbrainz-release",
+    )
+    assert db.update_download_attempt(attempt_id, {
+        "phase": "finished",
+        "outcome": "success",
+        "detail": "Verified 10 tracks",
+        "network_started": True,
+        "files_validated": 10,
+        "finished_at": "2026-07-22 12:10:00",
+    }) is True
+    attempts = db.list_download_attempts(item_id)
+    assert attempts[0]["strategy"] == "musicbrainz-release"
+    assert attempts[0]["files_validated"] == 10
+    db.record_download_attempt_files(attempt_id, [{
+        "relative_name": "Disc 1/01.flac",
+        "recording_mbid": "00000000-0000-4000-8000-000000000001",
+        "decision": "candidate",
+        "bytes": 123,
+    }])
+    db.finalize_download_attempt_files(attempt_id, "accepted", "Exact match")
+    files = db.list_download_attempt_files(attempt_id)
+    assert files[0]["relative_name"] == "Disc 1/01.flac"
+    assert files[0]["decision"] == "accepted"
+    assert files[0]["reason"] == "Exact match"
+
+    claimed = db.claim_next_download("worker", now=T0)
+    assert claimed is not None
+    assert db.complete_download_claim(
+        item_id, "worker", now=T0 + timedelta(seconds=1)
+    ) is True
+    row = db.conn.execute(
+        "SELECT queue_item_id, target_key, outcome FROM download_attempts "
+        "WHERE id = ?",
+        (attempt_id,),
+    ).fetchone()
+    assert row["queue_item_id"] is None
+    assert row["target_key"] == "release:release-artist - album"
+    assert row["outcome"] == "success"
+
+
 def test_claim_heartbeat_release_pause_and_quarantine_are_owner_safe(db):
     item_id = _queue(db)
     claimed = db.claim_next_download("runner-a", lease_seconds=60, now=T0)

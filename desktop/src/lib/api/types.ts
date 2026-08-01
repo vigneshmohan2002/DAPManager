@@ -516,6 +516,20 @@ export type DownloadQueueItem = {
   retained_directories?: number;
   retained_files?: number;
   retained_kinds?: Array<"attempt" | "quarantine">;
+  target_key?: string;
+  phase?: string;
+  failure_class?: string | null;
+  blocked_reason?: string | null;
+  strategy_index?: number;
+};
+
+export type DownloadWorkerState = {
+  is_paused: boolean;
+  state: string;
+  current_item_id: number | null;
+  detail: string;
+  heartbeat_at: string | null;
+  next_wake_at: string | null;
 };
 
 export type ClearCompletedResult = ActionResult & { removed: number };

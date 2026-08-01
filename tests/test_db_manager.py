@@ -30,7 +30,24 @@ EXPECTED_SCHEMA_COLUMNS = {
         "id", "search_query", "playlist_id", "status", "last_attempt",
         "mbid_guess", "attempt_count", "max_attempts", "next_attempt_at",
         "claim_owner", "claim_expires_at", "claim_heartbeat_at",
-        "is_paused", "is_quarantined", "last_error",
+        "is_paused", "is_quarantined", "last_error", "target_key",
+        "phase", "failure_class", "blocked_reason", "strategy_index",
+    ),
+    "download_worker_state": (
+        "singleton_id", "is_paused", "state", "lease_owner",
+        "lease_expires_at", "heartbeat_at", "current_item_id", "detail",
+        "next_wake_at", "updated_at",
+    ),
+    "download_attempts": (
+        "id", "queue_item_id", "target_key", "strategy", "phase",
+        "outcome", "failure_class", "detail", "network_started",
+        "bytes_staged", "files_staged", "files_validated",
+        "files_imported", "started_at", "finished_at", "retry_at",
+    ),
+    "download_attempt_files": (
+        "attempt_id", "relative_name", "manifest_position",
+        "recording_mbid", "release_mbid", "audio_sha256",
+        "acoustic_result", "acoustic_score", "decision", "reason", "bytes",
     ),
     "duplicates": ("id", "mbid", "file_path"),
     "lyrics": ("track_mbid", "lrc", "synced", "source", "fetched_at"),
@@ -102,6 +119,12 @@ def test_database_schema_table_column_and_index_contract(db):
                 "claim_expires_at", "id",
             ),
             False,
+        ),
+        "idx_download_queue_active_target": (
+            "download_queue", ("target_key",), True,
+        ),
+        "idx_download_attempts_queue_started": (
+            "download_attempts", ("queue_item_id", "started_at"), False,
         ),
         "idx_play_events_played_at": ("play_events", ("played_at",), False),
         "idx_play_events_track_mbid": ("play_events", ("track_mbid",), False),

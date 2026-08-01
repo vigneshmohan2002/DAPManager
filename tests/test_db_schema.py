@@ -2,6 +2,8 @@ import logging
 import sqlite3
 import threading
 
+import pytest
+
 import src.db_schema as db_schema
 from src.db_schema import create_tables, migrate_schema
 
@@ -46,6 +48,8 @@ def test_schema_functions_are_idempotent_and_preserve_existing_rows():
         "idx_album_download_requests_queue_item",
         "idx_album_download_requests_stage_updated",
         "idx_artist_tags_tag",
+        "idx_download_attempts_queue_started",
+        "idx_download_queue_active_target",
         "idx_download_queue_claimable",
         "idx_play_events_played_at",
         "idx_play_events_track_mbid",
@@ -98,6 +102,11 @@ def test_schema_module_migrates_legacy_download_queue_idempotently():
         "is_paused",
         "is_quarantined",
         "last_error",
+        "target_key",
+        "phase",
+        "failure_class",
+        "blocked_reason",
+        "strategy_index",
     )
     row = conn.execute(
         "SELECT * FROM download_queue WHERE status = 'failed'"
@@ -255,7 +264,7 @@ def test_concurrent_connections_serialize_legacy_download_queue_migration(
 
     verify = sqlite3.connect(db_path)
     verify.row_factory = sqlite3.Row
-    assert _columns(verify, "download_queue")[-9:] == (
+    assert _columns(verify, "download_queue")[-14:] == (
         "attempt_count",
         "max_attempts",
         "next_attempt_at",
@@ -265,6 +274,11 @@ def test_concurrent_connections_serialize_legacy_download_queue_migration(
         "is_paused",
         "is_quarantined",
         "last_error",
+        "target_key",
+        "phase",
+        "failure_class",
+        "blocked_reason",
+        "strategy_index",
     )
     row = verify.execute(
         "SELECT status, attempt_count, is_quarantined "
@@ -276,6 +290,45 @@ def test_concurrent_connections_serialize_legacy_download_queue_migration(
         "is_quarantined": 1,
     }
     verify.close()
+
+
+def test_download_target_migration_merges_active_duplicates_safely():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    logger = logging.getLogger("test.db_schema.download_target")
+    create_tables(conn, logger)
+    migrate_schema(conn, logger)
+    conn.execute("DROP INDEX idx_download_queue_active_target")
+    conn.executemany(
+        "INSERT INTO download_queue (search_query, playlist_id, status, "
+        "mbid_guess, target_key, attempt_count, is_paused) "
+        "VALUES (?, 'SATELLITE_ALBUM', 'pending', ?, '', ?, ?)",
+        (
+            ("::ALBUM:: Artist - Album", "Release-One", 1, 0),
+            ("::ALBUM:: ARTIST  -  ALBUM", "release-one", 2, 1),
+        ),
+    )
+    conn.commit()
+
+    migrate_schema(conn, logger)
+
+    rows = conn.execute("SELECT * FROM download_queue").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["target_key"] == "release:release-one"
+    assert rows[0]["attempt_count"] == 2
+    assert rows[0]["is_paused"] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO download_queue (search_query, playlist_id, status, "
+            "mbid_guess, target_key) VALUES (?, ?, 'pending', ?, ?)",
+            (
+                "another spelling",
+                "SATELLITE_ALBUM",
+                "release-one",
+                "release:release-one",
+            ),
+        )
+    conn.close()
 
 
 def test_current_schema_migration_check_remains_read_only_under_writer_lock(

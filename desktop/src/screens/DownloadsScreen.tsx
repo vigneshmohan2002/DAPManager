@@ -5,12 +5,15 @@ import {
   clearCompletedDownloads,
   deleteDownload,
   deleteDownloadResidue,
+  fetchDownloadWorker,
   fetchDownloads,
   fetchStatus,
   postAction,
   retryDownload,
+  setDownloadWorkerPaused,
   type BackendStatus,
   type DownloadQueueItem,
+  type DownloadWorkerState,
 } from "../lib/api";
 import { relativeTime } from "../lib/time";
 import AlbumRequestPanel from "./downloads/AlbumRequestPanel";
@@ -35,6 +38,7 @@ const BUCKETS: Bucket[] = [
 export default function DownloadsScreen({ ready }: Props) {
   const [items, setItems] = useState<DownloadQueueItem[] | null>(null);
   const [status, setStatus] = useState<BackendStatus | null>(null);
+  const [worker, setWorker] = useState<DownloadWorkerState | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Per-row in-flight flag so the buttons can disable while the action
   // is on the wire — prevents double-retry / double-remove.
@@ -48,7 +52,12 @@ export default function DownloadsScreen({ ready }: Props) {
     if (loadInFlight.current) return;
     loadInFlight.current = true;
     try {
-      setItems(await fetchDownloads());
+      const [nextItems, nextWorker] = await Promise.all([
+        fetchDownloads(),
+        fetchDownloadWorker(),
+      ]);
+      setItems(nextItems);
+      setWorker(nextWorker);
       loadFailed.current = false;
       setError(null);
     } catch (e) {
@@ -64,16 +73,14 @@ export default function DownloadsScreen({ ready }: Props) {
   // pattern as SyncScreen.
   useEffect(() => {
     if (!ready) return;
-    void load();
     let cancelled = false;
     const tick = async () => {
       try {
         const s = await fetchStatus("downloads");
         if (cancelled) return;
         setStatus(s);
-        if ((wasRunning.current && !s.running) || loadFailed.current) {
-          void load();
-        }
+        await load();
+        if (loadFailed.current && !cancelled) await load();
         wasRunning.current = s.running;
       } catch {
         // ignored — next tick retries
@@ -102,12 +109,13 @@ export default function DownloadsScreen({ ready }: Props) {
   }, [items]);
 
   const running = Boolean(status?.running);
+  const workerRunning = worker?.state === "running";
   const completedCount = buckets.success.length;
   const retainedTotal = (items ?? []).reduce(
     (total, item) => total + (item.retained_bytes ?? 0),
     0,
   );
-  const queueIsBusy = running;
+  const queueIsBusy = running || workerRunning;
 
   const onRunDownloader = async () => {
     const result = await postAction("/api/download");
@@ -116,6 +124,17 @@ export default function DownloadsScreen({ ready }: Props) {
       return;
     }
     toast.show("Downloader started.", "ok");
+  };
+
+  const onToggleWorker = async () => {
+    const paused = !(worker?.is_paused ?? true);
+    const result = await setDownloadWorkerPaused(paused);
+    if (!result.success) {
+      toast.show(result.message || "Worker update failed", "err");
+      return;
+    }
+    toast.show(paused ? "Automatic downloads paused." : "Automatic downloads resumed.", "ok");
+    void load();
   };
 
   const onRetry = async (id: number) => {
@@ -189,6 +208,8 @@ export default function DownloadsScreen({ ready }: Props) {
       ? "Failed to load"
       : items === null
       ? "Loading…"
+      : workerRunning
+      ? worker?.detail || "Automatic downloader running…"
       : running
       ? status?.message ?? "Downloader running…"
       : `${buckets.pending.length} pending · ${buckets.failed.length} failed · ${buckets.success.length} completed`;
@@ -201,11 +222,18 @@ export default function DownloadsScreen({ ready }: Props) {
 
         <section className="flex items-center gap-3">
           <button
-            onClick={onRunDownloader}
-            disabled={!ready || queueIsBusy}
+            onClick={onToggleWorker}
+            disabled={!ready || worker === null}
             className="px-4 py-2 rounded-md bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110"
           >
-            Run Downloader
+            {worker?.is_paused ? "Resume automatic downloads" : "Pause automatic downloads"}
+          </button>
+          <button
+            onClick={onRunDownloader}
+            disabled={!ready || queueIsBusy}
+            className="px-3 py-2 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text)] border border-[var(--color-border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--color-surface)]/70"
+          >
+            Run once now
           </button>
           <button
             onClick={onClearCompleted}
@@ -217,6 +245,11 @@ export default function DownloadsScreen({ ready }: Props) {
           {retainedTotal > 0 ? (
             <span className="text-xs text-amber-300">
               {formatBytes(retainedTotal)} retained from failed attempts
+            </span>
+          ) : null}
+          {worker ? (
+            <span className="text-xs text-[var(--color-text-muted)]">
+              Worker: {worker.is_paused ? "paused" : worker.state}
             </span>
           ) : null}
         </section>

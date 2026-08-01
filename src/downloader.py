@@ -9,13 +9,16 @@ import queue as thread_queue
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .db_manager import DatabaseManager, DownloadItem, Track
@@ -61,6 +64,9 @@ DEFAULT_LIDARR_MUSIC_ROOT = "/music"
 DEFAULT_DOWNLOAD_MIN_FREE_GIB = 20
 DOWNLOAD_CLAIM_LEASE_SECONDS = 5 * 60
 DOWNLOAD_CLAIM_HEARTBEAT_SECONDS = 60
+SLDL_PRIVATE_CONFIG_PREFIX = ".dap-sldl-"
+SLDL_PRIVATE_CONFIG_MAX_AGE_SECONDS = 24 * 60 * 60
+_DOWNLOAD_IMPORT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,12 @@ class ProcessedQueueItem:
     error_message: str = field(default="", compare=False)
     completed_tracks: int = field(default=0, compare=False)
     completion_detail: str = field(default="", compare=False)
+
+
+@dataclass(frozen=True)
+class AcquisitionStrategy:
+    name: str
+    search_query: str
 
 
 @dataclass(frozen=True)
@@ -293,23 +305,37 @@ def build_download_command(
     music_library_dir: str,
     config: Mapping[str, Any],
     album_track_count: Optional[int] = None,
+    *,
+    credential_config_path: Optional[str] = None,
+    skip_music_dir: bool = True,
 ) -> Tuple[List[str], bool]:
     """Build the exact sldl command previously assembled in the controller."""
     query, is_album_mode = parse_download_query(search_query)
-    command = list(command_base) + [
-        "--user",
-        username,
-        "--pass",
-        password,
-        "--input",
-        query,
-        "-p",
-        downloads_dir,
-    ]
+    command = list(command_base)
+    if credential_config_path:
+        # Refuse credential flags inherited from a legacy command base. The
+        # private config path keeps secrets out of the OS process list.
+        sanitized_base: List[str] = []
+        skip_next = False
+        for argument in command:
+            if skip_next:
+                skip_next = False
+                continue
+            if argument in {"--user", "--pass"}:
+                skip_next = True
+                continue
+            if argument.startswith("--user=") or argument.startswith("--pass="):
+                continue
+            sanitized_base.append(argument)
+        command = sanitized_base + ["--config", credential_config_path]
+    else:
+        command.extend(["--user", username, "--pass", password])
+    command.extend(["--input", query, "-p", downloads_dir])
 
     if is_album_mode:
         command.append("--album")
-        command.extend(["--skip-music-dir", music_library_dir])
+        if skip_music_dir:
+            command.extend(["--skip-music-dir", music_library_dir])
 
         if album_track_count is not None:
             try:
@@ -377,6 +403,80 @@ def build_download_command(
             command.extend(["--pref-format", "flac,wav"])
 
     return command, is_album_mode
+
+
+def _safe_sldl_config_value(value: object, label: str) -> str:
+    resolved = str(value or "")
+    if not resolved or any(character in resolved for character in "\r\n\0"):
+        raise ValueError(f"Soulseek {label} is blank or contains control characters")
+    return resolved
+
+
+def cleanup_stale_sldl_configs(
+    directory: Optional[str] = None,
+    *,
+    now: Optional[float] = None,
+) -> int:
+    """Remove only stale, regular, current-user credential files."""
+    root = Path(directory or tempfile.gettempdir())
+    cutoff = float(time.time() if now is None else now) - (
+        SLDL_PRIVATE_CONFIG_MAX_AGE_SECONDS
+    )
+    removed = 0
+    try:
+        candidates = root.iterdir()
+    except OSError:
+        return 0
+    for candidate in candidates:
+        if not candidate.name.startswith(SLDL_PRIVATE_CONFIG_PREFIX):
+            continue
+        try:
+            metadata = candidate.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mtime > cutoff
+                or (hasattr(os, "getuid") and metadata.st_uid != os.getuid())
+            ):
+                continue
+            candidate.unlink()
+            removed += 1
+        except OSError:
+            logger.warning("Could not remove stale private sldl config", exc_info=True)
+    return removed
+
+
+@contextmanager
+def private_sldl_config(
+    username: object,
+    password: object,
+    *,
+    directory: Optional[str] = None,
+):
+    """Yield a mode-0600 config and remove it on every normal exit path."""
+    safe_username = _safe_sldl_config_value(username, "username")
+    safe_password = _safe_sldl_config_value(password, "password")
+    file_descriptor, path = tempfile.mkstemp(
+        prefix=SLDL_PRIVATE_CONFIG_PREFIX,
+        suffix=".conf",
+        dir=directory,
+        text=True,
+    )
+    try:
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            file_descriptor = -1
+            handle.write(f"username = {safe_username}\n")
+            handle.write(f"password = {safe_password}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        yield path
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 def discover_downloaded_audio(downloads_dir: str) -> List[str]:
@@ -846,6 +946,9 @@ class Downloader:
         *,
         completed_tracks: int = 0,
         quarantine: bool = False,
+        failure_class: str = "retryable",
+        blocked_reason: str = "",
+        advance_strategy: bool = False,
     ) -> bool:
         """Persist one failure only while this run still owns the item."""
         if item.id is None:
@@ -863,12 +966,18 @@ class Downloader:
                     error_message,
                     completed_tracks,
                     quarantine=quarantine,
+                    failure_class=failure_class,
+                    blocked_reason=blocked_reason,
+                    advance_strategy=advance_strategy,
                 ))
         failed = self.db.fail_download_claim(
             item.id,
             owner,
             error_message,
             quarantine=quarantine,
+            failure_class=failure_class,
+            blocked_reason=blocked_reason,
+            advance_strategy=advance_strategy,
         )
         if failed:
             self._update_album_request_progress(
@@ -1147,6 +1256,7 @@ class Downloader:
             item = self.db.claim_next_download(
                 owner,
                 DOWNLOAD_CLAIM_LEASE_SECONDS,
+                consume_attempt=False,
                 include_item_ids=snapshot_ids,
                 exclude_item_ids=attempted_ids,
             )
@@ -1160,6 +1270,52 @@ class Downloader:
             report(msg)
             item_staging_dir: Optional[str] = None
             item_claim_lost = False
+            attempt_id = self.db.create_download_attempt(
+                int(item.id),
+                item.target_key,
+                phase="claimed",
+            )
+
+            def finish_attempt(
+                outcome: str,
+                detail: str,
+                *,
+                failure_class: str = "",
+                phase: str = "finished",
+                files_imported: int = 0,
+            ) -> None:
+                values = {
+                    "phase": phase,
+                    "outcome": outcome,
+                    "detail": str(detail or "")[-4000:],
+                    "failure_class": failure_class or None,
+                    "files_imported": max(0, int(files_imported)),
+                    "finished_at": time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.gmtime()
+                    ),
+                }
+                if item_staging_dir:
+                    staged = discover_downloaded_audio(item_staging_dir)
+                    values["files_staged"] = len(staged)
+                    values["bytes_staged"] = sum(
+                        os.path.getsize(path)
+                        for path in staged
+                        if os.path.isfile(path)
+                    )
+                self.db.update_download_attempt(attempt_id, values)
+                decision = (
+                    "accepted"
+                    if outcome in {"success", "already_present"}
+                    else "rejected"
+                    if outcome == "failed"
+                    else outcome
+                )
+                self.db.finalize_download_attempt_files(
+                    attempt_id,
+                    decision,
+                    str(detail or "")[-2000:],
+                )
+
             heartbeat = _DownloadClaimHeartbeat(
                 self.db,
                 int(item.id),
@@ -1172,6 +1328,11 @@ class Downloader:
                         item,
                         owner,
                     ):
+                        finish_attempt(
+                            "already_present",
+                            "Exact queue target was already present locally",
+                            phase="completed",
+                        )
                         success_count += 1
                         continue
                     self._update_album_request_progress(
@@ -1211,6 +1372,7 @@ class Downloader:
                             raise DownloadClaimLostError(
                                 f"download claim lost for queue item {item.id}"
                             )
+                        finish_attempt("lidarr_handoff", detail, phase="completed")
                         success_count += 1
                         continue
 
@@ -1229,8 +1391,15 @@ class Downloader:
                             owner,
                             error,
                             quarantine=True,
+                            failure_class="no_retained_staging",
                         ):
                             raise DownloadClaimLostError(error)
+                        finish_attempt(
+                            "failed",
+                            error,
+                            failure_class="no_retained_staging",
+                            phase="failed",
+                        )
                         fail_count += 1
                         continue
                     else:
@@ -1247,12 +1416,64 @@ class Downloader:
                                 item,
                                 owner,
                                 error,
-                                quarantine=True,
+                                failure_class="blocked_disk",
+                                blocked_reason=error,
                             ):
                                 raise DownloadClaimLostError(error)
+                            finish_attempt(
+                                "blocked",
+                                error,
+                                failure_class="blocked_disk",
+                                phase="blocked",
+                            )
                             fail_count += 1
                             continue
                         item_staging_dir = self._create_item_staging_dir(item)
+                        tracker = None
+                        if item.playlist_id == "SATELLITE_ALBUM":
+                            tracker = self.db.get_album_download_request_by_queue_item(
+                                int(item.id)
+                            )
+                        strategy = self._acquisition_strategy(item, tracker)
+                        if (
+                            item.playlist_id == "SATELLITE_ALBUM"
+                            and int(item.strategy_index or 0) >= 2
+                            and strategy.name != "primary-artist-search"
+                        ):
+                            error = (
+                                "No distinct bounded acquisition strategy remains "
+                                "for this exact release"
+                            )
+                            if not self._fail_claimed_item(
+                                item,
+                                owner,
+                                error,
+                                quarantine=True,
+                                failure_class="no_more_strategies",
+                                blocked_reason=error,
+                            ):
+                                raise DownloadClaimLostError(error)
+                            finish_attempt(
+                                "blocked",
+                                error,
+                                failure_class="no_more_strategies",
+                                phase="blocked",
+                            )
+                            fail_count += 1
+                            continue
+                        started_item = self.db.start_download_network_attempt(
+                            int(item.id), owner, int(item.strategy_index or 0)
+                        )
+                        if started_item is None:
+                            raise DownloadClaimLostError(
+                                f"download claim lost for queue item {item.id}"
+                            )
+                        item = started_item
+                        self.db.update_download_attempt(attempt_id, {
+                            "strategy": strategy.name,
+                            "phase": "acquiring",
+                            "network_started": True,
+                        })
                         network_attempt_count += 1
                         if not self._attempt_download(
                             item,
@@ -1263,17 +1484,66 @@ class Downloader:
                                 "Downloader completed without staging any "
                                 "audio files"
                             )
-                            if not self._fail_claimed_item(item, owner, error):
+                            if not self._fail_claimed_item(
+                                item,
+                                owner,
+                                error,
+                                failure_class="no_results",
+                                advance_strategy=(
+                                    item.playlist_id == "SATELLITE_ALBUM"
+                                ),
+                            ):
                                 raise DownloadClaimLostError(error)
+                            finish_attempt(
+                                "failed",
+                                error,
+                                failure_class="no_results",
+                                phase="failed",
+                            )
                             fail_count += 1
                             continue
 
-                    processed_item = self._process_success(
-                        item,
-                        staging_dir=item_staging_dir,
-                        manage_queue_state=False,
-                        claim_owner=owner,
+                    self.db.update_download_attempt(
+                        attempt_id, {"phase": "validating"}
                     )
+                    candidate_rows = []
+                    for candidate_path in discover_downloaded_audio(
+                        item_staging_dir or self.downloads_dir
+                    ):
+                        try:
+                            embedded = read_flac_release_track_identity(candidate_path)
+                            recording_mbid = (
+                                embedded.recording_mbid
+                                if embedded is not None
+                                else read_embedded_recording_mbid(candidate_path)
+                            )
+                        except Exception:
+                            embedded = None
+                            recording_mbid = None
+                        try:
+                            candidate_bytes = os.path.getsize(candidate_path)
+                        except OSError:
+                            candidate_bytes = 0
+                        candidate_rows.append({
+                            "relative_name": os.path.relpath(
+                                candidate_path,
+                                item_staging_dir or self.downloads_dir,
+                            ),
+                            "recording_mbid": recording_mbid,
+                            "release_mbid": (
+                                embedded.release_mbid if embedded is not None else None
+                            ),
+                            "decision": "candidate",
+                            "bytes": candidate_bytes,
+                        })
+                    self.db.record_download_attempt_files(attempt_id, candidate_rows)
+                    with _DOWNLOAD_IMPORT_LOCK:
+                        processed_item = self._process_success(
+                            item,
+                            staging_dir=item_staging_dir,
+                            manage_queue_state=False,
+                            claim_owner=owner,
+                        )
                     if isinstance(processed_item, ProcessedQueueItem):
                         changed_file_count += processed_item.changed_file_count
                         completed = processed_item.completed
@@ -1300,6 +1570,12 @@ class Downloader:
                             raise DownloadClaimLostError(
                                 f"download claim lost for queue item {item.id}"
                             )
+                        finish_attempt(
+                            "success",
+                            completion_detail or "Download imported successfully",
+                            phase="completed",
+                            files_imported=completed_tracks,
+                        )
                         success_count += 1
                     else:
                         if not self._fail_claimed_item(
@@ -1307,16 +1583,31 @@ class Downloader:
                             owner,
                             error_message or "Downloaded audio was rejected",
                             completed_tracks=completed_tracks,
+                            failure_class="validation_rejected",
+                            advance_strategy=(
+                                item.playlist_id == "SATELLITE_ALBUM"
+                            ),
                         ):
                             raise DownloadClaimLostError(
                                 f"download claim lost for queue item {item.id}"
                             )
+                        finish_attempt(
+                            "failed",
+                            error_message or "Downloaded audio was rejected",
+                            failure_class="validation_rejected",
+                            phase="failed",
+                            files_imported=completed_tracks,
+                        )
                         fail_count += 1
 
             except subprocess.CalledProcessError as e:
                 error_message = f"STDOUT: {(e.stdout or '').strip()} | STDERR: {(e.stderr or '').strip()}"
                 logger.error(f"Download command failed: {error_message}")
                 if self._fail_claimed_item(item, owner, error_message):
+                    finish_attempt(
+                        "failed", error_message, failure_class="source_error",
+                        phase="failed",
+                    )
                     fail_count += 1
                 else:
                     fail_count += 1
@@ -1325,6 +1616,10 @@ class Downloader:
             except subprocess.TimeoutExpired:
                 logger.error(f"Download timed out: {item.search_query}")
                 if self._fail_claimed_item(item, owner, "Timeout expired"):
+                    finish_attempt(
+                        "failed", "Timeout expired", failure_class="timeout",
+                        phase="failed",
+                    )
                     fail_count += 1
                 else:
                     fail_count += 1
@@ -1336,10 +1631,19 @@ class Downloader:
                     item,
                     owner,
                     "slsk-batchdl command not found",
+                    quarantine=True,
+                    failure_class="configuration",
+                    blocked_reason="slsk-batchdl command not found",
                 ):
                     claim_lost_count += 1
                     item_claim_lost = True
                 fail_count += 1
+                finish_attempt(
+                    "blocked",
+                    "slsk-batchdl command not found",
+                    failure_class="configuration",
+                    phase="blocked",
+                )
                 report("FATAL: slsk-batchdl command not found")
                 fatal_downloader_error = True
             except DownloadClaimLostError as exc:
@@ -1347,11 +1651,18 @@ class Downloader:
                 fail_count += 1
                 claim_lost_count += 1
                 item_claim_lost = True
+                finish_attempt(
+                    "claim_lost", str(exc), failure_class="lease_lost",
+                    phase="abandoned",
+                )
             except Exception as e:
                 logger.error(f"Unexpected error: {e}", exc_info=True)
                 if not self._fail_claimed_item(item, owner, str(e)):
                     claim_lost_count += 1
                     item_claim_lost = True
+                finish_attempt(
+                    "failed", str(e), failure_class="unexpected", phase="failed"
+                )
                 fail_count += 1
             finally:
                 self._active_claim_heartbeat = None
@@ -1405,6 +1716,7 @@ class Downloader:
         Streams output to item_callback if provided.
         """
         album_track_count = None
+        tracker = None
         if item.playlist_id == "SATELLITE_ALBUM":
             if item.id is None:
                 raise ValueError(
@@ -1431,73 +1743,34 @@ class Downloader:
                     "verified album tracker has an invalid track count"
                 )
 
-        command, is_album_mode = build_download_command(
-            self.slsk_cmd_base,
+        strategy = self._acquisition_strategy(item, tracker)
+        cleanup_stale_sldl_configs()
+        with private_sldl_config(
             self.slsk_username,
             self.slsk_password,
-            item.search_query,
-            staging_dir or self.downloads_dir,
-            self.music_library_dir,
-            self.slsk_config,
-            album_track_count,
-        )
-        if is_album_mode:
-            query, _ = parse_download_query(item.search_query)
-            logger.info("Detected Album Mode for: %r", query)
-
-        total_timeout = self._download_timeout_seconds(is_album_mode)
-        idle_timeout = self._download_idle_timeout_seconds(is_album_mode)
-        self._run_sldl_command(
-            command,
-            item_callback,
-            timeout_seconds=total_timeout,
-            idle_timeout_seconds=idle_timeout,
-        )
-
-        # Album attempts run in a fresh item-specific staging directory.  A
-        # completed first search with no staged audio is therefore an exact
-        # zero-file result for this queue attempt.  Retry only that case with
-        # a deterministic primary-artist query; never retry a partial album or
-        # change the queue item's credited identity.
-        fallback_query = primary_artist_album_fallback_query(item.search_query)
-        fallback_enabled = (
-            self.slsk_config.get(
-                "slsk_album_primary_artist_fallback",
-                True,
-            )
-            is True
-        )
-        if (
-            is_album_mode
-            and staging_dir
-            and fallback_enabled
-            and fallback_query
-            and not discover_downloaded_audio(staging_dir)
-            and not _discover_incomplete_audio(staging_dir)
-        ):
-            fallback_command, _ = build_download_command(
+        ) as credential_path:
+            command, is_album_mode = build_download_command(
                 self.slsk_cmd_base,
                 self.slsk_username,
                 self.slsk_password,
-                fallback_query,
-                staging_dir,
+                strategy.search_query,
+                staging_dir or self.downloads_dir,
                 self.music_library_dir,
                 self.slsk_config,
                 album_track_count,
+                credential_config_path=credential_path,
+                skip_music_dir=tracker is None,
             )
-            fallback_input, _ = parse_download_query(fallback_query)
-            logger.info(
-                "Album search returned no audio; retrying Soulseek with "
-                "primary artist only: %s",
-                fallback_input,
-            )
-            if item_callback:
-                item_callback(
-                    "No album audio found; retrying with primary artist: "
-                    f"{fallback_input}"
+            if is_album_mode:
+                query, _ = parse_download_query(strategy.search_query)
+                logger.info(
+                    "Detected Album Mode using %s: %r", strategy.name, query
                 )
+
+            total_timeout = self._download_timeout_seconds(is_album_mode)
+            idle_timeout = self._download_idle_timeout_seconds(is_album_mode)
             self._run_sldl_command(
-                fallback_command,
+                command,
                 item_callback,
                 timeout_seconds=total_timeout,
                 idle_timeout_seconds=idle_timeout,
@@ -1511,6 +1784,25 @@ class Downloader:
             return False
 
         return True
+
+    def _acquisition_strategy(
+        self,
+        item: DownloadItem,
+        tracker: Optional[Mapping[str, Any]],
+    ) -> AcquisitionStrategy:
+        index = max(0, int(item.strategy_index or 0))
+        if tracker and index == 0:
+            release_mbid = canonical_release_mbid(tracker.get("release_mbid"))
+            if release_mbid:
+                return AcquisitionStrategy(
+                    "musicbrainz-release",
+                    f"::ALBUM:: https://musicbrainz.org/release/{release_mbid}",
+                )
+        if index >= 2:
+            fallback = primary_artist_album_fallback_query(item.search_query)
+            if fallback:
+                return AcquisitionStrategy("primary-artist-search", fallback)
+        return AcquisitionStrategy("canonical-search", item.search_query)
 
     def _download_timeout_seconds(self, is_album_mode: bool) -> int:
         key = (
@@ -1550,7 +1842,11 @@ class Downloader:
         # expose the Soulseek password in debug logs. ``repr`` also escapes
         # newlines in malformed input rather than allowing log-line injection.
         logged_command = list(command)
-        secrets_to_redact = set()
+        secrets_to_redact = {
+            str(self.slsk_password)
+            for _ in (0,)
+            if self.slsk_password
+        }
         for index, argument in enumerate(logged_command):
             if argument == "--pass" and index + 1 < len(logged_command):
                 if logged_command[index + 1]:
@@ -2455,6 +2751,30 @@ class Downloader:
                     fallback_audio_digests = (
                         fallback_plan.audio_payload_sha256_by_path
                     )
+            try:
+                expected_track_count = int(album_tracker.get("track_count") or 0)
+            except (TypeError, ValueError):
+                expected_track_count = 0
+            if incomplete_files or len(found_files) != expected_track_count:
+                return failed_result(
+                    "Exact release staging is incomplete: "
+                    f"{len(found_files)} complete FLAC file(s) and "
+                    f"{len(incomplete_files)} incomplete file(s) for a "
+                    f"{expected_track_count}-track manifest; nothing was imported",
+                    completed_tracks=(
+                        album_inventory.completed_tracks if album_inventory else 0
+                    ),
+                )
+            if not track_manifest or not fallback_plan.accepted:
+                return failed_result(
+                    "Exact release validation did not produce a complete "
+                    "import plan: "
+                    f"{fallback_plan.reason or 'manifest unavailable'}; "
+                    "nothing was imported",
+                    completed_tracks=(
+                        album_inventory.completed_tracks if album_inventory else 0
+                    ),
+                )
         self._update_album_request_progress(
             item,
             "importing",

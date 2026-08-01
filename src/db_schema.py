@@ -8,6 +8,8 @@ import logging
 import sqlite3
 from typing import Dict, Set, Tuple
 
+from src.download_identity import download_target_key
+
 
 TABLE_DEFINITIONS: Dict[str, str] = {
     "tracks": """
@@ -74,7 +76,66 @@ TABLE_DEFINITIONS: Dict[str, str] = {
             claim_heartbeat_at TIMESTAMP,
             is_paused INTEGER NOT NULL DEFAULT 0,
             is_quarantined INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT
+            last_error TEXT,
+            target_key TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL DEFAULT 'queued',
+            failure_class TEXT,
+            blocked_reason TEXT,
+            strategy_index INTEGER NOT NULL DEFAULT 0
+        );
+    """,
+    "download_worker_state": """
+        CREATE TABLE IF NOT EXISTS download_worker_state (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+            is_paused INTEGER NOT NULL DEFAULT 1,
+            state TEXT NOT NULL DEFAULT 'stopped',
+            lease_owner TEXT,
+            lease_expires_at TIMESTAMP,
+            heartbeat_at TIMESTAMP,
+            current_item_id INTEGER,
+            detail TEXT NOT NULL DEFAULT '',
+            next_wake_at TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    """,
+    "download_attempts": """
+        CREATE TABLE IF NOT EXISTS download_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queue_item_id INTEGER,
+            target_key TEXT NOT NULL,
+            strategy TEXT NOT NULL DEFAULT '',
+            phase TEXT NOT NULL DEFAULT 'claimed',
+            outcome TEXT,
+            failure_class TEXT,
+            detail TEXT NOT NULL DEFAULT '',
+            network_started INTEGER NOT NULL DEFAULT 0,
+            bytes_staged INTEGER NOT NULL DEFAULT 0,
+            files_staged INTEGER NOT NULL DEFAULT 0,
+            files_validated INTEGER NOT NULL DEFAULT 0,
+            files_imported INTEGER NOT NULL DEFAULT 0,
+            started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP,
+            retry_at TIMESTAMP,
+            FOREIGN KEY (queue_item_id) REFERENCES download_queue(id)
+                ON DELETE SET NULL
+        );
+    """,
+    "download_attempt_files": """
+        CREATE TABLE IF NOT EXISTS download_attempt_files (
+            attempt_id INTEGER NOT NULL,
+            relative_name TEXT NOT NULL,
+            manifest_position INTEGER,
+            recording_mbid TEXT,
+            release_mbid TEXT,
+            audio_sha256 TEXT,
+            acoustic_result TEXT,
+            acoustic_score REAL,
+            decision TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            bytes INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (attempt_id, relative_name),
+            FOREIGN KEY (attempt_id) REFERENCES download_attempts(id)
+                ON DELETE CASCADE
         );
     """,
     "album_download_requests": """
@@ -209,6 +270,8 @@ BASE_INDEX_DEFINITIONS: Tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_play_events_track_mbid "
     "ON play_events(track_mbid)",
     "CREATE INDEX IF NOT EXISTS idx_artist_tags_tag ON artist_tags(tag)",
+    "CREATE INDEX IF NOT EXISTS idx_download_attempts_queue_started "
+    "ON download_attempts(queue_item_id, started_at)",
 )
 
 
@@ -260,7 +323,18 @@ DOWNLOAD_QUEUE_MIGRATIONS: Tuple[Tuple[str, str], ...] = (
     ("is_paused", "INTEGER NOT NULL DEFAULT 0"),
     ("is_quarantined", "INTEGER NOT NULL DEFAULT 0"),
     ("last_error", "TEXT"),
+    ("target_key", "TEXT NOT NULL DEFAULT ''"),
+    ("phase", "TEXT NOT NULL DEFAULT 'queued'"),
+    ("failure_class", "TEXT"),
+    ("blocked_reason", "TEXT"),
+    ("strategy_index", "INTEGER NOT NULL DEFAULT 0"),
 )
+
+
+REQUIRED_DOWNLOAD_INDEXES = {
+    "idx_download_queue_claimable",
+    "idx_download_queue_active_target",
+}
 
 
 def _schema_requires_migration(cursor: sqlite3.Cursor) -> bool:
@@ -316,13 +390,18 @@ def _schema_requires_migration(cursor: sqlite3.Cursor) -> bool:
         row[0]
         for row in cursor.execute(
             "SELECT name FROM sqlite_master "
-            "WHERE type = 'index' AND name IN (?, ?)",
-            ("idx_tracks_is_liked", "idx_download_queue_claimable"),
+            "WHERE type = 'index' AND name IN (?, ?, ?)",
+            (
+                "idx_tracks_is_liked",
+                "idx_download_queue_claimable",
+                "idx_download_queue_active_target",
+            ),
         ).fetchall()
     }
     return migration_indexes != {
         "idx_tracks_is_liked",
         "idx_download_queue_claimable",
+        "idx_download_queue_active_target",
     }
 
 
@@ -447,6 +526,72 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
                     f"ADD COLUMN {column} {definition}"
                 )
                 logger.info("Added column: download_queue.%s", column)
+
+        # Backfill stable target identities before installing the partial
+        # uniqueness constraint. Resolve legacy collisions without reviving a
+        # quarantined row or disturbing an active claim.
+        queue_rows = cursor.execute(
+            "SELECT id, search_query, playlist_id, mbid_guess, status, "
+            "claim_owner, attempt_count, max_attempts, is_paused, "
+            "is_quarantined, next_attempt_at, last_error FROM download_queue "
+            "ORDER BY id"
+        ).fetchall()
+        rows_by_target = {}
+        for row in queue_rows:
+            target_key = download_target_key(
+                row["search_query"], row["playlist_id"], row["mbid_guess"]
+            )
+            cursor.execute(
+                "UPDATE download_queue SET target_key = ? WHERE id = ?",
+                (target_key, row["id"]),
+            )
+            if target_key and row["status"] in ("pending", "failed"):
+                rows_by_target.setdefault(target_key, []).append(row)
+
+        for target_key, duplicate_rows in rows_by_target.items():
+            if len(duplicate_rows) < 2:
+                continue
+            claimed = [row for row in duplicate_rows if row["claim_owner"]]
+            keeper = claimed[0] if claimed else duplicate_rows[0]
+            retired = [row for row in duplicate_rows if row["id"] != keeper["id"]]
+            cursor.execute(
+                "UPDATE download_queue SET attempt_count = ?, max_attempts = ?, "
+                "is_paused = ?, is_quarantined = ?, next_attempt_at = ?, "
+                "last_error = ? WHERE id = ?",
+                (
+                    max(int(row["attempt_count"] or 0) for row in duplicate_rows),
+                    max(int(row["max_attempts"] or 3) for row in duplicate_rows),
+                    int(any(row["is_paused"] for row in duplicate_rows)),
+                    int(any(row["is_quarantined"] for row in duplicate_rows)),
+                    max(
+                        (row["next_attempt_at"] for row in duplicate_rows
+                         if row["next_attempt_at"]),
+                        default=None,
+                    ),
+                    next(
+                        (str(row["last_error"]) for row in reversed(duplicate_rows)
+                         if row["last_error"]),
+                        None,
+                    ),
+                    keeper["id"],
+                ),
+            )
+            retired_ids = [int(row["id"]) for row in retired]
+            placeholders = ",".join("?" for _ in retired_ids)
+            cursor.execute(
+                "UPDATE album_download_requests SET queue_item_id = ? "
+                f"WHERE queue_item_id IN ({placeholders})",
+                (keeper["id"], *retired_ids),
+            )
+            cursor.execute(
+                f"DELETE FROM download_queue WHERE id IN ({placeholders})",
+                retired_ids,
+            )
+            logger.warning(
+                "Merged %d duplicate active download target(s) for %s",
+                len(retired_ids),
+                target_key,
+            )
         if legacy_download_queue_retry_state:
             cursor.execute(
                 "UPDATE download_queue SET is_quarantined = 1, "
@@ -478,6 +623,14 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
             "ON download_queue("
             "status, is_paused, is_quarantined, next_attempt_at, "
             "claim_expires_at, id)"
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_download_queue_active_target ON download_queue(target_key) "
+            "WHERE target_key != '' AND status IN ('pending', 'failed')"
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO download_worker_state(singleton_id) VALUES (1)"
         )
         conn.commit()
     except sqlite3.Error as error:

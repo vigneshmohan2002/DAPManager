@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from src.services.download_residue_service import (
+    enforce_download_residue_budget,
     remove_download_residue,
     scan_download_residue,
 )
@@ -62,3 +63,41 @@ def test_remove_deletes_only_matching_owned_directories(tmp_path):
     assert not owned_quarantine.exists()
     assert other_item.exists()
     assert ordinary.exists()
+
+
+def test_cleanup_removes_expired_quarantine_but_not_active_staging(tmp_path):
+    quarantine = tmp_path / ".dap-quarantine-7-old"
+    active = tmp_path / ".dap-queue-8-active"
+    _write(quarantine / "bad.flac", 11)
+    _write(active / "downloading.flac", 13)
+    old = 1_000.0
+    quarantine.joinpath("bad.flac").touch()
+    import os
+    os.utime(quarantine / "bad.flac", (old, old))
+
+    cleanup = enforce_download_residue_budget(
+        str(tmp_path), max_bytes=100, max_age_seconds=10, now=2_000.0
+    )
+
+    assert cleanup.removed_bytes == 11
+    assert not quarantine.exists()
+    assert active.exists()
+
+
+def test_cleanup_removes_oldest_quarantine_until_under_byte_cap(tmp_path):
+    older = tmp_path / ".dap-quarantine-7-old"
+    newer = tmp_path / ".dap-quarantine-8-new"
+    _write(older / "old.flac", 11)
+    _write(newer / "new.flac", 13)
+    import os
+    os.utime(older / "old.flac", (1_900, 1_900))
+    os.utime(newer / "new.flac", (1_950, 1_950))
+
+    cleanup = enforce_download_residue_budget(
+        str(tmp_path), max_bytes=13, max_age_seconds=1_000, now=2_000
+    )
+
+    assert cleanup.removed_directories == 1
+    assert not older.exists()
+    assert newer.exists()
+    assert cleanup.remaining_bytes == 13

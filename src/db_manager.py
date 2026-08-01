@@ -8,7 +8,7 @@ import os
 import uuid
 import logging
 from dataclasses import dataclass
-from typing import Any, Collection, List, Mapping, Optional, Set, Tuple, TypedDict
+from typing import Any, Collection, List, Mapping, Optional, Sequence, Set, Tuple, TypedDict
 from datetime import datetime
 
 from src.db_schema import create_tables, migrate_schema
@@ -139,6 +139,11 @@ class DownloadItem:
     is_paused: bool = False
     is_quarantined: bool = False
     last_error: Optional[str] = None
+    target_key: str = ""
+    phase: str = "queued"
+    failure_class: Optional[str] = None
+    blocked_reason: Optional[str] = None
+    strategy_index: int = 0
 
 
 class DatabaseManager:
@@ -742,6 +747,7 @@ class DatabaseManager:
         lease_seconds: int = 900,
         now: Optional[datetime] = None,
         *,
+        consume_attempt: bool = True,
         include_item_ids: Optional[Collection[int]] = None,
         exclude_item_ids: Collection[int] = (),
     ) -> Optional[DownloadItem]:
@@ -754,10 +760,83 @@ class DatabaseManager:
             owner,
             lease_seconds,
             now,
+            consume_attempt=consume_attempt,
             include_item_ids=include_item_ids,
             exclude_item_ids=exclude_item_ids,
         )
         return self._row_to_download_item(row) if row else None
+
+    def start_download_network_attempt(
+        self,
+        item_id: int,
+        owner: str,
+        strategy_index: int,
+        now: Optional[datetime] = None,
+    ) -> Optional[DownloadItem]:
+        row = self._download_repository.start_network_attempt(
+            item_id, owner, strategy_index, now
+        )
+        return self._row_to_download_item(row) if row else None
+
+    def create_download_attempt(
+        self,
+        item_id: int,
+        target_key: str,
+        **values: Any,
+    ) -> int:
+        return self._download_repository.create_attempt(
+            item_id, target_key, **values
+        )
+
+    def update_download_attempt(
+        self,
+        attempt_id: int,
+        values: Mapping[str, Any],
+    ) -> bool:
+        return self._download_repository.update_attempt(attempt_id, values)
+
+    def list_download_attempts(self, item_id: int, limit: int = 50) -> List[dict]:
+        return [
+            dict(row)
+            for row in self._download_repository.list_attempts(item_id, limit)
+        ]
+
+    def record_download_attempt_files(
+        self, attempt_id: int, rows: Sequence[Mapping[str, Any]]
+    ) -> None:
+        self._download_repository.record_attempt_files(attempt_id, rows)
+
+    def finalize_download_attempt_files(
+        self, attempt_id: int, decision: str, reason: str = ""
+    ) -> None:
+        self._download_repository.finalize_attempt_files(
+            attempt_id, decision, reason
+        )
+
+    def list_download_attempt_files(self, attempt_id: int) -> List[dict]:
+        return [
+            dict(row)
+            for row in self._download_repository.list_attempt_files(attempt_id)
+        ]
+
+    def get_download_worker_state(self) -> dict:
+        return dict(self._download_repository.get_worker_state())
+
+    def set_download_worker_paused(self, paused: bool) -> None:
+        self._download_repository.set_worker_paused(paused)
+
+    def claim_download_worker(
+        self, owner: str, lease_seconds: int, now: Optional[datetime] = None
+    ) -> bool:
+        return self._download_repository.claim_worker(owner, lease_seconds, now)
+
+    def heartbeat_download_worker(self, owner: str, lease_seconds: int, **values: Any) -> bool:
+        return self._download_repository.heartbeat_worker(
+            owner, lease_seconds, **values
+        )
+
+    def release_download_worker(self, owner: str, state: str = "stopped") -> bool:
+        return self._download_repository.release_worker(owner, state)
 
     def recover_stale_download_claims(
         self,
@@ -776,6 +855,19 @@ class DatabaseManager:
         return self._download_repository.count_claimable(
             now,
             include_item_ids=include_item_ids,
+            exclude_item_ids=exclude_item_ids,
+        )
+
+    def list_claimable_download_ids(
+        self,
+        limit: int,
+        now: Optional[datetime] = None,
+        *,
+        exclude_item_ids: Collection[int] = (),
+    ) -> List[int]:
+        return self._download_repository.list_claimable_ids(
+            limit,
+            now,
             exclude_item_ids=exclude_item_ids,
         )
 
@@ -803,6 +895,9 @@ class DatabaseManager:
         error_message: str = "",
         *,
         quarantine: bool = False,
+        failure_class: str = "retryable",
+        blocked_reason: str = "",
+        advance_strategy: bool = False,
         base_delay_seconds: int = 300,
         max_delay_seconds: int = 86400,
         now: Optional[datetime] = None,
@@ -813,6 +908,9 @@ class DatabaseManager:
             owner,
             error_message,
             quarantine=quarantine,
+            failure_class=failure_class,
+            blocked_reason=blocked_reason,
+            advance_strategy=advance_strategy,
             base_delay_seconds=base_delay_seconds,
             max_delay_seconds=max_delay_seconds,
             now=now,
@@ -1062,6 +1160,9 @@ class DatabaseManager:
         completed_tracks: int = 0,
         *,
         quarantine: bool = False,
+        failure_class: str = "retryable",
+        blocked_reason: str = "",
+        advance_strategy: bool = False,
         base_delay_seconds: int = 300,
         max_delay_seconds: int = 86400,
         now: Optional[datetime] = None,
@@ -1073,6 +1174,9 @@ class DatabaseManager:
             error_message,
             completed_tracks,
             quarantine=quarantine,
+            failure_class=failure_class,
+            blocked_reason=blocked_reason,
+            advance_strategy=advance_strategy,
             base_delay_seconds=base_delay_seconds,
             max_delay_seconds=max_delay_seconds,
             now=now,
@@ -2049,6 +2153,18 @@ class DatabaseManager:
             ),
             last_error=(
                 row["last_error"] if "last_error" in keys else None
+            ),
+            target_key=(row["target_key"] if "target_key" in keys else ""),
+            phase=(row["phase"] if "phase" in keys else "queued"),
+            failure_class=(
+                row["failure_class"] if "failure_class" in keys else None
+            ),
+            blocked_reason=(
+                row["blocked_reason"] if "blocked_reason" in keys else None
+            ),
+            strategy_index=(
+                int(row["strategy_index"] or 0)
+                if "strategy_index" in keys else 0
             ),
         )
 

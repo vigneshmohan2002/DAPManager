@@ -2,9 +2,10 @@
 
 from datetime import datetime, timedelta, timezone
 import sqlite3
-from typing import Callable, Collection, List, Optional, Set, Tuple
+from typing import Any, Callable, Collection, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .base import SQLiteRepository
+from src.download_identity import download_target_key
 
 
 def _utc_naive(value: Optional[datetime] = None) -> datetime:
@@ -172,16 +173,26 @@ class DownloadRepository(SQLiteRepository):
         mbid_guess: str,
         status: str,
     ) -> int:
+        target_key = download_target_key(search_query, playlist_id, mbid_guess)
         cursor = self.conn.cursor()
         try:
             cursor.execute(
                 "INSERT OR IGNORE INTO download_queue "
-                "(search_query, playlist_id, mbid_guess, status) "
-                "VALUES (?, ?, ?, ?)",
-                (search_query, playlist_id, mbid_guess, status),
+                "(search_query, playlist_id, mbid_guess, status, target_key) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (search_query, playlist_id, mbid_guess, status, target_key),
             )
+            item_id = int(cursor.lastrowid or 0)
+            if not item_id and target_key:
+                cursor.execute(
+                    "SELECT id FROM download_queue WHERE target_key = ? "
+                    "AND status IN ('pending', 'failed') ORDER BY id LIMIT 1",
+                    (target_key,),
+                )
+                row = cursor.fetchone()
+                item_id = int(row["id"]) if row else 0
             self.conn.commit()
-            return cursor.lastrowid or 0
+            return item_id
         finally:
             cursor.close()
 
@@ -272,7 +283,8 @@ class DownloadRepository(SQLiteRepository):
                 "attempt_count = 0, next_attempt_at = NULL, "
                 "claim_owner = NULL, claim_expires_at = NULL, "
                 "claim_heartbeat_at = NULL, is_paused = 0, "
-                "is_quarantined = 0, last_error = NULL "
+                "is_quarantined = 0, last_error = NULL, phase = 'queued', "
+                "failure_class = NULL, blocked_reason = NULL, strategy_index = 0 "
                 "WHERE id = ? AND status = 'failed'",
                 (item_id,),
             )
@@ -297,7 +309,9 @@ class DownloadRepository(SQLiteRepository):
                 "status = 'pending', attempt_count = 0, "
                 "next_attempt_at = NULL, claim_owner = NULL, "
                 "claim_expires_at = NULL, claim_heartbeat_at = NULL, "
-                "is_paused = 0, is_quarantined = 0, last_error = NULL "
+                "is_paused = 0, is_quarantined = 0, last_error = NULL, "
+                "phase = 'queued', failure_class = NULL, blocked_reason = NULL, "
+                "strategy_index = 0 "
                 "WHERE id = ? AND mbid_guess = ? "
                 "COLLATE NOCASE "
                 "AND status IN ('pending', 'failed')",
@@ -346,6 +360,7 @@ class DownloadRepository(SQLiteRepository):
         lease_seconds: int = 900,
         now: Optional[datetime] = None,
         *,
+        consume_attempt: bool = True,
         include_item_ids: Optional[Collection[int]] = None,
         exclude_item_ids: Collection[int] = (),
     ) -> Optional[sqlite3.Row]:
@@ -392,11 +407,14 @@ class DownloadRepository(SQLiteRepository):
 
             cursor.execute(
                 "UPDATE download_queue SET status = 'pending', "
-                "attempt_count = attempt_count + 1, last_attempt = ?, "
-                "next_attempt_at = NULL, claim_owner = ?, "
+                "attempt_count = attempt_count + ?, "
+                "last_attempt = CASE WHEN ? THEN ? ELSE last_attempt END, "
+                "next_attempt_at = NULL, claim_owner = ?, phase = 'claimed', "
                 "claim_expires_at = ?, claim_heartbeat_at = ? "
                 "WHERE id = ?",
                 (
+                    int(consume_attempt),
+                    int(consume_attempt),
                     claimed_timestamp,
                     normalized_owner,
                     expires_timestamp,
@@ -414,6 +432,280 @@ class DownloadRepository(SQLiteRepository):
         except Exception:
             self.conn.rollback()
             raise
+        finally:
+            cursor.close()
+
+    def start_network_attempt(
+        self,
+        item_id: int,
+        owner: str,
+        strategy_index: int,
+        now: Optional[datetime] = None,
+    ) -> Optional[sqlite3.Row]:
+        """Consume retry budget only immediately before starting sldl."""
+        attempted_at = _sql_timestamp(_utc_naive(now))
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "UPDATE download_queue SET attempt_count = attempt_count + 1, "
+                "last_attempt = ?, strategy_index = ?, phase = 'acquiring', "
+                "failure_class = NULL, blocked_reason = NULL "
+                "WHERE id = ? AND claim_owner = ? AND claim_expires_at > ? "
+                "AND attempt_count < max_attempts",
+                (
+                    attempted_at,
+                    max(0, int(strategy_index)),
+                    int(item_id),
+                    str(owner),
+                    attempted_at,
+                ),
+            )
+            if cursor.rowcount == 0:
+                self.conn.commit()
+                return None
+            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            self.conn.commit()
+            return row
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def create_attempt(
+        self,
+        item_id: int,
+        target_key: str,
+        *,
+        strategy: str = "",
+        phase: str = "claimed",
+        network_started: bool = False,
+    ) -> int:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO download_attempts (queue_item_id, target_key, "
+                "strategy, phase, network_started) VALUES (?, ?, ?, ?, ?)",
+                (item_id, target_key, strategy, phase, int(network_started)),
+            )
+            attempt_id = int(cursor.lastrowid)
+            self.conn.commit()
+            return attempt_id
+        finally:
+            cursor.close()
+
+    def update_attempt(self, attempt_id: int, values: Mapping[str, Any]) -> bool:
+        allowed = {
+            "strategy", "phase", "outcome", "failure_class", "detail",
+            "network_started", "bytes_staged", "files_staged",
+            "files_validated", "files_imported", "finished_at", "retry_at",
+        }
+        updates = [(key, values[key]) for key in values if key in allowed]
+        if not updates:
+            return False
+        assignments = ", ".join(f"{key} = ?" for key, _ in updates)
+        parameters = [
+            int(value) if key == "network_started" else value
+            for key, value in updates
+        ]
+        parameters.append(int(attempt_id))
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                f"UPDATE download_attempts SET {assignments} WHERE id = ?",
+                parameters,
+            )
+            changed = cursor.rowcount > 0
+            self.conn.commit()
+            return changed
+        finally:
+            cursor.close()
+
+    def list_attempts(self, item_id: int, limit: int = 50) -> List[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT * FROM download_attempts WHERE queue_item_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (int(item_id), max(1, min(int(limit), 200))),
+            )
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+
+    def record_attempt_files(
+        self,
+        attempt_id: int,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        cursor = self.conn.cursor()
+        try:
+            cursor.executemany(
+                "INSERT OR REPLACE INTO download_attempt_files "
+                "(attempt_id, relative_name, manifest_position, recording_mbid, "
+                "release_mbid, audio_sha256, acoustic_result, acoustic_score, "
+                "decision, reason, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(
+                    int(attempt_id),
+                    str(row.get("relative_name") or "")[:1000],
+                    row.get("manifest_position"),
+                    row.get("recording_mbid"),
+                    row.get("release_mbid"),
+                    row.get("audio_sha256"),
+                    row.get("acoustic_result"),
+                    row.get("acoustic_score"),
+                    str(row.get("decision") or "candidate")[:100],
+                    str(row.get("reason") or "")[-2000:],
+                    max(0, int(row.get("bytes") or 0)),
+                ) for row in rows if row.get("relative_name")],
+            )
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def finalize_attempt_files(
+        self,
+        attempt_id: int,
+        decision: str,
+        reason: str = "",
+    ) -> None:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE download_attempt_files SET decision = ?, reason = ? "
+                "WHERE attempt_id = ?",
+                (str(decision)[:100], str(reason or "")[-2000:], int(attempt_id)),
+            )
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def list_attempt_files(self, attempt_id: int) -> List[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT * FROM download_attempt_files WHERE attempt_id = ? "
+                "ORDER BY relative_name",
+                (int(attempt_id),),
+            )
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+
+    def get_worker_state(self) -> sqlite3.Row:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT OR IGNORE INTO download_worker_state(singleton_id) VALUES (1)"
+            )
+            cursor.execute(
+                "SELECT * FROM download_worker_state WHERE singleton_id = 1"
+            )
+            row = cursor.fetchone()
+            self.conn.commit()
+            return row
+        finally:
+            cursor.close()
+
+    def set_worker_paused(self, paused: bool) -> None:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT OR IGNORE INTO download_worker_state(singleton_id) VALUES (1)"
+            )
+            cursor.execute(
+                "UPDATE download_worker_state SET is_paused = ?, "
+                "state = CASE WHEN ? THEN 'paused' ELSE state END, "
+                "updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 1",
+                (int(paused), int(paused)),
+            )
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def claim_worker(
+        self,
+        owner: str,
+        lease_seconds: int,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        claimed_at = _utc_naive(now)
+        claimed_timestamp = _sql_timestamp(claimed_at)
+        expires = _sql_timestamp(claimed_at + timedelta(seconds=lease_seconds))
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "INSERT OR IGNORE INTO download_worker_state(singleton_id) VALUES (1)"
+            )
+            cursor.execute(
+                "UPDATE download_worker_state SET lease_owner = ?, "
+                "lease_expires_at = ?, heartbeat_at = ?, state = 'idle', "
+                "updated_at = ? WHERE singleton_id = 1 AND is_paused = 0 "
+                "AND (lease_owner IS NULL OR lease_expires_at IS NULL "
+                "OR lease_expires_at <= ? OR lease_owner = ?)",
+                (
+                    owner, expires, claimed_timestamp, claimed_timestamp,
+                    claimed_timestamp, owner,
+                ),
+            )
+            changed = cursor.rowcount > 0
+            self.conn.commit()
+            return changed
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def heartbeat_worker(
+        self,
+        owner: str,
+        lease_seconds: int,
+        *,
+        state: str,
+        current_item_id: Optional[int] = None,
+        detail: str = "",
+        next_wake_at: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        heartbeat = _utc_naive(now)
+        heartbeat_timestamp = _sql_timestamp(heartbeat)
+        expires = _sql_timestamp(heartbeat + timedelta(seconds=lease_seconds))
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE download_worker_state SET lease_expires_at = ?, "
+                "heartbeat_at = ?, state = ?, current_item_id = ?, detail = ?, "
+                "next_wake_at = ?, updated_at = ? WHERE singleton_id = 1 "
+                "AND lease_owner = ? AND is_paused = 0",
+                (
+                    expires, heartbeat_timestamp, state, current_item_id,
+                    str(detail or "")[-2000:], next_wake_at,
+                    heartbeat_timestamp, owner,
+                ),
+            )
+            changed = cursor.rowcount > 0
+            self.conn.commit()
+            return changed
+        finally:
+            cursor.close()
+
+    def release_worker(self, owner: str, state: str = "stopped") -> bool:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE download_worker_state SET lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, state = ?, "
+                "current_item_id = NULL, updated_at = CURRENT_TIMESTAMP "
+                "WHERE singleton_id = 1 AND lease_owner = ?",
+                (state, owner),
+            )
+            changed = cursor.rowcount > 0
+            self.conn.commit()
+            return changed
         finally:
             cursor.close()
 
@@ -439,6 +731,31 @@ class DownloadRepository(SQLiteRepository):
                 parameters,
             )
             return int(cursor.fetchone()[0])
+        finally:
+            cursor.close()
+
+    def list_claimable_ids(
+        self,
+        limit: int,
+        now: Optional[datetime] = None,
+        *,
+        exclude_item_ids: Collection[int] = (),
+    ) -> List[int]:
+        now_timestamp = _sql_timestamp(_utc_naive(now))
+        eligibility, parameters = self._claim_eligibility(
+            now_timestamp,
+            None,
+            exclude_item_ids,
+        )
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT id FROM download_queue WHERE " + str(eligibility) + " "
+                "ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, id "
+                "LIMIT ?",
+                [*parameters, max(1, min(int(limit), 20))],
+            )
+            return [int(row["id"]) for row in cursor.fetchall()]
         finally:
             cursor.close()
 
@@ -512,6 +829,9 @@ class DownloadRepository(SQLiteRepository):
         error_message: str = "",
         *,
         quarantine: bool = False,
+        failure_class: str = "retryable",
+        blocked_reason: str = "",
+        advance_strategy: bool = False,
         base_delay_seconds: int = 300,
         max_delay_seconds: int = 86400,
         now: Optional[datetime] = None,
@@ -555,7 +875,8 @@ class DownloadRepository(SQLiteRepository):
             cursor.execute(
                 "UPDATE download_queue SET status = 'failed', "
                 "last_attempt = ?, next_attempt_at = ?, "
-                "last_error = ?, "
+                "last_error = ?, phase = 'failed', failure_class = ?, "
+                "blocked_reason = ?, strategy_index = strategy_index + ?, "
                 "is_quarantined = CASE WHEN ? THEN 1 ELSE is_quarantined END, "
                 "claim_owner = NULL, claim_expires_at = NULL, "
                 "claim_heartbeat_at = NULL WHERE id = ? AND claim_owner = ?",
@@ -563,6 +884,9 @@ class DownloadRepository(SQLiteRepository):
                     failed_timestamp,
                     next_attempt_timestamp,
                     str(error_message or "")[-4000:],
+                    str(failure_class or "retryable")[-100:],
+                    str(blocked_reason or "")[-1000:] or None,
+                    int(bool(advance_strategy)),
                     int(should_quarantine),
                     item_id,
                     owner,

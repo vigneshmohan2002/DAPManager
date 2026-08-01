@@ -512,6 +512,60 @@ def test_release_bound_identification_rejects_wrong_expected_recording(
     get_release.assert_not_called()
 
 
+def test_acoustic_evidence_confirms_expected_near_tied_green_recording(tmp_path):
+    path = tmp_path / "confirm.flac"
+    path.write_bytes(b"fingerprint input")
+    expected = "00000000-0000-4000-8000-000000000002"
+    response = {"status": "ok", "results": [
+        {"score": 0.96, "recordings": [{"id": expected}]},
+        {"score": 0.97, "recordings": [{
+            "id": "00000000-0000-4000-8000-000000000003"
+        }]},
+    ]}
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file", return_value=(180.0, "FP")
+    ), patch("src.tag_service.acoustid.lookup", return_value=response):
+        evidence = tag_service.classify_acoustic_recording_evidence(
+            str(path), "key", expected
+        )
+    assert evidence.state == "confirm"
+    assert evidence.expected_score == 0.96
+
+
+def test_acoustic_evidence_rejects_strong_different_winner(tmp_path):
+    path = tmp_path / "contradict.flac"
+    path.write_bytes(b"fingerprint input")
+    expected = "00000000-0000-4000-8000-000000000002"
+    wrong = "00000000-0000-4000-8000-000000000003"
+    response = {"status": "ok", "results": [
+        {"score": 0.99, "recordings": [{"id": wrong}]},
+        {"score": 0.70, "recordings": [{"id": expected}]},
+    ]}
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file", return_value=(180.0, "FP")
+    ), patch("src.tag_service.acoustid.lookup", return_value=response):
+        evidence = tag_service.classify_acoustic_recording_evidence(
+            str(path), "key", expected
+        )
+    assert evidence.state == "contradict"
+    assert evidence.winning_recording_mbid == wrong
+
+
+def test_acoustic_evidence_treats_empty_results_as_inconclusive(tmp_path):
+    path = tmp_path / "empty.flac"
+    path.write_bytes(b"fingerprint input")
+    with patch(
+        "src.tag_service.acoustid.fingerprint_file", return_value=(180.0, "FP")
+    ), patch(
+        "src.tag_service.acoustid.lookup",
+        return_value={"status": "ok", "results": []},
+    ):
+        evidence = tag_service.classify_acoustic_recording_evidence(
+            str(path), "key", "00000000-0000-4000-8000-000000000002"
+        )
+    assert evidence.state == "inconclusive"
+
+
 def test_release_bound_identification_rejects_recording_absent_from_exact_release(
     tmp_path,
 ):

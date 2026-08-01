@@ -392,13 +392,7 @@ def test_unlisted_or_incomplete_audio_prevents_a_whole_set_plan(
             lambda response: response["release"]["medium-list"][0][
                 "track-list"
             ][0].update({"length": 0}),
-            "duration or ISRC",
-        ),
-        (
-            lambda response: response["release"]["medium-list"][0][
-                "track-list"
-            ][0]["recording"].update({"isrc-list": []}),
-            "duration or ISRC",
+            "duration evidence",
         ),
         (
             lambda response: response["release"].update({"title": "Other"}),
@@ -422,6 +416,17 @@ def test_refetched_release_must_match_signature_and_have_all_lengths(
     assert reason_fragment in result.reason
     assert coverage.call_count == 2
     get_release.assert_called_once()
+
+
+def test_missing_musicbrainz_isrc_is_inconclusive_not_a_rejection(staged_album):
+    response = copy.deepcopy(_release_response())
+    response["release"]["medium-list"][0]["track-list"][0][
+        "recording"
+    ]["isrc-list"] = []
+
+    result, _, _, _, _ = _plan(staged_album, response=response)
+
+    assert result.accepted is True
 
 
 @pytest.mark.parametrize(

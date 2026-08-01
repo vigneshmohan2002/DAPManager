@@ -8,10 +8,12 @@ const apiMocks = vi.hoisted(() => ({
   clearCompletedDownloads: vi.fn(),
   deleteDownload: vi.fn(),
   deleteDownloadResidue: vi.fn(),
+  fetchDownloadWorker: vi.fn(),
   fetchDownloads: vi.fn(),
   fetchStatus: vi.fn(),
   postAction: vi.fn(),
   retryDownload: vi.fn(),
+  setDownloadWorkerPaused: vi.fn(),
 }));
 
 const toast = vi.hoisted(() => ({ show: vi.fn() }));
@@ -74,6 +76,15 @@ const failedRows = [
 describe("DownloadsScreen retry state", () => {
   beforeEach(() => {
     apiMocks.fetchDownloads.mockResolvedValue(failedRows);
+    apiMocks.fetchDownloadWorker.mockResolvedValue({
+      is_paused: false,
+      state: "idle",
+      current_item_id: null,
+      detail: "No due download items",
+      heartbeat_at: null,
+      next_wake_at: null,
+    });
+    apiMocks.setDownloadWorkerPaused.mockResolvedValue({ success: true });
     apiMocks.fetchStatus.mockResolvedValue({
       running: false,
       task: null,

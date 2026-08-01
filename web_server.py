@@ -118,6 +118,7 @@ config = None
 sync_scheduler = None
 release_watcher_scheduler = None
 library_maintenance_scheduler = None
+download_worker = None
 
 
 def _stop_scheduler(instance) -> None:
@@ -155,6 +156,26 @@ def init_app_logic():
     _start_sync_scheduler()
     _start_release_watcher()
     _start_library_maintenance_scheduler()
+    _start_download_worker()
+
+
+def _start_download_worker():
+    """Start the master-only queue worker; its durable pause flag gates work."""
+    global download_worker
+    if download_worker is not None:
+        download_worker.stop()
+        download_worker = None
+    if not config or not config.is_master:
+        return
+    from src.download_worker import AutomaticDownloadWorker
+
+    download_worker = AutomaticDownloadWorker(config.db_path, config._config)
+    download_worker.start()
+
+
+def _wake_download_worker() -> None:
+    if download_worker is not None:
+        download_worker.wake()
 
 
 def _start_sync_scheduler(*, run_on_startup: Optional[bool] = None):
@@ -761,6 +782,13 @@ def update_config():
                 _start_library_maintenance_scheduler
             ),
         )
+        if {
+            "device_role",
+            "is_master",
+            "downloads_path",
+            "download_worker_max_acquisitions",
+        } & set(changed):
+            _start_download_worker()
     except Exception as e:
         logger.warning(f"Config written but in-process reload failed: {e}")
 
@@ -1893,6 +1921,8 @@ def request_download_album():
             "success": False,
             "message": "Could not persist the verified album request",
         }), 500
+    if result.status_code < 300:
+        _wake_download_worker()
     return jsonify(result.payload), result.status_code
 
 
@@ -1999,6 +2029,8 @@ def request_download():
     except Exception as e:
         logger.error(f"Download request failed: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
+    if result.status_code < 300:
+        _wake_download_worker()
     return jsonify(result.payload), result.status_code
 
 
@@ -3152,6 +3184,7 @@ def get_downloads_list():
     try:
         with DatabaseManager(config.db_path) as db:
             items = db.get_all_downloads()
+            worker_state = db.get_download_worker_state()
         residue = scan_download_residue(config.downloads_dir)
         residue_by_id = {item.item_id: item for item in residue.items}
         queue_item_ids = {item.id for item in items}
@@ -3178,6 +3211,11 @@ def get_downloads_list():
                     "is_paused": item.is_paused,
                     "is_quarantined": item.is_quarantined,
                     "last_error": item.last_error,
+                    "target_key": item.target_key,
+                    "phase": item.phase,
+                    "failure_class": item.failure_class,
+                    "blocked_reason": item.blocked_reason,
+                    "strategy_index": item.strategy_index,
                     "retained_bytes": retained.bytes if retained else 0,
                     "retained_directories": (
                         retained.directory_count if retained else 0
@@ -3190,6 +3228,7 @@ def get_downloads_list():
         return jsonify({
             "success": True,
             "items": data,
+            "worker": worker_state,
             "residue": {
                 "total_bytes": residue.total_bytes,
                 "total_directories": residue.total_directories,
@@ -3203,6 +3242,87 @@ def get_downloads_list():
         })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
+
+
+@app.route("/api/downloads/worker", methods=["GET"])
+def get_download_worker():
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            "/api/downloads/worker",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
+    with DatabaseManager(config.db_path) as db:
+        state = db.get_download_worker_state()
+    return jsonify({"success": True, "worker": state})
+
+
+@app.route("/api/downloads/worker/pause", methods=["POST"])
+def pause_download_worker():
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/downloads/worker/pause",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
+    if download_worker is not None:
+        download_worker.set_paused(True)
+    else:
+        with DatabaseManager(config.db_path) as db:
+            db.set_download_worker_paused(True)
+    return jsonify({"success": True, "paused": True})
+
+
+@app.route("/api/downloads/worker/resume", methods=["POST"])
+def resume_download_worker():
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "POST",
+            "/api/downloads/worker/resume",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
+    if download_worker is None:
+        _start_download_worker()
+    if download_worker is not None:
+        download_worker.set_paused(False)
+    else:
+        with DatabaseManager(config.db_path) as db:
+            db.set_download_worker_paused(False)
+    _wake_download_worker()
+    return jsonify({"success": True, "paused": False})
+
+
+@app.route("/api/downloads/<int:item_id>/attempts", methods=["GET"])
+def get_download_attempts(item_id):
+    if not config:
+        return jsonify({"error": "Not initialized"}), 503
+    if not config.is_master:
+        result = album_download_request_service.forward_master_json(
+            config.master_url,
+            "GET",
+            f"/api/downloads/{item_id}/attempts",
+            api_token=config.get("api_token") or "",
+        )
+        return jsonify(result.payload), result.status_code
+    with DatabaseManager(config.db_path) as db:
+        if db.get_download(item_id) is None:
+            return jsonify({"success": False, "message": "Row not found"}), 404
+        attempts = db.list_download_attempts(item_id)
+        for attempt in attempts:
+            attempt["files"] = db.list_download_attempt_files(attempt["id"])
+    return jsonify({"success": True, "attempts": attempts})
 
 
 @app.route("/api/downloads/<int:item_id>/retry", methods=["POST"])
@@ -3225,6 +3345,7 @@ def retry_download_item(item_id):
                 "success": False,
                 "message": "Row not found or not in 'failed' state",
             }), 404
+        _wake_download_worker()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500

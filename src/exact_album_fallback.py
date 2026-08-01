@@ -336,7 +336,10 @@ def _parse_expected_tracks(
     if expected_recordings != actual_recordings:
         return (), "The persisted recording order does not match its track manifest"
     if len(set(actual_recordings)) != len(actual_recordings):
-        return (), "The persisted release repeats a recording identity"
+        return (), (
+            "The persisted release repeats a recording identity that the "
+            "current library schema cannot represent safely"
+        )
     release_tracks = tuple(track.release_track_mbid for track in tracks)
     if len(set(release_tracks)) != len(release_tracks):
         return (), "The persisted release repeats a release-track identity"
@@ -638,13 +641,11 @@ def _release_track_evidence(
             if (
                 not release_track_mbid
                 or not length_ms
-                or not isrcs
                 or "" in isrcs
                 or release_track_mbid in evidence
             ):
                 return {}, (
-                    "MusicBrainz omitted unambiguous track duration or ISRC "
-                    "evidence"
+                    "MusicBrainz omitted unambiguous track duration evidence"
                 )
             evidence[release_track_mbid] = _LiveTrackEvidence(
                 length_ms=length_ms,
@@ -687,23 +688,27 @@ def _validate_flac_against_track(
     ):
         return "A staged FLAC has incomplete stream information"
 
-    title = _required_value(audio, "title")
-    artist = _required_value(audio, "artist")
-    album = _required_value(audio, "album")
-    tagged_album_artist = _required_value(audio, "albumartist")
-    date = _required_value(audio, "date")
+    title = _single_value(audio, "title")
+    artist = _single_value(audio, "artist")
+    album = _single_value(audio, "album")
+    tagged_album_artist = _single_value(audio, "albumartist")
+    date = _single_value(audio, "date")
     source_isrc = _canonical_isrc(_required_value(audio, "isrc"))
-    if not title or not _title_matches(title, track.title):
+    if title and not _title_matches(title, track.title):
         return "A staged FLAC title does not match the exact release"
-    if _normalize_text(artist) != _normalize_text(track.artist):
+    if artist and _normalize_text(artist) != _normalize_text(track.artist):
         return "A staged FLAC artist does not match the exact release"
-    if _normalize_text(album) != _normalize_text(album_title):
+    if album and _normalize_text(album) != _normalize_text(album_title):
         return "A staged FLAC album does not match the exact release"
-    if _normalize_text(tagged_album_artist) != _normalize_text(album_artist):
+    if tagged_album_artist and _normalize_text(tagged_album_artist) != _normalize_text(album_artist):
         return "A staged FLAC album artist does not match the exact release"
-    if _normalize_text(date) != _normalize_text(track.date):
+    if date and _normalize_text(date) != _normalize_text(track.date):
         return "A staged FLAC date does not match the exact release"
-    if not source_isrc or source_isrc not in expected_evidence.isrcs:
+    if (
+        source_isrc
+        and expected_evidence.isrcs
+        and source_isrc not in expected_evidence.isrcs
+    ):
         return "A staged FLAC ISRC does not match the exact recording"
 
     track_position, track_total = _position_and_total(
@@ -765,7 +770,7 @@ def build_exact_album_fallback_plan(
     api_key: str,
     contact: str = "",
 ) -> ExactAlbumFallbackPlan:
-    """Return a whole-set exact-release plan only for zero AcoustID coverage.
+    """Return a conservative whole-set exact-release validation plan.
 
     Every validation finishes before the returned plan can be consumed.  A
     single mismatch rejects the complete staging set and returns no path
@@ -798,21 +803,46 @@ def build_exact_album_fallback_plan(
     if not str(api_key or "").strip():
         return _rejected("An AcoustID API key is required for fallback validation")
 
+    expected_by_position = {track.medium_track: track for track in tracks}
     for staged in staged_files:
         try:
+            source_audio = FLAC(staged.real_path)
+            track_position, _ = _position_and_total(
+                source_audio, "tracknumber", "tracktotal", "totaltracks"
+            )
+            disc_position, _ = _position_and_total(
+                source_audio, "discnumber", "disctotal", "totaldiscs"
+            )
+            expected_track = expected_by_position.get(
+                (disc_position, track_position)
+            )
+            if expected_track is None:
+                return _rejected(
+                    "The staged FLAC positions do not form an exact release bijection"
+                )
             coverage = tag_service.probe_acoustid_coverage(
-                staged.real_path,
-                api_key,
+                staged.real_path, api_key
             )
         except Exception:
-            return _rejected("AcoustID coverage could not be verified")
-        state = getattr(coverage, "state", None)
-        if state == "has_results":
-            return _rejected(
-                "AcoustID returned candidates; metadata fallback is not allowed"
+            return _rejected("AcoustID evidence could not be verified")
+        coverage_state = getattr(coverage, "state", None)
+        if coverage_state == "no_results":
+            continue
+        if coverage_state != "has_results":
+            return _rejected("AcoustID evidence is temporarily unavailable")
+        try:
+            evidence = tag_service.classify_acoustic_recording_evidence(
+                staged.real_path, api_key, expected_track.recording_mbid
             )
-        if state != "no_results":
-            return _rejected("AcoustID coverage could not be verified")
+        except Exception:
+            return _rejected("AcoustID evidence could not be verified")
+        state = getattr(evidence, "state", None)
+        if state == "contradict":
+            return _rejected(
+                "AcoustID strongly contradicts the exact-release recording"
+            )
+        if state == "unavailable":
+            return _rejected("AcoustID evidence is temporarily unavailable")
 
     mb.configure(contact)
     try:
@@ -859,11 +889,10 @@ def build_exact_album_fallback_plan(
             "MusicBrainz evidence does not cover the exact manifest"
         )
 
-    expected_by_position = {track.medium_track: track for track in tracks}
     assignments: Dict[str, str] = {}
     audio_digests: Dict[str, str] = {}
     file_snapshots: Dict[str, Tuple[int, int, int, int, int]] = {}
-    assigned_recordings = set()
+    assigned_release_tracks = set()
     for staged in staged_files:
         try:
             before_snapshot = _file_snapshot(staged.real_path)
@@ -883,7 +912,7 @@ def build_exact_album_fallback_plan(
             "totaldiscs",
         )
         track = expected_by_position.get((disc_position, track_position))
-        if track is None or track.recording_mbid in assigned_recordings:
+        if track is None or track.release_track_mbid in assigned_release_tracks:
             return _rejected(
                 "The staged FLAC positions do not form an exact release bijection"
             )
@@ -913,12 +942,12 @@ def build_exact_album_fallback_plan(
         assignments[staged.supplied_path] = track.recording_mbid
         audio_digests[staged.supplied_path] = audio_digest
         file_snapshots[staged.supplied_path] = after_snapshot
-        assigned_recordings.add(track.recording_mbid)
+        assigned_release_tracks.add(track.release_track_mbid)
 
-    expected_recordings = {track.recording_mbid for track in tracks}
-    if assigned_recordings != expected_recordings:
+    expected_release_tracks = {track.release_track_mbid for track in tracks}
+    if assigned_release_tracks != expected_release_tracks:
         return _rejected(
-            "The staged FLAC files do not cover every exact-release recording"
+            "The staged FLAC files do not cover every exact-release track"
         )
     return ExactAlbumFallbackPlan(
         MappingProxyType(assignments),

@@ -22,6 +22,7 @@ import type {
   AlbumDownloadRequestResult,
   AlbumReleaseSearchResult,
   AlbumDownloadStage,
+  DownloadWorkerState,
 } from "./types";
 
 function numericValue(value: unknown): number {
@@ -79,7 +80,26 @@ function isDownloadQueueItem(value: unknown): value is DownloadQueueItem {
         (kind) => kind === "attempt" || kind === "quarantine",
       ))
     )
+    && (value.target_key === undefined || isString(value.target_key))
+    && (value.phase === undefined || isString(value.phase))
+    && (value.failure_class === undefined || isNullableString(value.failure_class))
+    && (value.blocked_reason === undefined || isNullableString(value.blocked_reason))
+    && (value.strategy_index === undefined || isNumber(value.strategy_index))
   );
+}
+
+function decodeDownloadWorkerState(value: unknown): DownloadWorkerState {
+  if (!isJsonRecord(value)) {
+    throw new Error("downloads/worker: invalid response");
+  }
+  return {
+    is_paused: Boolean(value.is_paused),
+    state: isString(value.state) ? value.state : "unknown",
+    current_item_id: isNumber(value.current_item_id) ? value.current_item_id : null,
+    detail: isString(value.detail) ? value.detail : "",
+    heartbeat_at: isNullableString(value.heartbeat_at) ? value.heartbeat_at : null,
+    next_wake_at: isNullableString(value.next_wake_at) ? value.next_wake_at : null,
+  };
 }
 
 const ALBUM_DOWNLOAD_STAGES = new Set<AlbumDownloadStage>([
@@ -326,6 +346,28 @@ export async function fetchDownloads(): Promise<DownloadQueueItem[]> {
   if (!data.success)
     throw new Error(String(data.message ?? "downloads/list failed"));
   return arrayField(data, "items", isDownloadQueueItem);
+}
+
+export async function fetchDownloadWorker(): Promise<DownloadWorkerState> {
+  const url = await backendUrl();
+  const r = await apiFetch(`${url}/api/downloads/worker`);
+  if (!r.ok) throw new Error(`downloads/worker: ${r.status}`);
+  const data = await readJsonRecord(r);
+  if (!data.success) throw new Error(String(data.message ?? "downloads/worker failed"));
+  return decodeDownloadWorkerState(data.worker);
+}
+
+export async function setDownloadWorkerPaused(
+  paused: boolean,
+): Promise<ActionResult> {
+  const url = await backendUrl();
+  const action = paused ? "pause" : "resume";
+  const r = await apiFetch(`${url}/api/downloads/worker/${action}`, {
+    method: "POST",
+  });
+  if (!r.ok) return { success: false, message: `downloads/worker/${action}: ${r.status}` };
+  const data = await readJsonRecord(r);
+  return { success: Boolean(data.success), message: String(data.message ?? "") };
 }
 
 export async function retryDownload(id: number): Promise<ActionResult> {

@@ -488,6 +488,38 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                     },
                 }
             },
+            "/api/downloads/{item_id}/attempts": {
+                "get": {
+                    "tags": ["Downloads"],
+                    "summary": "List durable processing attempts for one queue row",
+                    "parameters": [{
+                        "name": "item_id", "in": "path", "required": True,
+                        "schema": {"type": "integer", "minimum": 1},
+                    }],
+                    "responses": {"200": ok, "404": err("queue row not found")},
+                }
+            },
+            "/api/downloads/worker": {
+                "get": {
+                    "tags": ["Downloads"],
+                    "summary": "Read the master automatic-worker state",
+                    "responses": {"200": ok},
+                }
+            },
+            "/api/downloads/worker/pause": {
+                "post": {
+                    "tags": ["Downloads"],
+                    "summary": "Pause automatic acquisition after active work finishes",
+                    "responses": {"200": ok},
+                }
+            },
+            "/api/downloads/worker/resume": {
+                "post": {
+                    "tags": ["Downloads"],
+                    "summary": "Resume and wake automatic acquisition",
+                    "responses": {"200": ok},
+                }
+            },
             "/api/downloads/clear-completed": {
                 "post": {
                     "tags": ["Downloads"],
@@ -659,6 +691,11 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                         "is_paused": {"type": "boolean"},
                         "is_quarantined": {"type": "boolean"},
                         "last_error": {"type": "string", "nullable": True},
+                        "target_key": {"type": "string"},
+                        "phase": {"type": "string"},
+                        "failure_class": {"type": "string", "nullable": True},
+                        "blocked_reason": {"type": "string", "nullable": True},
+                        "strategy_index": {"type": "integer", "minimum": 0},
                         "retained_bytes": {"type": "integer", "minimum": 0},
                         "retained_directories": {"type": "integer", "minimum": 0},
                         "retained_files": {"type": "integer", "minimum": 0},
@@ -669,12 +706,13 @@ def build_spec(server_url: Optional[str] = None) -> dict:
                 },
                 "DownloadQueueEnvelope": {
                     "type": "object",
-                    "required": ["success", "items", "residue"],
+                    "required": ["success", "items", "worker", "residue"],
                     "properties": {
                         "success": {"type": "boolean"},
                         "items": {"type": "array", "items": {
                             "$ref": "#/components/schemas/DownloadQueueItem"
                         }},
+                        "worker": {"type": "object"},
                         "residue": {"type": "object", "properties": {
                             "total_bytes": {"type": "integer"},
                             "total_directories": {"type": "integer"},
