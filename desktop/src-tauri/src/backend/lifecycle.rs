@@ -143,6 +143,9 @@ impl BackendHandle {
             // scheduler threads and makes the child outlive the process Tauri
             // owns, so desktop runs are always production/no-reloader mode.
             .env("DAPMANAGER_DEBUG", "0")
+            // If the native shell is killed before Tauri can run its normal
+            // exit callback, the POSIX backend watchdog releases port 5001.
+            .env("DAPMANAGER_PARENT_PID", std::process::id().to_string())
             // Prevent Python from writing __pycache__ into the read-only
             // Contents/Resources directory when running from a bundled .app.
             .env("PYTHONDONTWRITEBYTECODE", "1")

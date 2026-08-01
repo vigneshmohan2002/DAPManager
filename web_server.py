@@ -66,6 +66,7 @@ from src.services.scheduler_service import (
     stop_scheduler,
 )
 from src.services.task_service import TaskManager
+from src.parent_watchdog import start_parent_watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -3633,6 +3634,7 @@ def install_slsk():
 
 
 if __name__ == "__main__":
+    start_parent_watchdog()
     if config_exists():
         init_app_logic()
     debug_mode = os.environ.get("DAPMANAGER_DEBUG", "0").lower() in ("1", "true", "yes", "on")
