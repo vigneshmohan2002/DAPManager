@@ -152,4 +152,16 @@ describe("DownloadsScreen retry state", () => {
     );
     expect(toast.show).toHaveBeenCalledWith("Freed 1.0 GiB.", "ok");
   });
+
+  it("recovers the queue list after a temporary master outage", async () => {
+    apiMocks.fetchDownloads
+      .mockRejectedValueOnce(new Error("downloads/list: 502"))
+      .mockResolvedValueOnce(failedRows);
+
+    render(<DownloadsScreen ready />);
+
+    expect(await screen.findByText("Quarantined album")).toBeInTheDocument();
+    await waitFor(() => expect(apiMocks.fetchDownloads).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Error: downloads/list: 502")).not.toBeInTheDocument();
+  });
 });

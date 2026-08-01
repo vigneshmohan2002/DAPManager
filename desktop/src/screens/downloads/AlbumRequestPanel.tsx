@@ -112,6 +112,7 @@ export default function AlbumRequestPanel({ ready, onQueueChanged }: Props) {
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState<SearchState>("idle");
   const [searchError, setSearchError] = useState("");
+  const [searchAttempt, setSearchAttempt] = useState(0);
   const [candidates, setCandidates] = useState<AlbumReleaseCandidate[]>([]);
   const [selectedMbid, setSelectedMbid] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -233,7 +234,7 @@ export default function AlbumRequestPanel({ ready, onQueueChanged }: Props) {
       window.clearTimeout(requestTimeout);
       controller.abort();
     };
-  }, [query]);
+  }, [query, searchAttempt]);
 
   const reconcile = useCallback(async () => {
     if (!ready || reconcileAbortRef.current) return;
@@ -460,8 +461,15 @@ export default function AlbumRequestPanel({ ready, onQueueChanged }: Props) {
         </div>
       ) : null}
       {searchState === "error" ? (
-        <div role="alert" className="text-xs text-[var(--color-accent)]">
-          Could not check MusicBrainz: {searchError}
+        <div role="alert" className="flex items-center gap-3 text-xs text-[var(--color-accent)]">
+          <span>Could not check MusicBrainz: {searchError}</span>
+          <button
+            type="button"
+            onClick={() => setSearchAttempt((attempt) => attempt + 1)}
+            className="shrink-0 rounded border border-[var(--color-border)] px-2 py-1 text-[var(--color-text)] hover:bg-[var(--color-surface)]"
+          >
+            Retry search
+          </button>
         </div>
       ) : null}
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TopBar from "../components/TopBar";
 import { useToast } from "../components/Toast";
 import {
@@ -40,30 +40,40 @@ export default function DownloadsScreen({ ready }: Props) {
   // is on the wire — prevents double-retry / double-remove.
   const [busyId, setBusyId] = useState<number | null>(null);
   const wasRunning = useRef(false);
+  const loadInFlight = useRef(false);
+  const loadFailed = useRef(false);
   const toast = useToast();
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     try {
       setItems(await fetchDownloads());
+      loadFailed.current = false;
       setError(null);
     } catch (e) {
+      loadFailed.current = true;
       setError(String(e));
+    } finally {
+      loadInFlight.current = false;
     }
-  };
+  }, []);
 
   // Initial load + reload on running→idle edge so completed/failed
   // rows surface without the user touching anything. Same edge-trigger
   // pattern as SyncScreen.
   useEffect(() => {
     if (!ready) return;
-    load();
+    void load();
     let cancelled = false;
     const tick = async () => {
       try {
         const s = await fetchStatus("downloads");
         if (cancelled) return;
         setStatus(s);
-        if (wasRunning.current && !s.running) load();
+        if ((wasRunning.current && !s.running) || loadFailed.current) {
+          void load();
+        }
         wasRunning.current = s.running;
       } catch {
         // ignored — next tick retries
@@ -75,7 +85,7 @@ export default function DownloadsScreen({ ready }: Props) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [ready]);
+  }, [load, ready]);
 
   const buckets = useMemo(() => {
     const groups: Record<Bucket["key"], DownloadQueueItem[]> = {

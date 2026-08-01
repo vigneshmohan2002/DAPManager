@@ -379,4 +379,29 @@ describe("native verified album requests", () => {
       screen.queryByRole("button", { name: /First Album.*Verified Artist/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("allows a failed MusicBrainz search to be retried unchanged", async () => {
+    const user = userEvent.setup();
+    apiMocks.searchAlbumReleases
+      .mockRejectedValueOnce(new Error("album search: 502"))
+      .mockResolvedValueOnce({
+        query: "Verified Album",
+        ambiguous: false,
+        candidates: [candidate],
+      });
+    render(<AlbumRequestPanel ready onQueueChanged={vi.fn()} />);
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search MusicBrainz albums" }),
+      "Verified Album",
+    );
+    await user.click(await screen.findByRole("button", { name: "Retry search" }));
+
+    expect(
+      await screen.findByRole("button", {
+        name: /Verified Album.*Verified Artist/i,
+      }),
+    ).toBeInTheDocument();
+    expect(apiMocks.searchAlbumReleases).toHaveBeenCalledTimes(2);
+  });
 });
