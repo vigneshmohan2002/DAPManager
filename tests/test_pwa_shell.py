@@ -20,9 +20,9 @@ def test_canonical_logo_is_the_unmodified_supplied_png():
 @pytest.mark.parametrize(
     ("page_path", "manifest_path"),
     [
-        ("/", "/static/manifest.json?v=3"),
-        ("/player", "/static/manifest-player.webmanifest?v=3"),
-        ("/satellite", "/static/manifest-satellite.webmanifest?v=3"),
+        ("/", "/static/manifest.json?v=4"),
+        ("/player", "/static/manifest-player.webmanifest?v=4"),
+        ("/satellite", "/static/manifest-satellite.webmanifest?v=4"),
     ],
 )
 def test_installable_pages_use_their_own_manifest_and_png_icons(
@@ -44,13 +44,13 @@ def test_installable_pages_use_their_own_manifest_and_png_icons(
     assert f'<link rel="manifest" href="{manifest_path}">' in html
     assert (
         '<link rel="apple-touch-icon" sizes="180x180" '
-        'href="/static/icons/apple-touch-icon-180.png?v=3">'
+        'href="/static/icons/apple-touch-icon-180.png?v=4">'
     ) in html
     assert (
         '<link rel="icon" type="image/png" sizes="32x32" '
-        'href="/static/icons/favicon-32.png?v=3">'
+        'href="/static/icons/favicon-32.png?v=4">'
     ) in html
-    assert '<script src="/static/pwa-register.js?v=3" defer></script>' in html
+    assert '<script src="/static/pwa-register.js?v=4" defer></script>' in html
     assert "Viggys" not in html
 
 

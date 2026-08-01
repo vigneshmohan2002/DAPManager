@@ -42,7 +42,7 @@ def test_browser_pages_load_external_controllers(
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert f'<script src="{script_path}"></script>' in html
+    assert f'<script src="{script_path}?v=4"></script>' in html
     inline_scripts = re.findall(
         r"<script(?:\s[^>]*)?>(.*?)</script>",
         html,

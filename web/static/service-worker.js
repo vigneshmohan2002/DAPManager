@@ -1,6 +1,6 @@
 // Only immutable, explicitly versioned presentation assets are cached here.
 // Application HTML, authentication, API responses, and audio stay on network.
-const STATIC_VERSION = "3";
+const STATIC_VERSION = "4";
 const CACHE_NAME = `dapmanager-static-v${STATIC_VERSION}`;
 const CACHEABLE_PATHS = new Set([
     "/static/tailwind.css",
