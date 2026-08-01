@@ -46,7 +46,7 @@ EXPECTED_SCHEMA_COLUMNS = {
         "mbid", "title", "artist", "album", "isrc", "local_path",
         "dap_path", "synced_to_dap", "release_mbid", "track_number",
         "disc_number", "updated_at", "deleted_at", "tag_tier", "tag_score",
-        "is_liked", "album_artist",
+        "is_liked", "album_artist", "master_streamable",
     ),
 }
 
@@ -755,14 +755,22 @@ def test_get_catalog_since_no_filter_returns_all(db):
     assert by_mbid["c2"]["album_artist"] is None
 
 
-def test_get_catalog_since_omits_local_only_fields(db):
+def test_get_catalog_since_omits_paths_and_reports_real_streamability(db, tmp_path):
+    playable = tmp_path / "playable.flac"
+    playable.write_bytes(b"audio")
     db.add_or_update_track(Track(
-        mbid="c1", title="T", artist="A", local_path="/x.flac", dap_path="/y.flac",
+        mbid="c1", title="T", artist="A", local_path=str(playable), dap_path="/y.flac",
+    ))
+    db.add_or_update_track(Track(
+        mbid="c2", title="Missing", artist="A", local_path="/missing.flac",
     ))
     rows = db.get_catalog_since()
-    assert "local_path" not in rows[0]
-    assert "dap_path" not in rows[0]
-    assert "synced_to_dap" not in rows[0]
+    by_mbid = {row["mbid"]: row for row in rows}
+    assert by_mbid["c1"]["master_streamable"] is True
+    assert by_mbid["c2"]["master_streamable"] is False
+    assert all("local_path" not in row for row in rows)
+    assert all("dap_path" not in row for row in rows)
+    assert all("synced_to_dap" not in row for row in rows)
 
 
 def test_apply_catalog_row_inserts_new_track(db):
@@ -776,6 +784,7 @@ def test_apply_catalog_row_inserts_new_track(db):
         "release_mbid": "r1",
         "track_number": 3,
         "disc_number": 1,
+        "master_streamable": True,
         "updated_at": "2026-04-17 12:00:00",
     })
     assert action == "inserted"
@@ -784,6 +793,55 @@ def test_apply_catalog_row_inserts_new_track(db):
     assert track.title == "Catalog Song"
     assert track.album_artist == "Catalog Album Artist"
     assert track.local_path is None  # catalog row has no device presence
+    stored = db.conn.execute(
+        "SELECT master_streamable FROM tracks WHERE mbid = 'a1'"
+    ).fetchone()
+    assert stored["master_streamable"] == 1
+
+
+def test_unstreamable_authority_rows_do_not_create_satellite_albums_or_artists(db):
+    common = {
+        "artist": "Unavailable Artist",
+        "album_artist": "Unavailable Artist",
+        "album": "Unavailable Album",
+        "release_mbid": "unavailable-release",
+        "updated_at": "2026-08-01 00:00:00",
+        "master_streamable": False,
+    }
+    db.apply_catalog_row({
+        **common,
+        "mbid": "unavailable-track",
+        "title": "Missing",
+        "track_number": 1,
+    })
+
+    assert db.list_albums() == []
+    assert db.list_artists() == []
+
+
+def test_local_copy_keeps_album_visible_when_authority_row_is_unstreamable(db):
+    db.add_or_update_track(Track(
+        mbid="local-track",
+        title="Local",
+        artist="Local Artist",
+        album_artist="Local Artist",
+        album="Local Album",
+        release_mbid="local-release",
+        local_path="/music/local.flac",
+    ))
+    db.apply_catalog_row({
+        "mbid": "local-track",
+        "title": "Local",
+        "artist": "Local Artist",
+        "album_artist": "Local Artist",
+        "album": "Local Album",
+        "release_mbid": "local-release",
+        "track_number": 1,
+        "updated_at": "2026-08-01 00:00:00",
+        "master_streamable": False,
+    })
+
+    assert [album["id"] for album in db.list_albums()] == ["local-release"]
 
 
 def test_apply_catalog_row_preserves_local_path(db):

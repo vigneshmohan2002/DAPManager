@@ -1,5 +1,6 @@
 """Sync cursor persistence kept behind the public database façade."""
 
+import os
 from typing import Dict, List, Optional
 
 from .base import SQLiteRepository
@@ -52,7 +53,8 @@ class SyncRepository(SQLiteRepository):
     ) -> List[Dict[str, object]]:
         sql = (
             "SELECT mbid, title, artist, album, album_artist, isrc, release_mbid, "
-            "track_number, disc_number, is_liked, updated_at, deleted_at "
+            "track_number, disc_number, is_liked, updated_at, deleted_at, "
+            "local_path, dap_path "
             "FROM tracks"
         )
         params: tuple = ()
@@ -66,7 +68,18 @@ class SyncRepository(SQLiteRepository):
         sql += " ORDER BY updated_at ASC"
         cursor = self.conn.cursor()
         cursor.execute(sql, params)
-        rows = [dict(row) for row in cursor.fetchall()]
+        rows = []
+        for result in cursor.fetchall():
+            row = dict(result)
+            paths = (row.pop("local_path", None), row.pop("dap_path", None))
+            row["master_streamable"] = bool(
+                not row.get("deleted_at")
+                and any(
+                    isinstance(path, str) and os.path.isfile(path)
+                    for path in paths
+                )
+            )
+            rows.append(row)
         cursor.close()
         return rows
 
@@ -79,8 +92,12 @@ class SyncRepository(SQLiteRepository):
             """
             INSERT INTO tracks
                 (mbid, title, artist, album, album_artist, isrc, release_mbid,
-                 track_number, disc_number, is_liked, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+                 track_number, disc_number, is_liked, updated_at, deleted_at,
+                 master_streamable)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                COALESCE(?, CURRENT_TIMESTAMP), ?, ?
+            )
             ON CONFLICT(mbid) DO UPDATE SET
                 title = excluded.title,
                 artist = excluded.artist,
@@ -95,7 +112,11 @@ class SyncRepository(SQLiteRepository):
                 disc_number = excluded.disc_number,
                 is_liked = excluded.is_liked,
                 updated_at = excluded.updated_at,
-                deleted_at = excluded.deleted_at
+                deleted_at = excluded.deleted_at,
+                master_streamable = COALESCE(
+                    excluded.master_streamable,
+                    tracks.master_streamable
+                )
             """,
             (
                 mbid,
@@ -110,6 +131,11 @@ class SyncRepository(SQLiteRepository):
                 1 if row.get("is_liked") else 0,
                 row.get("updated_at"),
                 row.get("deleted_at"),
+                (
+                    1 if row.get("master_streamable") is True
+                    else 0 if row.get("master_streamable") is False
+                    else None
+                ),
             ),
         )
         self.conn.commit()

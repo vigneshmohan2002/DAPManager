@@ -54,6 +54,8 @@ class _DeltaPullSpec:
     completion_message: str
     batch_size: int
     include_stale: bool = False
+    required_version_key: Optional[str] = None
+    required_version: Optional[int] = None
 
 
 _CATALOG_PULL = _DeltaPullSpec(
@@ -64,6 +66,8 @@ _CATALOG_PULL = _DeltaPullSpec(
     apply_message="Applying catalog rows",
     completion_message="Catalog pull done",
     batch_size=100,
+    required_version_key="catalog_version",
+    required_version=2,
 )
 _PLAYLIST_PULL = _DeltaPullSpec(
     state_key=PLAYLIST_SYNC_STATE_KEY,
@@ -176,6 +180,15 @@ class CatalogClient:
             raise RuntimeError(
                 "Master responded with failure: "
                 f"{data.get('message', 'unknown error')}"
+            )
+
+        if (
+            spec.required_version_key
+            and data.get(spec.required_version_key) != spec.required_version
+        ):
+            raise RuntimeError(
+                "Master catalog version is incompatible; update the master "
+                "before syncing this satellite"
             )
 
         rows = cast(Sequence[CatalogRow], data.get(spec.collection_key) or [])

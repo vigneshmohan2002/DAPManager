@@ -48,6 +48,26 @@ def test_availability_prefers_local_then_drive_then_master():
     assert availability_for({"local_path": None, "dap_path": None}, False) == "unavailable"
 
 
+def test_authority_availability_prevents_dead_remote_rows():
+    row = {
+        "local_path": None,
+        "dap_path": None,
+        "master_streamable": 0,
+    }
+
+    assert availability_for(row, True) == "unavailable"
+
+
+def test_local_copy_wins_when_authority_source_is_unavailable():
+    row = {
+        "local_path": "/music/local.flac",
+        "dap_path": None,
+        "master_streamable": 0,
+    }
+
+    assert availability_for(row, True) == "local"
+
+
 def test_public_track_row_preserves_wire_shape_and_hides_paths():
     row = {
         "mbid": "track-1",

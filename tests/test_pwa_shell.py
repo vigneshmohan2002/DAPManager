@@ -95,6 +95,41 @@ def test_root_service_worker_is_public_and_never_browser_cached(
     assert "isCacheableRequest" in response.get_data(as_text=True)
 
 
+@pytest.mark.parametrize(
+    ("page_path", "controller"),
+    [
+        ("/player", "/static/js/player.js"),
+        ("/satellite", "/static/js/satellite.js"),
+    ],
+)
+def test_standalone_players_load_shared_url_helper_before_controller(
+    client,
+    mock_config,
+    monkeypatch,
+    tmp_path,
+    page_path,
+    controller,
+):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(web_server, "CONFIG_FILE", str(config_path))
+
+    html = client.get(page_path).get_data(as_text=True)
+
+    assert html.index('/static/js/base.js') < html.index(controller)
+
+
+def test_satellite_library_loader_does_not_touch_removed_status_node():
+    source = (
+        Path(web_server.app.static_folder) / "js" / "satellite.js"
+    ).read_text(encoding="utf-8")
+
+    render_call = source.index("renderLibrary();")
+    stale_access = source.find('$("lib-msg")', render_call)
+    next_section = source.index("/* ─── PLAYER", render_call)
+    assert stale_access == -1 or stale_access >= next_section
+
+
 def test_service_worker_policy_excludes_dynamic_or_sensitive_responses():
     source = (
         Path(web_server.app.static_folder) / "service-worker.js"

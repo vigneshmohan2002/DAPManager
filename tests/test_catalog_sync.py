@@ -53,6 +53,7 @@ def test_pull_initial_sends_no_since_and_applies_rows(db):
     client = CatalogClient(db=db, master_url="http://host.local:5001")
     payload = {
         "success": True,
+        "catalog_version": 2,
         "as_of": "2026-04-18 12:00:00",
         "count": 2,
         "tracks": [
@@ -80,10 +81,25 @@ def test_pull_initial_sends_no_since_and_applies_rows(db):
     assert db.get_sync_state(SYNC_STATE_KEY) == "2026-04-18 12:00:00"
 
 
+def test_pull_rejects_legacy_catalog_without_streamability_contract(db):
+    client = CatalogClient(db=db, master_url="http://host.local:5001")
+    payload = {
+        "success": True,
+        "as_of": "2026-04-18 12:00:00",
+        "tracks": [],
+    }
+
+    with patch.object(client.session, "get", return_value=_mock_response(payload)):
+        with pytest.raises(RuntimeError, match="catalog version"):
+            client.pull()
+
+    assert db.get_sync_state(SYNC_STATE_KEY) is None
+
+
 def test_pull_uses_stored_cursor_on_subsequent_call(db):
     db.set_sync_state(SYNC_STATE_KEY, "2026-04-18 12:00:00")
     client = CatalogClient(db=db, master_url="http://host.local:5001")
-    payload = {"success": True, "as_of": "2026-04-18 13:00:00", "count": 0, "tracks": []}
+    payload = {"success": True, "catalog_version": 2, "as_of": "2026-04-18 13:00:00", "count": 0, "tracks": []}
     with patch.object(client.session, "get", return_value=_mock_response(payload)) as mock_get:
         summary = client.pull()
 
@@ -103,6 +119,7 @@ def test_pull_preserves_local_path_on_updated_row(db):
     client = CatalogClient(db=db, master_url="http://host.local:5001")
     payload = {
         "success": True,
+        "catalog_version": 2,
         "as_of": "2026-04-18 12:00:00",
         "count": 1,
         "tracks": [{"mbid": "m1", "title": "Fresh", "artist": "Fresh",
@@ -134,6 +151,7 @@ def test_pull_does_not_advance_cursor_when_applying_a_row_fails(db):
     client = CatalogClient(db=db, master_url="http://host.local:5001")
     payload = {
         "success": True,
+        "catalog_version": 2,
         "as_of": "2026-04-18 13:00:00",
         "tracks": [{"mbid": "m1", "title": "Song", "artist": "Artist"}],
     }
@@ -151,7 +169,7 @@ def test_pull_does_not_advance_cursor_when_applying_a_row_fails(db):
 def test_pull_does_not_advance_cursor_when_as_of_missing(db):
     db.set_sync_state(SYNC_STATE_KEY, "2026-04-18 12:00:00")
     client = CatalogClient(db=db, master_url="http://host.local:5001")
-    payload = {"success": True, "count": 0, "tracks": []}  # no as_of
+    payload = {"success": True, "catalog_version": 2, "count": 0, "tracks": []}  # no as_of
     with patch.object(client.session, "get", return_value=_mock_response(payload)):
         client.pull()
     # Unchanged
@@ -247,6 +265,8 @@ def test_delta_pull_protocol_and_progress_contract(
         "as_of": as_of,
         collection_key: rows,
     }
+    if pull_method == "pull":
+        payload["catalog_version"] = 2
     progress = []
     client = CatalogClient(
         db=db,
@@ -307,6 +327,7 @@ def test_pull_skips_rows_without_mbid(db):
     client = CatalogClient(db=db, master_url="http://host.local:5001")
     payload = {
         "success": True,
+        "catalog_version": 2,
         "as_of": "2026-04-18 12:00:00",
         "count": 2,
         "tracks": [
@@ -323,7 +344,7 @@ def test_pull_skips_rows_without_mbid(db):
 
 def test_main_run_catalog_pull_reads_master_url_from_config(db):
     config = {"master_url": "http://host.local:5001/"}
-    payload = {"success": True, "as_of": "2026-04-18 12:00:00", "count": 0, "tracks": []}
+    payload = {"success": True, "catalog_version": 2, "as_of": "2026-04-18 12:00:00", "count": 0, "tracks": []}
     with patch("src.catalog_sync.requests.Session.get",
                return_value=_mock_response(payload)) as mock_get:
         summary = main_run_catalog_pull(db, config)

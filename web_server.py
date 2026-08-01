@@ -136,7 +136,7 @@ def init_app_logic():
     from src.album_completer import audit_library as audit_lib_logic
     from src.album_completer import complete_albums as complete_albums_logic
 
-    setup_logging()
+    setup_logging(os.path.join(os.path.dirname(CONFIG_FILE), "dap_manager.log"))
     config = get_config()
 
     from src import musicbrainz_client
@@ -2258,6 +2258,7 @@ def get_catalog():
 
     return jsonify({
         "success": True,
+        "catalog_version": 2,
         "as_of": as_of,
         "count": len(rows),
         "tracks": rows,

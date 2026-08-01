@@ -333,6 +333,11 @@ def test_schema_module_migrates_the_complete_legacy_contract_twice():
     logger = logging.getLogger("test.db_schema.legacy")
 
     create_tables(conn, logger)
+    conn.execute(
+        "INSERT INTO sync_state (key, value) VALUES (?, ?)",
+        ("last_catalog_sync", "2026-07-31 23:59:59"),
+    )
+    conn.commit()
     migrate_schema(conn, logger)
     migrate_schema(conn, logger)
 
@@ -348,8 +353,12 @@ def test_schema_module_migrates_the_complete_legacy_contract_twice():
         "tag_score",
         "is_liked",
         "album_artist",
+        "master_streamable",
     )
     assert _columns(conn, "play_events")[-1] == "listened_ms"
+    assert conn.execute(
+        "SELECT value FROM sync_state WHERE key = 'last_catalog_sync'"
+    ).fetchone() is None
     assert _columns(conn, "playlists")[-3:] == (
         "updated_at",
         "deleted_at",

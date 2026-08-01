@@ -28,7 +28,8 @@ TABLE_DEFINITIONS: Dict[str, str] = {
             tag_tier TEXT,
             tag_score REAL,
             is_liked INTEGER NOT NULL DEFAULT 0,
-            album_artist TEXT
+            album_artist TEXT,
+            master_streamable INTEGER
         );
     """,
     "albums": """
@@ -278,6 +279,7 @@ def _schema_requires_migration(cursor: sqlite3.Cursor) -> bool:
             "tag_score",
             "is_liked",
             "album_artist",
+            "master_streamable",
         }.issubset(track_columns)
     ):
         return True
@@ -377,6 +379,16 @@ def migrate_schema(conn: sqlite3.Connection, logger: logging.Logger) -> None:
         if "album_artist" not in columns:
             cursor.execute("ALTER TABLE tracks ADD COLUMN album_artist TEXT")
             logger.info("Added column: tracks.album_artist")
+        if "master_streamable" not in columns:
+            cursor.execute(
+                "ALTER TABLE tracks ADD COLUMN master_streamable INTEGER"
+            )
+            cursor.execute(
+                "DELETE FROM sync_state WHERE key = 'last_catalog_sync'"
+            )
+            logger.info(
+                "Added column: tracks.master_streamable and reset catalog cursor"
+            )
 
         play_event_columns = _columns(cursor, "play_events")
         if "listened_ms" not in play_event_columns:

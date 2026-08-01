@@ -380,6 +380,7 @@ class PlaylistRepository(SQLiteRepository):
         base_cols = (
             "t.mbid, t.title, t.artist, t.album, t.track_number, t.disc_number, "
             "t.local_path, t.dap_path, t.deleted_at, t.is_liked, "
+            "t.master_streamable, "
             "COALESCE(NULLIF(t.release_mbid, ''), "
             "t.album || '|' || t.artist) AS album_id"
         )

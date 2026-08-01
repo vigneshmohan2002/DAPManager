@@ -444,6 +444,11 @@ class LibraryRepository(SQLiteRepository):
                 WHERE deleted_at IS NULL
                   AND album IS NOT NULL AND album != ''
                   AND artist IS NOT NULL AND artist != ''
+                  AND (
+                      local_path IS NOT NULL
+                      OR dap_path IS NOT NULL
+                      OR COALESCE(master_streamable, 1) = 1
+                  )
                 GROUP BY id
                 ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE
                 """
@@ -463,6 +468,11 @@ class LibraryRepository(SQLiteRepository):
                 WHERE deleted_at IS NULL
                   AND album IS NOT NULL AND album != ''
                   AND artist IS NOT NULL AND artist != ''
+                  AND (
+                      local_path IS NOT NULL
+                      OR dap_path IS NOT NULL
+                      OR COALESCE(master_streamable, 1) = 1
+                  )
                 GROUP BY album_id, artist, album_artist
                 ORDER BY album_id COLLATE BINARY,
                          artist COLLATE NOCASE,
@@ -524,7 +534,7 @@ class LibraryRepository(SQLiteRepository):
                 """
                 SELECT
                     mbid, title, artist, album, track_number, disc_number,
-                    local_path, dap_path, is_liked,
+                    local_path, dap_path, is_liked, master_streamable,
                     COALESCE(NULLIF(release_mbid, ''), album || '|' || artist) AS album_id
                 FROM tracks
                 WHERE deleted_at IS NULL
@@ -599,7 +609,7 @@ class LibraryRepository(SQLiteRepository):
         cursor.execute(
             """
             SELECT mbid, title, artist, album, track_number, disc_number,
-                   local_path, dap_path, is_liked
+                   local_path, dap_path, is_liked, master_streamable
             FROM tracks
             WHERE deleted_at IS NULL
               AND (release_mbid = ? OR (album || '|' || artist) = ?)

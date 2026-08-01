@@ -341,6 +341,7 @@ def test_get_catalog_returns_all_rows_without_since(client, mock_config):
     assert res.status_code == 200
     data = res.get_json()
     assert data["success"] is True
+    assert data["catalog_version"] == 2
     assert data["count"] == 2
     assert data["as_of"] == "2026-04-17 12:00:00"
     assert len(data["tracks"]) == 2
@@ -720,6 +721,20 @@ def test_library_tracks_tags_remote_when_master_configured(client, mock_config):
 
     data = res.get_json()
     assert data["tracks"][0]["availability"] == "remote"
+
+
+def test_library_tracks_filters_rows_master_cannot_stream(client, mock_config):
+    mock_config._config = {"master_url": "http://master.example"}
+    with patch('web_server.DatabaseManager') as MockDB:
+        MockDB.return_value.__enter__.return_value.list_all_tracks.return_value = [
+            {"mbid": "t-dead", "title": "N", "artist": "A", "album": "Al",
+             "track_number": 3, "disc_number": 1, "album_id": "rmb",
+             "local_path": None, "dap_path": None, "master_streamable": 0},
+        ]
+        res = client.get('/api/library/tracks')
+
+    assert res.status_code == 200
+    assert res.get_json()["tracks"] == []
 
 
 def test_library_tracks_forwards_filter_params_to_db(client, mock_config):

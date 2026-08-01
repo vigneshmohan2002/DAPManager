@@ -213,10 +213,16 @@ async function loadLibrary() {
     viewTracks = allTracks;
     allAlbums  = ad.albums || [];
     renderPlayerQueue();
+    const message = $("lib-msg");
+    if (message) message.style.display = "none";
     renderLibrary();
     if ($("req-search").value.trim()) renderRequestSearch($("req-search").value.trim());
-    $("lib-msg").style.display = "none";
-  } catch(e) { $("lib-msg").textContent = "Failed to load library: "+e.message; }
+  } catch(e) {
+    const list = $("lib-list");
+    if (list) {
+      list.innerHTML = `<div class="state-msg">Failed to load library: ${esc(e.message)}</div>`;
+    }
+  }
 }
 
 /* ─── PLAYER ───────────────────────────────────────── */

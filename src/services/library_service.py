@@ -64,7 +64,8 @@ def availability_for(
         return "local"
     if (row.get("dap_path") or "").strip():
         return "drive"
-    if has_master:
+    master_streamable = row.get("master_streamable")
+    if has_master and master_streamable is not False and master_streamable != 0:
         return "remote"
     return "unavailable"
 
