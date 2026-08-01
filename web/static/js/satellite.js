@@ -346,13 +346,22 @@ function renderLibrary(filter="") {
     </div>`
   ).join("");
 
-  // lazy-load album art
+  // Lazy-load album art when IntersectionObserver is available. Native lazy
+  // loading is also set so browsers without the observer still show artwork.
   el.querySelectorAll("img[data-album]").forEach(img => {
+    const revealArtwork = () => {
+      img.loading = "lazy";
+      img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover");
+      img.style.display="block";
+      img.onerror = ()=>img.remove();
+    };
+    if (typeof IntersectionObserver === "undefined") {
+      revealArtwork();
+      return;
+    }
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting) {
-        img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover");
-        img.style.display="block";
-        img.onerror = ()=>img.remove();
+        revealArtwork();
         obs.disconnect();
       }
     }, { rootMargin:"100px" });

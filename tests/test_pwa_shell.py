@@ -142,6 +142,16 @@ def test_standalone_players_explicitly_reveal_css_hidden_artwork():
     assert satellite.count('style.display="block"') >= 3
 
 
+def test_satellite_artwork_falls_back_without_intersection_observer():
+    source = (
+        Path(web_server.app.static_folder) / "js" / "satellite.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'typeof IntersectionObserver === "undefined"' in source
+    assert 'img.loading = "lazy"' in source
+    assert "revealArtwork();" in source
+
+
 def test_service_worker_policy_excludes_dynamic_or_sensitive_responses():
     source = (
         Path(web_server.app.static_folder) / "service-worker.js"
