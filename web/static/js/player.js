@@ -92,7 +92,7 @@ function playIdx(idx) {
     const ph  = document.getElementById("cover-ph");
     if (t.album_id) {
         img.src     = window.dapApiUrl("/api/library/albums/" + encodeURIComponent(t.album_id) + "/cover");
-        img.style.display = "";
+        img.style.display = "block";
         ph.style.display  = "none";
         img.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
     } else {

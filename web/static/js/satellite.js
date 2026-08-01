@@ -237,7 +237,7 @@ function playIdx(idx, list) {
   const img = $("cover-img"), ph = $("cover-ph");
   if (t.album_id) {
     img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(t.album_id)+"/cover");
-    img.style.display=""; ph.style.display="none";
+    img.style.display="block"; ph.style.display="none";
     img.onerror = () => { img.style.display="none"; ph.style.display=""; };
   } else { img.style.display="none"; ph.style.display=""; }
 
@@ -351,7 +351,7 @@ function renderLibrary(filter="") {
     const obs = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting) {
         img.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(img.dataset.album)+"/cover");
-        img.style.display="";
+        img.style.display="block";
         img.onerror = ()=>img.remove();
         obs.disconnect();
       }
@@ -375,7 +375,7 @@ async function openAlbum(albumId) {
 
   const artImg = $("album-art-img");
   artImg.src = window.dapApiUrl("/api/library/albums/"+encodeURIComponent(albumId)+"/cover");
-  artImg.style.display="";
+  artImg.style.display="block";
   artImg.onerror = ()=>artImg.remove();
 
   $("overlay-tracks").innerHTML = "<div class='state-msg'>Loading…</div>";

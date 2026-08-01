@@ -130,6 +130,18 @@ def test_satellite_library_loader_does_not_touch_removed_status_node():
     assert stale_access == -1 or stale_access >= next_section
 
 
+def test_standalone_players_explicitly_reveal_css_hidden_artwork():
+    static_root = Path(web_server.app.static_folder)
+    player = (static_root / "js" / "player.js").read_text(encoding="utf-8")
+    satellite = (
+        static_root / "js" / "satellite.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'img.style.display = "block"' in player
+    assert 'img.style.display="block"; ph.style.display="none";' in satellite
+    assert satellite.count('style.display="block"') >= 3
+
+
 def test_service_worker_policy_excludes_dynamic_or_sensitive_responses():
     source = (
         Path(web_server.app.static_folder) / "service-worker.js"
